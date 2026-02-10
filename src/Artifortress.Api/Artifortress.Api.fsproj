@@ -6,10 +6,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="ObjectStorage.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" Version="4.0.18.3" />
     <PackageReference Include="Npgsql" Version="8.0.6" />
   </ItemGroup>
 

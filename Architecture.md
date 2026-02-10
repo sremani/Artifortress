@@ -7,8 +7,8 @@ This document describes current architecture and explicitly separates implemente
 ## Core Principle
 
 Truth and bytes are separate:
-- Truth is stored in PostgreSQL (auth/authz metadata, repo metadata, role bindings, audit).
-- Bytes are planned for object storage with content addressing.
+- Truth is stored in PostgreSQL (auth/authz metadata, repo metadata, role bindings, audit, upload session state).
+- Bytes are stored in object storage with content addressing for the Phase 2 data plane.
 
 ## Current Runtime (Implemented)
 
@@ -22,6 +22,13 @@ Control-plane API (`src/Artifortress.Api`) is implemented with PostgreSQL persis
 Current database migrations:
 - `db/migrations/0001_init.sql`
 - `db/migrations/0002_phase1_identity_and_rbac.sql`
+- `db/migrations/0003_phase2_upload_sessions.sql`
+
+Current data-plane capabilities:
+- Upload session create plus multipart lifecycle (`parts`, `complete`, `abort`).
+- Commit-time digest/size verification with deterministic mismatch handling.
+- Dedupe by digest when blob already exists.
+- Blob download endpoint with single-range support.
 
 Current auth model:
 - PAT bootstrap issuance via `X-Bootstrap-Token` (for initial/admin bootstrap cases).
@@ -29,11 +36,6 @@ Current auth model:
 - `admin` wildcard scope used for global admin operations.
 
 ## Planned Runtime (Not Yet Implemented)
-
-Data plane:
-- Direct multipart upload to object storage.
-- Digest verification and dedupe on blob commit.
-- Download/range path backed by object store.
 
 Metadata/publish plane:
 - Draft/publish state machine for package versions.
@@ -50,10 +52,11 @@ Event/index/policy plane:
 - Revoked/expired tokens cannot authenticate.
 - RBAC checks gate protected repository and binding APIs.
 - Privileged actions are audited in PostgreSQL.
+- Upload commit validates expected digest and length before session commit.
+- Dedupe path prevents duplicate blob persistence for existing digest/length content.
 
 ## Invariants Targeted Next
 
-- Blob immutability by digest and size.
 - Atomic publish semantics with no partial version visibility.
 - Tombstone-first deletion with GC safety checks.
 - Side effects driven exclusively from committed outbox events.

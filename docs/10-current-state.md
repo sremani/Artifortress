@@ -34,6 +34,12 @@ Persistence:
 - `DELETE /v1/repos/{repoKey}`
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/bindings`
+- `POST /v1/repos/{repoKey}/uploads`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
+- `GET /v1/repos/{repoKey}/blobs/{digest}`
 - `GET /v1/audit`
 
 ## 3. Verification Status
@@ -49,14 +55,35 @@ Demonstration assets:
 ## 4. Known Gaps vs Target Architecture
 
 Not implemented yet:
-- Object-store-backed blob ingest and dedupe flow.
-- Download/range endpoint tied to blob storage.
 - Atomic draft/publish package version workflow.
 - Transactional outbox worker processing.
 - Search indexing and policy/quarantine pipeline.
 - OIDC/SAML identity provider integration.
+- Throughput baseline/load report publication (`P2-09`).
+- Phase 2 scripted demo and runbook (`P2-10`).
 
 ## 5. Next Delivery Focus
 
-- Start Phase 2 implementation tickets for upload sessions, blob commit verification, and download path.
-- Keep docs in sync by updating this file and `docs/05-implementation-plan.md` as each ticket lands.
+- Phase 2 implemented work:
+  - `db/migrations/0003_phase2_upload_sessions.sql` for session persistence.
+  - object storage client module in `src/Artifortress.Api/ObjectStorage.fs`.
+  - upload session create API: `POST /v1/repos/{repoKey}/uploads`.
+  - multipart lifecycle APIs:
+    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
+    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
+    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
+  - commit verification API:
+    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
+  - blob download API:
+    - `GET /v1/repos/{repoKey}/blobs/{digest}` (single-range support)
+  - upload audit coverage:
+    - session create, part URL issuance, complete, abort, commit success, and commit verification failure.
+  - expanded integration coverage:
+    - expired-session rejection paths.
+    - dedupe-path second-create behavior.
+    - invalid range (`400`) and unsatisfiable range (`416`) responses.
+    - authz rejection matrix across new upload/download endpoints.
+    - audit action matrix assertions for upload lifecycle operations.
+- Next implementation targets:
+  - add throughput baseline/load report (`P2-09`).
+  - add Phase 2 demo script and runbook updates (`P2-10`).

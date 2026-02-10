@@ -7,21 +7,27 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Runtime baseline: `.NET SDK 10.0.102`, F# projects on `net10.0` and `LangVersion=10.0`.
 - Phase 0: complete.
 - Phase 1: complete.
-- Current build-out focus: Phase 2 (blob ingest and download path).
+- Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
+- Current build-out focus: P2-09 throughput baseline and P2-10 demo/runbook updates.
 
 ## Implemented Today
 
-- PostgreSQL-backed control-plane APIs:
+- Control plane:
   - PAT issue/revoke + bearer validation.
   - Repository CRUD (local/remote/virtual).
   - Repo role bindings.
   - Tenant-scoped audit query endpoint.
+- Data plane (Phase 2):
+  - Upload session create + multipart lifecycle (`parts`, `complete`, `abort`).
+  - Commit-time digest/length verification with deterministic mismatch response.
+  - Dedupe-by-digest fast path.
+  - Blob download with range support.
+  - Audit actions for upload lifecycle operations.
 - Persistence:
-  - Schema migrations in `db/migrations/0001_init.sql` and `db/migrations/0002_phase1_identity_and_rbac.sql`.
-  - PAT hash-only storage, revocation tracking, role bindings, and audit log persistence.
+  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, and `db/migrations/0003_phase2_upload_sessions.sql`.
 - Test coverage:
   - Domain unit tests.
-  - API integration tests for unauthorized, forbidden, expired, revoked, and authorized paths.
+  - API integration tests across authz, upload lifecycle, commit verification, dedupe, range behavior, and audit action matrix.
 
 ## Quick Start
 
@@ -33,6 +39,7 @@ Prerequisites:
 Bootstrap and validate:
 ```bash
 make dev-up
+make storage-bootstrap
 make db-migrate
 make build
 make test
@@ -44,7 +51,7 @@ Run Phase 1 demo flow:
 make phase1-demo
 ```
 
-## API Surface (Phase 1)
+## API Surface (Phase 2 Progress)
 
 - `GET /health/live`
 - `GET /health/ready`
@@ -57,12 +64,18 @@ make phase1-demo
 - `DELETE /v1/repos/{repoKey}`
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/bindings`
+- `POST /v1/repos/{repoKey}/uploads`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
+- `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
+- `GET /v1/repos/{repoKey}/blobs/{digest}`
 - `GET /v1/audit`
 
 ## Repository Layout
 
 - `src/Artifortress.Domain`: domain primitives and authorization invariants.
-- `src/Artifortress.Api`: HTTP API with Postgres-backed Phase 1 control plane.
+- `src/Artifortress.Api`: HTTP API with Postgres-backed control plane and Phase 2 upload/download data plane.
 - `src/Artifortress.Worker`: worker scaffold for future outbox/event processing.
 - `tests/Artifortress.Domain.Tests`: unit + integration tests.
 - `db/migrations`: SQL schema migrations.
@@ -78,6 +91,7 @@ make phase1-demo
 - `docs/08-phase1-implementation-tickets.md`: completed Phase 1 ticket log.
 - `docs/09-phase1-runbook.md`: executable Phase 1 demonstration runbook.
 - `docs/10-current-state.md`: implementation inventory and known gaps.
+- `docs/11-phase2-implementation-tickets.md`: active Phase 2 ticket board and acceptance criteria.
 
 ## ADRs
 

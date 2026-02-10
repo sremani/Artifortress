@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="Tests.fs" />
+    <Compile Include="ObjectStorageTests.fs" />
     <Compile Include="ApiIntegrationTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
@@ -22,6 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Artifortress.Api\Artifortress.Api.fsproj" />
     <ProjectReference Include="..\..\src\Artifortress.Domain\Artifortress.Domain.fsproj" />
   </ItemGroup>
 

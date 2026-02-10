@@ -6,7 +6,8 @@ This plan defines the execution sequence we will walk through, with every phase 
 
 - Phase 0 is complete.
 - Phase 1 is complete.
-- Next active delivery focus is Phase 2.
+- Phase 2 is in progress (`P2-01` through `P2-08` complete).
+- Next active delivery focus is `P2-09` throughput baseline and `P2-10` demo/runbook updates.
 - OIDC-specific walkthrough steps are deferred; Phase 1 demo uses PAT bootstrap/admin flows.
 
 ## 1. Full Feature Inventory
@@ -99,6 +100,9 @@ Walkthrough demo:
 Exit gate:
 - Upload and download path hits performance and correctness baselines.
 
+Current implementation note:
+- Phase 2 APIs and coverage are implemented through `P2-08`; remaining delivery work is throughput/reporting (`P2-09`) and scripted demo/runbook completion (`P2-10`).
+
 ## Phase 3: Atomic Package Publish
 
 Features in phase:
@@ -188,7 +192,7 @@ We will run formal walkthrough reviews at the end of each phase:
 
 ## 5. Recommended Execution Order
 
-1. Start Phase 2 ticketing and implementation.
-2. Execute Phases 2-3 as the minimum viable release track.
+1. Complete `P2-09` throughput baseline and `P2-10` demo/runbook updates.
+2. Execute Phase 3 as the minimum viable release extension track.
 3. Start controlled production trial after Phase 3 completion.
 4. Finish Phases 4-6 for full policy/search/operations maturity.

@@ -14,9 +14,10 @@ Last updated: 2026-02-10
 Implemented:
 - Phase 0 foundation (solution, local stack, migrations, CI checks).
 - Phase 1 control-plane auth/repo APIs with PostgreSQL persistence.
+- Phase 2 data plane through P2-08 (upload session lifecycle, commit verification, dedupe path, blob download with range support, and integration/audit coverage).
 
 In progress next:
-- Phase 2 data plane (blob ingest/download path).
+- P2-09 throughput baseline and load-test reporting.
 
 Planned later:
 - Atomic publish, outbox-driven integrations, search/policy pipeline, deletion lifecycle and GC hardening.
@@ -28,7 +29,7 @@ Truth and bytes are intentionally separated:
 - Blob bytes in object storage.
 - Cache and index layers are rebuildable derivatives.
 
-This separation is architectural intent today and partially implemented.
+This separation is implemented for control-plane metadata plus Phase 2 ingest/download flows, with publish/index/event planes still planned.
 
 ## 4. Runtime Planes
 
@@ -38,10 +39,12 @@ This separation is architectural intent today and partially implemented.
 - Role binding management.
 - Privileged action audit persistence.
 
-2. Data plane (planned for Phase 2)
-- Stateless upload/download gateway.
-- Direct multipart upload to object storage via pre-signed URLs.
-- Range-capable artifact downloads and edge caching strategy.
+2. Data plane (implemented through P2-08)
+- Upload session create + multipart lifecycle (`parts`, `complete`, `abort`).
+- Commit verification for expected digest and expected size.
+- Dedupe-by-digest fast path.
+- Blob download with single-range support.
+- Remaining in this phase: throughput baseline/reporting (`P2-09`) and demo/runbook completion (`P2-10`).
 
 3. Index plane (planned)
 - Search indexing and metadata query acceleration.
@@ -59,7 +62,7 @@ Invariants enforced now:
 3. Privileged mutations are RBAC-gated and audited.
 
 Invariants targeted by next phases:
-1. Blob immutability by digest and size.
+1. Package/version-level immutability guarantees once publish workflow is implemented.
 2. Atomic package version publication.
 3. Tombstone-first delete followed by safe GC.
 4. All side effects occur post-commit through outbox processing.
