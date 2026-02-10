@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+artifacts/
+TestResults/
+
+# IDE/editor
+.idea/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS files
+.DS_Store
+
+# Environment files
+.env
