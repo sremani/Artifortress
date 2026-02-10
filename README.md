@@ -21,13 +21,18 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Upload session create + multipart lifecycle (`parts`, `complete`, `abort`).
   - Commit-time digest/length verification with deterministic mismatch response.
   - Dedupe-by-digest fast path.
-  - Blob download with range support.
+  - Blob download with range support and repository-scoped visibility enforcement.
   - Audit actions for upload lifecycle operations.
+- Hardening updates:
+  - Constant-time bootstrap token comparison.
+  - Best-effort multipart abort on upload-session create race/failure paths.
+  - Null-safe scope/role parsing guards in domain layer.
 - Persistence:
   - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, and `db/migrations/0003_phase2_upload_sessions.sql`.
 - Test coverage:
   - Domain unit tests.
   - API integration tests across authz, upload lifecycle, commit verification, dedupe, range behavior, and audit action matrix.
+  - Latest local verification: `29` tests passing.
 
 ## Quick Start
 

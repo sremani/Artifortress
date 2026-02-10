@@ -273,6 +273,18 @@ let toTokenHash (rawToken: string) =
     let bytes = Encoding.UTF8.GetBytes(rawToken)
     hasher.ComputeHash(bytes) |> Convert.ToHexString |> fun value -> value.ToLowerInvariant()
 
+let secureEquals (left: string) (right: string) =
+    if String.IsNullOrEmpty left || String.IsNullOrEmpty right then
+        false
+    else
+        let leftBytes = Encoding.UTF8.GetBytes(left)
+        let rightBytes = Encoding.UTF8.GetBytes(right)
+
+        if leftBytes.Length <> rightBytes.Length then
+            false
+        else
+            CryptographicOperations.FixedTimeEquals(ReadOnlySpan(leftBytes), ReadOnlySpan(rightBytes))
+
 let createPlainToken () =
     let bytes = RandomNumberGenerator.GetBytes(32)
     Convert.ToHexString(bytes).ToLowerInvariant()
@@ -772,6 +784,33 @@ limit 1;
         match scalar with
         | :? string as storageKey -> Ok(Some storageKey)
         | _ -> Error "Unexpected blob storage key type returned from database."
+
+let repoHasCommittedBlobDigest (tenantId: Guid) (repoKey: string) (digest: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select exists(
+  select 1
+  from upload_sessions us
+  join repos r on r.repo_id = us.repo_id
+  where us.tenant_id = @tenant_id
+    and r.repo_key = @repo_key
+    and us.state = 'committed'
+    and us.committed_blob_digest = @digest
+);
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("digest", digest) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    match scalar with
+    | :? bool as existsValue -> Ok existsValue
+    | _ -> Error "Could not determine committed blob visibility for repository."
 
 let insertUploadSessionForRepo
     (tenantId: Guid)
@@ -1409,6 +1448,18 @@ let validateRepoRequest (request: CreateRepoRequest) =
                       UpdatedAtUtc = nowUtc () }
         | _ -> Error "repoType must be one of: local, remote, virtual."
 
+let abortMultipartUploadBestEffort
+    (state: AppState)
+    (objectStagingKey: string)
+    (storageUploadId: string)
+    (cancellationToken: Threading.CancellationToken)
+    =
+    if not (String.IsNullOrWhiteSpace objectStagingKey || String.IsNullOrWhiteSpace storageUploadId) then
+        match
+            state.ObjectStorageClient.AbortMultipartUpload(objectStagingKey, storageUploadId, cancellationToken).Result
+        with
+        | _ -> ()
+
 [<EntryPoint>]
 let main args =
     let builder = WebApplication.CreateBuilder(args)
@@ -1477,7 +1528,7 @@ let main args =
             let bootstrapSecret = builder.Configuration.["Auth:BootstrapToken"]
             let isBootstrapAuthorized =
                 not (String.IsNullOrWhiteSpace bootstrapSecret)
-                && String.Equals(bootstrapHeader, bootstrapSecret, StringComparison.Ordinal)
+                && secureEquals bootstrapHeader bootstrapSecret
 
             match tryAuthenticate state ctx with
             | Error err -> serviceUnavailable err
@@ -1860,17 +1911,20 @@ let main args =
                                                     expiresAtUtc)
                                         with
                                         | Error err ->
-                                            match
-                                                state.ObjectStorageClient.AbortMultipartUpload(
-                                                    objectStagingKey,
-                                                    storageSession.UploadId,
-                                                    ctx.RequestAborted
-                                                ).Result
-                                            with
-                                            | _ -> ()
+                                            abortMultipartUploadBestEffort
+                                                state
+                                                objectStagingKey
+                                                storageSession.UploadId
+                                                ctx.RequestAborted
 
                                             serviceUnavailable err
                                         | Ok None ->
+                                            abortMultipartUploadBestEffort
+                                                state
+                                                objectStagingKey
+                                                storageSession.UploadId
+                                                ctx.RequestAborted
+
                                             Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
                                         | Ok(Some session) ->
                                             match
@@ -2369,40 +2423,45 @@ let main args =
                         | Ok false ->
                             Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
                         | Ok true ->
-                            match withConnection state (tryReadBlobStorageKeyByDigest digest) with
+                            match withConnection state (repoHasCommittedBlobDigest principal.TenantId repoKey digest) with
                             | Error err -> serviceUnavailable err
-                            | Ok None ->
+                            | Ok false ->
                                 Results.NotFound({| error = "not_found"; message = "Blob was not found." |})
-                            | Ok(Some storageKey) ->
-                                match
-                                    state.ObjectStorageClient.DownloadObject(storageKey, parsedRange, ctx.RequestAborted).Result
-                                with
-                                | Error storageErr -> mapObjectStorageErrorToResult storageErr
-                                | Ok downloaded ->
-                                    ctx.Response.Headers.["Accept-Ranges"] <- "bytes"
+                            | Ok true ->
+                                match withConnection state (tryReadBlobStorageKeyByDigest digest) with
+                                | Error err -> serviceUnavailable err
+                                | Ok None ->
+                                    Results.NotFound({| error = "not_found"; message = "Blob was not found." |})
+                                | Ok(Some storageKey) ->
+                                    match
+                                        state.ObjectStorageClient.DownloadObject(storageKey, parsedRange, ctx.RequestAborted).Result
+                                    with
+                                    | Error storageErr -> mapObjectStorageErrorToResult storageErr
+                                    | Ok downloaded ->
+                                        ctx.Response.Headers.["Accept-Ranges"] <- "bytes"
 
-                                    match downloaded.ETag with
-                                    | Some etagValue -> ctx.Response.Headers.["ETag"] <- etagValue
-                                    | None -> ()
+                                        match downloaded.ETag with
+                                        | Some etagValue -> ctx.Response.Headers.["ETag"] <- etagValue
+                                        | None -> ()
 
-                                    match downloaded.ContentRange with
-                                    | Some contentRangeValue -> ctx.Response.Headers.["Content-Range"] <- contentRangeValue
-                                    | None -> ()
+                                        match downloaded.ContentRange with
+                                        | Some contentRangeValue -> ctx.Response.Headers.["Content-Range"] <- contentRangeValue
+                                        | None -> ()
 
-                                    if downloaded.ContentLength >= 0L then
-                                        ctx.Response.ContentLength <- downloaded.ContentLength
+                                        if downloaded.ContentLength >= 0L then
+                                            ctx.Response.ContentLength <- downloaded.ContentLength
 
-                                    ctx.Response.RegisterForDispose(
-                                        { new IDisposable with
-                                            member _.Dispose() = downloaded.Dispose() }
-                                    )
+                                        ctx.Response.RegisterForDispose(
+                                            { new IDisposable with
+                                                member _.Dispose() = downloaded.Dispose() }
+                                        )
 
-                                    ctx.Response.StatusCode <- int downloaded.StatusCode
+                                        ctx.Response.StatusCode <- int downloaded.StatusCode
 
-                                    Results.Stream(
-                                        downloaded.Stream,
-                                        contentType = (downloaded.ContentType |> Option.defaultValue "application/octet-stream")
-                                    )
+                                        Results.Stream(
+                                            downloaded.Stream,
+                                            contentType = (downloaded.ContentType |> Option.defaultValue "application/octet-stream")
+                                        )
     ))
     |> ignore
 

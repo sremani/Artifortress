@@ -25,7 +25,8 @@ fi
 
 for file in "${migration_files[@]}"; do
   version="$(basename "$file")"
-  applied="$(psql_exec -tAc "select 1 from schema_migrations where version = '${version}' limit 1;")"
+  version_sql="${version//\'/\'\'}"
+  applied="$(psql_exec -tAc "select 1 from schema_migrations where version = '${version_sql}' limit 1;")"
 
   if [ "$applied" = "1" ]; then
     echo "Skipping $version (already applied)."
@@ -34,7 +35,7 @@ for file in "${migration_files[@]}"; do
 
   echo "Applying $version..."
   psql_exec -f - < "$file"
-  psql_exec -c "insert into schema_migrations (version) values ('$version');"
+  psql_exec -c "insert into schema_migrations (version) values ('${version_sql}');"
 done
 
 echo "Migrations are up to date."

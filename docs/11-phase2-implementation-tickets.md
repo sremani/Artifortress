@@ -58,6 +58,11 @@ Status key:
   - Added invalid range and unsatisfiable range (`416`) coverage.
   - Added expanded authz rejection matrix across new upload/download endpoints.
   - Added upload lifecycle audit action matrix assertions.
+- Post P2-08 hardening completed:
+  - Download path now verifies blob visibility within the requested repository before serving by digest.
+  - Added best-effort cleanup of multipart uploads when upload-session create fails after storage init.
+  - Bootstrap token comparison uses constant-time equality.
+  - Added null-safe parsing guards and regression coverage for scope/role parser edge inputs.
 
 ## Ticket Details
 
@@ -160,6 +165,7 @@ Acceptance criteria:
 | P2-08g | AuthZ rejection matrix across new endpoints | done | Unauthorized+forbidden checks now cover parts/complete/abort/commit/download. |
 | P2-08h | Download invalid-range and `416` behavior | done | Invalid range (`400`) and unsatisfiable range (`416`) are tested. |
 | P2-08i | Audit event matrix assertions for new lifecycle actions | done | Assertions include create/part/complete/abort/commit/verification-failed actions. |
+| P2-08j | Repository-scoped blob visibility enforcement | done | Download now returns `404` when digest was not committed in the requested repo; regression test added. |
 
 ## P2-09: Phase 2 throughput baseline and load test report
 

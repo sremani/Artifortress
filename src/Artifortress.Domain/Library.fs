@@ -27,14 +27,17 @@ type RepoRole =
 
 module RepoRole =
     let tryParse (value: string) =
-        let normalized = value.Trim().ToLowerInvariant()
+        if String.IsNullOrWhiteSpace value then
+            Error "Role cannot be empty."
+        else
+            let normalized = value.Trim().ToLowerInvariant()
 
-        match normalized with
-        | "read" -> Ok Read
-        | "write" -> Ok Write
-        | "admin" -> Ok Admin
-        | "promote" -> Ok Promote
-        | _ -> Error $"Unsupported role '{value}'."
+            match normalized with
+            | "read" -> Ok Read
+            | "write" -> Ok Write
+            | "admin" -> Ok Admin
+            | "promote" -> Ok Promote
+            | _ -> Error $"Unsupported role '{value}'."
 
     let value role =
         match role with
@@ -70,21 +73,27 @@ module RepoScope =
     let role scope = scope.Role
 
     let tryParse (value: string) =
-        let parts = value.Split(':', StringSplitOptions.None)
-
-        if parts.Length <> 3 || parts.[0].Trim().ToLowerInvariant() <> "repo" then
+        if String.IsNullOrWhiteSpace value then
             Error $"Invalid scope '{value}'. Expected format: repo:<repoKey|*>:<role>."
         else
-            match RepoRole.tryParse parts.[2] with
-            | Error err -> Error err
-            | Ok parsedRole -> tryCreate parts.[1] parsedRole
+            let parts = value.Split(':', StringSplitOptions.None)
+
+            if parts.Length <> 3 || parts.[0].Trim().ToLowerInvariant() <> "repo" then
+                Error $"Invalid scope '{value}'. Expected format: repo:<repoKey|*>:<role>."
+            else
+                match RepoRole.tryParse parts.[2] with
+                | Error err -> Error err
+                | Ok parsedRole -> tryCreate parts.[1] parsedRole
 
     let value scope = $"repo:{scope.RepoKey}:{RepoRole.value scope.Role}"
 
     let allows (requiredRepoKey: string) (requiredRole: RepoRole) (scope: RepoScope) =
-        let normalizedRequiredRepo = requiredRepoKey.Trim().ToLowerInvariant()
-        let repoMatch = scope.RepoKey = "*" || scope.RepoKey = normalizedRequiredRepo
-        repoMatch && RepoRole.implies scope.Role requiredRole
+        if String.IsNullOrWhiteSpace requiredRepoKey then
+            false
+        else
+            let normalizedRequiredRepo = requiredRepoKey.Trim().ToLowerInvariant()
+            let repoMatch = scope.RepoKey = "*" || scope.RepoKey = normalizedRequiredRepo
+            repoMatch && RepoRole.implies scope.Role requiredRole
 
 module Authorization =
     let hasRole (scopes: seq<RepoScope>) (repoKey: string) (requiredRole: RepoRole) =

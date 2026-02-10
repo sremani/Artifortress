@@ -15,6 +15,7 @@ API control-plane features:
 - Repo CRUD with repo-scoped authorization checks.
 - Role binding upsert/list for subject-role assignment per repo.
 - Audit persistence for privileged operations.
+- Constant-time bootstrap token comparison.
 
 Persistence:
 - Core tables from `0001_init.sql` plus identity/RBAC tables from `0002_phase1_identity_and_rbac.sql`.
@@ -45,7 +46,7 @@ Persistence:
 ## 3. Verification Status
 
 Automated checks currently passing:
-- `make test` (domain + integration tests).
+- `make test` (domain + integration tests, currently `29` tests passing).
 - `make format`.
 
 Demonstration assets:
@@ -75,15 +76,20 @@ Not implemented yet:
   - commit verification API:
     - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
   - blob download API:
-    - `GET /v1/repos/{repoKey}/blobs/{digest}` (single-range support)
+    - `GET /v1/repos/{repoKey}/blobs/{digest}` (single-range support, scoped to blobs committed in the requested repository)
   - upload audit coverage:
     - session create, part URL issuance, complete, abort, commit success, and commit verification failure.
+  - reliability hardening:
+    - best-effort object-store multipart abort on upload-session create race/failure paths.
+    - null-safe role and scope parsing in domain layer.
+    - migration script SQL quoting hardening for version tracking.
   - expanded integration coverage:
     - expired-session rejection paths.
     - dedupe-path second-create behavior.
     - invalid range (`400`) and unsatisfiable range (`416`) responses.
     - authz rejection matrix across new upload/download endpoints.
     - audit action matrix assertions for upload lifecycle operations.
+    - repo-scoped blob visibility regression test.
 - Next implementation targets:
   - add throughput baseline/load report (`P2-09`).
   - add Phase 2 demo script and runbook updates (`P2-10`).

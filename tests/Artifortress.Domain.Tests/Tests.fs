@@ -32,6 +32,20 @@ let ``RepoScope parser rejects malformed scope`` () =
     | Error err -> Assert.Contains("Invalid scope", err)
 
 [<Fact>]
+let ``RepoRole parser rejects null input`` () =
+    let parsed = RepoRole.tryParse null
+    match parsed with
+    | Ok _ -> failwith "Expected role parse failure"
+    | Error err -> Assert.Equal("Role cannot be empty.", err)
+
+[<Fact>]
+let ``RepoScope parser rejects null input`` () =
+    let parsed = RepoScope.tryParse null
+    match parsed with
+    | Ok _ -> failwith "Expected scope parse failure"
+    | Error err -> Assert.Contains("Invalid scope", err)
+
+[<Fact>]
 let ``Authorization allows write token to perform read`` () =
     let writeScope =
         match RepoScope.tryParse "repo:core-libs:write" with

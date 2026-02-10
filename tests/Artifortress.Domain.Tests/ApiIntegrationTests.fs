@@ -1051,6 +1051,67 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.Equal<byte>(expectedRange, rangeBytes)
 
     [<Fact>]
+    member _.``P2-06 download only serves blobs committed in the requested repository`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p206-scope-admin") [| "repo:*:admin" |] 60
+        let sourceRepoKey = makeRepoKey "p206-source"
+        let targetRepoKey = makeRepoKey "p206-target"
+        createRepoAsAdmin adminToken sourceRepoKey
+        createRepoAsAdmin adminToken targetRepoKey
+
+        let writeToken, _ = issuePat (makeSubject "p206-scope-writer") [| $"repo:{sourceRepoKey}:write" |] 60
+        let sourceReadToken, _ = issuePat (makeSubject "p206-source-reader") [| $"repo:{sourceRepoKey}:read" |] 60
+        let targetReadToken, _ = issuePat (makeSubject "p206-target-reader") [| $"repo:{targetRepoKey}:read" |] 60
+        let payload = Encoding.UTF8.GetBytes($"p206-scope-payload-{Guid.NewGuid():N}")
+        let expectedDigest = tokenHashFor (Encoding.UTF8.GetString(payload))
+        let expectedLength = int64 payload.Length
+
+        use createResponse = createUploadSessionWithToken writeToken sourceRepoKey expectedDigest expectedLength
+        let createBody = readResponseBody createResponse
+
+        if createResponse.StatusCode = HttpStatusCode.ServiceUnavailable
+           || createResponse.StatusCode = HttpStatusCode.NotFound then
+            raise (
+                SkipException.ForSkip(
+                    $"Skipping P2 repo-scoped download test: object storage unavailable. Response: {(int createResponse.StatusCode)} {createBody}"
+                )
+            )
+
+        Assert.True(
+            createResponse.StatusCode = HttpStatusCode.Created,
+            $"Expected HTTP {(int HttpStatusCode.Created)} but got {(int createResponse.StatusCode)}. Body: {createBody}"
+        )
+
+        use createDoc = JsonDocument.Parse(createBody)
+        let uploadId = createDoc.RootElement.GetProperty("uploadId").GetGuid()
+
+        use partResponse = createUploadPartWithToken writeToken sourceRepoKey uploadId 1
+        let partBody = ensureStatus HttpStatusCode.OK partResponse
+        use partDoc = JsonDocument.Parse(partBody)
+        let uploadUrl = partDoc.RootElement.GetProperty("uploadUrl").GetString()
+        let etag = uploadPartFromPresignedUrl uploadUrl payload
+
+        use completeResponse =
+            completeUploadWithToken
+                writeToken
+                sourceRepoKey
+                uploadId
+                [| { PartNumber = 1
+                     ETag = etag } |]
+
+        ensureStatus HttpStatusCode.OK completeResponse |> ignore
+
+        use commitResponse = commitUploadWithToken writeToken sourceRepoKey uploadId
+        ensureStatus HttpStatusCode.OK commitResponse |> ignore
+
+        use sourceRepoDownload = downloadBlobWithToken sourceReadToken sourceRepoKey expectedDigest None
+        ensureStatus HttpStatusCode.OK sourceRepoDownload |> ignore
+
+        use targetRepoDownload = downloadBlobWithToken targetReadToken targetRepoKey expectedDigest None
+        ensureStatus HttpStatusCode.NotFound targetRepoDownload |> ignore
+
+    [<Fact>]
     member _.``P2-07 upload mutation actions are written to audit log`` () =
         fixture.RequireAvailable()
 
