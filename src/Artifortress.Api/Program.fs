@@ -77,6 +77,15 @@ type CommitUploadRequest = {
     Noop: string
 }
 
+[<CLIMutable>]
+type EvaluatePolicyRequest = {
+    Action: string
+    VersionId: Guid
+    DecisionHint: string
+    Reason: string
+    PolicyEngineVersion: string
+}
+
 type PatRecord = {
     TokenId: Guid
     Subject: string
@@ -143,6 +152,18 @@ type AuditRecord = {
     ResourceId: string
     OccurredAtUtc: DateTimeOffset
     Details: Map<string, string>
+}
+
+type PolicyEvaluationResult = {
+    EvaluationId: int64
+    VersionId: Guid
+    Action: string
+    Decision: string
+    DecisionSource: string
+    Reason: string
+    PolicyEngineVersion: string option
+    EvaluatedAtUtc: DateTimeOffset
+    QuarantineId: Guid option
 }
 
 type Principal = {
@@ -217,6 +238,36 @@ let validateDraftVersionRequest (request: CreateDraftVersionRequest) =
         Error "version is required."
     else
         Ok(packageType, packageNamespace, packageName, version)
+
+let validateEvaluatePolicyRequest (request: EvaluatePolicyRequest) =
+    let action = normalizeText request.Action |> fun value -> value.ToLowerInvariant()
+    let versionId = request.VersionId
+    let decisionHint = normalizeText request.DecisionHint |> fun value -> value.ToLowerInvariant()
+    let reason = normalizeText request.Reason
+    let policyEngineVersion =
+        let value = normalizeText request.PolicyEngineVersion
+        if String.IsNullOrWhiteSpace value then None else Some value
+
+    let resolvedDecisionResult =
+        if String.IsNullOrWhiteSpace decisionHint then
+            Ok("allow", "default_allow")
+        else
+            match decisionHint with
+            | "allow" -> Ok("allow", "hint_allow")
+            | "deny" -> Ok("deny", "hint_deny")
+            | "quarantine" -> Ok("quarantine", "hint_quarantine")
+            | _ -> Error "decisionHint must be one of: allow, deny, quarantine."
+
+    if action <> "publish" && action <> "promote" then
+        Error "action must be one of: publish, promote."
+    elif versionId = Guid.Empty then
+        Error "versionId is required and must be a non-empty GUID."
+    elif String.IsNullOrWhiteSpace reason then
+        Error "reason is required."
+    else
+        resolvedDecisionResult
+        |> Result.map (fun (decision, decisionSource) ->
+            action, versionId, decision, decisionSource, reason, policyEngineVersion)
 
 let private normalizePartEtag (etag: string) =
     normalizeText etag |> fun value -> value.Trim('"')
@@ -949,6 +1000,164 @@ let createOrGetDraftVersionForRepo
                                     Ok(DraftExisting record)
                                 else
                                     Ok(VersionStateConflict record.State)))))
+
+let evaluatePolicyForVersion
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (action: string)
+    (decision: string)
+    (decisionSource: string)
+    (reason: string)
+    (policyEngineVersion: string option)
+    (evaluatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use tx = conn.BeginTransaction()
+
+    use targetCmd =
+        new NpgsqlCommand(
+            """
+select r.repo_id, pv.state
+from repos r
+join package_versions pv on pv.repo_id = r.repo_id and pv.tenant_id = r.tenant_id
+where r.tenant_id = @tenant_id
+  and r.repo_key = @repo_key
+  and pv.version_id = @version_id
+limit 1;
+""",
+            conn,
+            tx
+        )
+
+    targetCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    targetCmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    targetCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+
+    use targetReader = targetCmd.ExecuteReader()
+
+    let target =
+        if targetReader.Read() then
+            let repoId = targetReader.GetGuid(0)
+            let versionState = targetReader.GetString(1)
+            Some(repoId, versionState)
+        else
+            None
+
+    targetReader.Close()
+
+    match target with
+    | None ->
+        tx.Rollback()
+        Ok None
+    | Some(repoId, versionState) ->
+        let details =
+            [ "decisionSource", decisionSource; "versionState", versionState ]
+            |> Map.ofList
+            |> Map.toSeq
+            |> dict
+            |> JsonSerializer.Serialize
+
+        use insertEvalCmd =
+            new NpgsqlCommand(
+                """
+insert into policy_evaluations
+  (tenant_id, repo_id, version_id, action, decision, policy_engine_version, reason, details, evaluated_by_subject)
+values
+  (@tenant_id, @repo_id, @version_id, @action, @decision, @policy_engine_version, @reason, @details, @evaluated_by_subject)
+returning evaluation_id, evaluated_at;
+""",
+                conn,
+                tx
+            )
+
+        insertEvalCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        insertEvalCmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+        insertEvalCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        insertEvalCmd.Parameters.AddWithValue("action", action) |> ignore
+        insertEvalCmd.Parameters.AddWithValue("decision", decision) |> ignore
+        insertEvalCmd.Parameters.AddWithValue("reason", reason) |> ignore
+        insertEvalCmd.Parameters.AddWithValue("evaluated_by_subject", evaluatedBySubject) |> ignore
+
+        let policyEngineParam = insertEvalCmd.Parameters.Add("policy_engine_version", NpgsqlDbType.Text)
+        policyEngineParam.Value <- (match policyEngineVersion with | Some value -> box value | None -> box DBNull.Value)
+
+        let detailsParam = insertEvalCmd.Parameters.Add("details", NpgsqlDbType.Jsonb)
+        detailsParam.Value <- details
+
+        use evalReader = insertEvalCmd.ExecuteReader()
+
+        let evaluation =
+            if evalReader.Read() then
+                let evaluationId = evalReader.GetInt64(0)
+                let evaluatedAtUtc = evalReader.GetFieldValue<DateTime>(1) |> toUtcDateTimeOffset
+                Some(evaluationId, evaluatedAtUtc)
+            else
+                None
+
+        evalReader.Close()
+
+        match evaluation with
+        | None ->
+            tx.Rollback()
+            Error "Policy evaluation insert did not return evaluation metadata."
+        | Some(evaluationId, evaluatedAtUtc) ->
+            let quarantineIdResult =
+                if decision <> "quarantine" then
+                    Ok None
+                else
+                    use quarantineCmd =
+                        new NpgsqlCommand(
+                            """
+insert into quarantine_items
+  (tenant_id, repo_id, version_id, status, reason)
+values
+  (@tenant_id, @repo_id, @version_id, 'quarantined', @reason)
+on conflict (tenant_id, repo_id, version_id)
+do update set
+  status = 'quarantined',
+  reason = excluded.reason,
+  resolved_at = null,
+  resolved_by_subject = null
+returning quarantine_id;
+""",
+                            conn,
+                            tx
+                        )
+
+                    quarantineCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                    quarantineCmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+                    quarantineCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+                    quarantineCmd.Parameters.AddWithValue("reason", reason) |> ignore
+
+                    let scalar = quarantineCmd.ExecuteScalar()
+
+                    if isNull scalar || scalar = box DBNull.Value then
+                        Error "Quarantine upsert did not return quarantine id."
+                    else
+                        match scalar with
+                        | :? Guid as quarantineId -> Ok(Some quarantineId)
+                        | _ -> Error "Unexpected quarantine id type returned from database."
+
+            match quarantineIdResult with
+            | Error err ->
+                tx.Rollback()
+                Error err
+            | Ok quarantineId ->
+                tx.Commit()
+
+                Ok(
+                    Some
+                        { EvaluationId = evaluationId
+                          VersionId = versionId
+                          Action = action
+                          Decision = decision
+                          DecisionSource = decisionSource
+                          Reason = reason
+                          PolicyEngineVersion = policyEngineVersion
+                          EvaluatedAtUtc = evaluatedAtUtc
+                          QuarantineId = quarantineId }
+                )
 
 let deleteRepoForTenant (tenantId: Guid) (repoKey: string) (conn: NpgsqlConnection) =
     use cmd =
@@ -2138,6 +2347,89 @@ let main args =
                                            state = draftVersion.State
                                            createdAtUtc = draftVersion.CreatedAtUtc
                                            reusedDraft = true |}
+                                    )
+    ))
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/policy/evaluations",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match requireRole state ctx repoKey RepoRole.Promote with
+                | Error result -> result
+                | Ok principal ->
+                    match readJsonBody<EvaluatePolicyRequest> ctx with
+                    | Error err -> badRequest err
+                    | Ok request ->
+                        match validateEvaluatePolicyRequest request with
+                        | Error err -> badRequest err
+                        | Ok(action, versionId, decision, decisionSource, reason, policyEngineVersion) ->
+                            match
+                                withConnection
+                                    state
+                                    (evaluatePolicyForVersion
+                                        principal.TenantId
+                                        repoKey
+                                        versionId
+                                        action
+                                        decision
+                                        decisionSource
+                                        reason
+                                        policyEngineVersion
+                                        principal.Subject)
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok None ->
+                                Results.NotFound(
+                                    {| error = "not_found"
+                                       message = "Package version was not found in repository." |}
+                                )
+                            | Ok(Some evaluation) ->
+                                let auditDetails =
+                                    [ "repoKey", repoKey
+                                      "versionId", evaluation.VersionId.ToString()
+                                      "action", evaluation.Action
+                                      "decision", evaluation.Decision
+                                      "decisionSource", evaluation.DecisionSource ]
+                                    |> (fun values ->
+                                        match evaluation.PolicyEngineVersion with
+                                        | Some value -> ("policyEngineVersion", value) :: values
+                                        | None -> values)
+                                    |> (fun values ->
+                                        match evaluation.QuarantineId with
+                                        | Some value -> ("quarantineId", value.ToString()) :: values
+                                        | None -> values)
+                                    |> Map.ofList
+
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "policy.evaluated"
+                                        "policy_evaluation"
+                                        (evaluation.EvaluationId.ToString())
+                                        auditDetails
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok() ->
+                                    Results.Created(
+                                        $"/v1/repos/{repoKey}/policy/evaluations/{evaluation.EvaluationId}",
+                                        {| evaluationId = evaluation.EvaluationId
+                                           repoKey = repoKey
+                                           versionId = evaluation.VersionId
+                                           action = evaluation.Action
+                                           decision = evaluation.Decision
+                                           decisionSource = evaluation.DecisionSource
+                                           reason = evaluation.Reason
+                                           policyEngineVersion = evaluation.PolicyEngineVersion
+                                           evaluatedAtUtc = evaluation.EvaluatedAtUtc
+                                           quarantineId = evaluation.QuarantineId
+                                           quarantined = evaluation.QuarantineId.IsSome |}
                                     )
     ))
     |> ignore

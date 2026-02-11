@@ -19,6 +19,7 @@ Implemented:
 In progress next:
 - P2-09 throughput baseline and load-test reporting.
 - Phase 3 kickoff (`P3-01`/`P3-02`) complete: DB publish guardrails plus draft version create API baseline.
+- Phase 4 kickoff (`P4-01`) complete: DB scaffold for policy evaluation, quarantine workflow, and search indexing jobs.
 
 Planned later:
 - Atomic publish, outbox-driven integrations, search/policy pipeline, deletion lifecycle and GC hardening.

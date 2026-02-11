@@ -23,6 +23,9 @@ Status key:
 
 ## Current Implementation Notes (2026-02-10)
 
+- Phase transition note:
+  - Phase 4 kickoff board lives in `docs/13-phase4-implementation-tickets.md`.
+
 - P3-01 completed:
   - Added migration `db/migrations/0004_phase3_publish_guardrails.sql`.
   - Added follow-up hardening migration `db/migrations/0005_phase3_published_immutability_hardening.sql`.

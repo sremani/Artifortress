@@ -25,6 +25,7 @@ Current database migrations:
 - `db/migrations/0003_phase2_upload_sessions.sql`
 - `db/migrations/0004_phase3_publish_guardrails.sql`
 - `db/migrations/0005_phase3_published_immutability_hardening.sql`
+- `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`
 
 Current data-plane capabilities:
 - Upload session create plus multipart lifecycle (`parts`, `complete`, `abort`).
@@ -48,6 +49,7 @@ Event/index/policy plane:
 - Outbox workers and external side effects.
 - Search indexing pipeline.
 - Quarantine/policy gates and promotion flow.
+- Phase 4 kickoff schema scaffold for policy decisions, quarantine items, and search index jobs is now in place.
 
 ## Invariants We Already Enforce
 

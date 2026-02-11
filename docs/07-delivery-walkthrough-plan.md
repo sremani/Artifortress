@@ -9,6 +9,7 @@ This plan defines the execution sequence we will walk through, with every phase 
 - Phase 2 is in progress (`P2-01` through `P2-08` complete).
 - Next active delivery focus is `P2-09` throughput baseline and `P2-10` demo/runbook updates.
 - Phase 3 kickoff has started with `P3-01`/`P3-02` (publish guardrails + draft version create API baseline).
+- Phase 4 kickoff has started with `P4-01` (policy/quarantine/search schema scaffold).
 - OIDC-specific walkthrough steps are deferred; Phase 1 demo uses PAT bootstrap/admin flows.
 
 ## 1. Full Feature Inventory

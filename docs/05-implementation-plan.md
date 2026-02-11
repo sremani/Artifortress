@@ -10,7 +10,8 @@ This roadmap converts the design into execution phases with exit criteria.
 | Phase 1 | complete | PAT lifecycle, repo CRUD, RBAC, role bindings, audit persistence, integration tests. |
 | Phase 2 | in_progress | P2-01 through P2-08 complete; post-P2-08 hardening landed; P2-09/P2-10 remain. |
 | Phase 3 | in_progress | Kickoff complete with P3-01/P3-02; next active work is P3-03 draft artifact entry persistence. |
-| Phase 4+ | planned | Policy/search, GC/repair, hardening. |
+| Phase 4 | in_progress | Kickoff complete with P4-01 schema scaffold; next active work is P4-02 policy hook integration. |
+| Phase 5+ | planned | GC/repair, hardening. |
 
 ## Phase 0: Foundation (1-2 weeks)
 

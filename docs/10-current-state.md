@@ -1,6 +1,6 @@
 # Artifortress Current State
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 ## 1. What Is Implemented
 
@@ -19,7 +19,7 @@ API control-plane features:
 
 Persistence:
 - Core tables from `0001_init.sql` plus identity/RBAC tables from `0002_phase1_identity_and_rbac.sql`.
-- Upload-session and publish-guardrail migrations from `0003_phase2_upload_sessions.sql`, `0004_phase3_publish_guardrails.sql`, and `0005_phase3_published_immutability_hardening.sql`.
+- Upload-session and publish/policy migrations from `0003_phase2_upload_sessions.sql`, `0004_phase3_publish_guardrails.sql`, `0005_phase3_published_immutability_hardening.sql`, and `0006_phase4_policy_search_quarantine_scaffold.sql`.
 - Token hash persistence only; plaintext token is response-only at issuance time.
 
 ## 2. API Endpoints (Implemented)
@@ -37,6 +37,7 @@ Persistence:
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/bindings`
 - `POST /v1/repos/{repoKey}/packages/versions/drafts`
+- `POST /v1/repos/{repoKey}/policy/evaluations`
 - `POST /v1/repos/{repoKey}/uploads`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
@@ -48,8 +49,12 @@ Persistence:
 ## 3. Verification Status
 
 Automated checks currently passing:
-- `make test` (domain + integration tests, currently `30` tests passing).
 - `make format`.
+- targeted domain tests (`8` passing) via:
+  - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "DisplayName~ServiceName|DisplayName~RepoScope|DisplayName~RepoRole|DisplayName~Authorization"`
+
+Environment-dependent checks (currently blocked locally):
+- full `make test` integration suite requires Postgres (`localhost:5432`) and MinIO (`localhost:9000`) availability.
 
 Demonstration assets:
 - `scripts/phase1-demo.sh`
@@ -60,7 +65,8 @@ Demonstration assets:
 Not implemented yet:
 - Atomic draft/publish package version workflow.
 - Transactional outbox worker processing.
-- Search indexing and policy/quarantine pipeline.
+- Quarantine-management APIs and read-path enforcement for quarantined versions.
+- Search indexing pipeline.
 - OIDC/SAML identity provider integration.
 - Throughput baseline/load report publication (`P2-09`).
 - Phase 2 scripted demo and runbook (`P2-10`).
@@ -91,6 +97,14 @@ Not implemented yet:
     - published-version immutability trigger for `package_versions`.
     - additional indexes for publish-state reads and pending outbox scans.
     - draft version create API (`POST /v1/repos/{repoKey}/packages/versions/drafts`) with idempotent draft reuse semantics.
+  - Phase 4 kickoff:
+    - policy/quarantine/search scaffold migration `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`.
+    - policy decision history table (`policy_evaluations`).
+    - quarantine workflow table (`quarantine_items`).
+    - search indexing job queue table (`search_index_jobs`).
+    - policy evaluation API (`POST /v1/repos/{repoKey}/policy/evaluations`) with deterministic `allow|deny|quarantine` outcomes.
+    - quarantine-item upsert side effect for `quarantine` decisions.
+    - policy evaluation audit action: `policy.evaluated`.
   - expanded integration coverage:
     - expired-session rejection paths.
     - dedupe-path second-create behavior.
@@ -102,3 +116,4 @@ Not implemented yet:
   - add throughput baseline/load report (`P2-09`).
   - add Phase 2 demo script and runbook updates (`P2-10`).
   - implement publish workflow APIs after draft create baseline (`P3-03` onward).
+  - implement quarantine state APIs (`P4-03` onward).

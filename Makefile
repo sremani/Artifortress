@@ -7,13 +7,14 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo
 
 help:
 	@echo "Targets:"
 	@echo "  restore            Restore .NET dependencies"
 	@echo "  build              Build all projects"
-	@echo "  test               Run unit tests"
+	@echo "  test               Run non-integration tests"
+	@echo "  test-integration   Run integration tests (requires local deps)"
 	@echo "  format             Verify formatting"
 	@echo "  dev-up             Start local dependencies (Postgres, MinIO, Redis, OTel, Jaeger)"
 	@echo "  dev-down           Stop local dependencies"
@@ -40,7 +41,13 @@ build: restore
 test: build
 	@for project in $(TEST_PROJECTS); do \
 		echo "Testing $$project"; \
-		dotnet test "$$project" --configuration $(CONFIGURATION) --no-build -v minimal; \
+		dotnet test "$$project" --configuration $(CONFIGURATION) --no-build -v minimal --filter "Category!=Integration"; \
+	done
+
+test-integration: build
+	@for project in $(TEST_PROJECTS); do \
+		echo "Testing integration suite $$project"; \
+		dotnet test "$$project" --configuration $(CONFIGURATION) --no-build -v minimal --filter "Category=Integration"; \
 	done
 
 format:
@@ -77,7 +84,7 @@ db-migrate: wait-db
 db-smoke: db-migrate
 	./scripts/db-smoke.sh
 
-smoke: dev-up wait-db storage-bootstrap db-smoke build test
+smoke: dev-up wait-db storage-bootstrap db-smoke build test test-integration
 	./scripts/smoke-api.sh
 
 phase1-demo: build

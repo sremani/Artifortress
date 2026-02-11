@@ -9,7 +9,8 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 1: complete.
 - Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
 - Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
-- Current build-out focus: P2-09/P2-10 closeout plus Phase 3 publish workflow implementation.
+- Phase 4: started with P4-01/P4-02 completed (schema scaffold + policy evaluation API baseline).
+- Current build-out focus: P2-09/P2-10 closeout, Phase 3 publish workflow completion, and Phase 4 quarantine/search follow-on work.
 
 ## Implemented Today
 
@@ -29,11 +30,11 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Best-effort multipart abort on upload-session create race/failure paths.
   - Null-safe scope/role parsing guards in domain layer.
 - Persistence:
-  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, `db/migrations/0003_phase2_upload_sessions.sql`, `db/migrations/0004_phase3_publish_guardrails.sql`, and `db/migrations/0005_phase3_published_immutability_hardening.sql`.
+  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, `db/migrations/0003_phase2_upload_sessions.sql`, `db/migrations/0004_phase3_publish_guardrails.sql`, `db/migrations/0005_phase3_published_immutability_hardening.sql`, and `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`.
 - Test coverage:
   - Domain unit tests.
   - API integration tests across authz, upload lifecycle, commit verification, dedupe, range behavior, and audit action matrix.
-  - Latest local verification: `32` tests passing.
+  - Latest local verification: build + format pass, with integration tests gated on local Postgres/MinIO availability.
 
 ## Quick Start
 
@@ -72,6 +73,7 @@ make phase1-demo
 - `GET /v1/repos/{repoKey}/bindings`
 - `POST /v1/repos/{repoKey}/uploads`
 - `POST /v1/repos/{repoKey}/packages/versions/drafts`
+- `POST /v1/repos/{repoKey}/policy/evaluations`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
@@ -100,6 +102,7 @@ make phase1-demo
 - `docs/10-current-state.md`: implementation inventory and known gaps.
 - `docs/11-phase2-implementation-tickets.md`: active Phase 2 ticket board and acceptance criteria.
 - `docs/12-phase3-implementation-tickets.md`: active Phase 3 ticket board and acceptance criteria.
+- `docs/13-phase4-implementation-tickets.md`: active Phase 4 ticket board and acceptance criteria.
 
 ## ADRs
 

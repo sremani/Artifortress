@@ -58,6 +58,7 @@ let private toCompletedPartEtag (response: HttpResponseMessage) =
         normalized
 
 [<Fact>]
+[<Trait("Category", "Integration")>]
 let ``Object storage client supports multipart upload and ranged download`` () =
     let endpoint = readEnvOrDefault "ObjectStorage__Endpoint" "http://localhost:9000"
     ensureMinioAvailable endpoint

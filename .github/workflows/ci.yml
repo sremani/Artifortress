@@ -34,3 +34,89 @@ jobs:
 
       - name: Format Check
         run: make format
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artifortress
+          POSTGRES_PASSWORD: artifortress
+          POSTGRES_DB: artifortress
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artifortress -d artifortress"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: artifortress
+          MINIO_ROOT_PASSWORD: artifortress
+          MINIO_DEFAULT_BUCKETS: artifortress-dev
+        ports:
+          - 9000:9000
+          - 9001:9001
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install integration dependencies
+        run: sudo apt-get update && sudo apt-get install -y curl awscli postgresql-client
+
+      - name: Wait for Postgres readiness
+        env:
+          PGPASSWORD: artifortress
+        run: |
+          for attempt in $(seq 1 60); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U artifortress -d artifortress >/dev/null 2>&1; then
+              echo "Postgres is ready."
+              exit 0
+            fi
+            echo "Waiting for Postgres ($attempt/60)..."
+            sleep 2
+          done
+          echo "Postgres did not become ready in time."
+          exit 1
+
+      - name: Wait for MinIO readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -sS http://127.0.0.1:9000 >/dev/null; then
+              echo "MinIO is ready."
+              exit 0
+            fi
+            echo "Waiting for MinIO ($attempt/60)..."
+            sleep 2
+          done
+          echo "MinIO did not become ready in time."
+          exit 1
+
+      - name: Bootstrap MinIO bucket
+        env:
+          AWS_ACCESS_KEY_ID: artifortress
+          AWS_SECRET_ACCESS_KEY: artifortress
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          if ! aws --endpoint-url http://127.0.0.1:9000 s3api head-bucket --bucket artifortress-dev >/dev/null 2>&1; then
+            aws --endpoint-url http://127.0.0.1:9000 s3api create-bucket --bucket artifortress-dev
+          fi
+
+      - name: Run integration tests
+        env:
+          ConnectionStrings__Postgres: Host=127.0.0.1;Port=5432;Username=artifortress;Password=artifortress;Database=artifortress
+          ObjectStorage__Endpoint: http://127.0.0.1:9000
+          ObjectStorage__AccessKey: artifortress
+          ObjectStorage__SecretKey: artifortress
+          ObjectStorage__Bucket: artifortress-dev
+        run: make test-integration

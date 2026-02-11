@@ -52,6 +52,15 @@ type CreateDraftVersionRequest = {
 }
 
 [<CLIMutable>]
+type EvaluatePolicyRequest = {
+    Action: string
+    VersionId: Guid
+    DecisionHint: string
+    Reason: string
+    PolicyEngineVersion: string
+}
+
+[<CLIMutable>]
 type CreateUploadSessionRequest = {
     ExpectedDigest: string
     ExpectedLength: int64
@@ -443,6 +452,85 @@ where version_id = @version_id;
         with :? PostgresException ->
             false
 
+    member this.CountPolicyEvaluations(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from policy_evaluations
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected count scalar value for policy evaluations of version {versionId}."
+
+    member this.TryReadLatestPolicyDecision(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select decision
+from policy_evaluations
+where version_id = @version_id
+order by evaluation_id desc
+limit 1;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        if isNull scalar || scalar = box DBNull.Value then
+            None
+        else
+            match scalar with
+            | :? string as decision -> Some decision
+            | _ -> failwith $"Unexpected decision scalar value for policy evaluations of version {versionId}."
+
+    member this.TryReadQuarantineStatus(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select status
+from quarantine_items
+where version_id = @version_id
+limit 1;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        if isNull scalar || scalar = box DBNull.Value then
+            None
+        else
+            match scalar with
+            | :? string as status -> Some status
+            | _ -> failwith $"Unexpected quarantine status scalar value for version {versionId}."
+
     interface IDisposable with
         member _.Dispose() =
             match client with
@@ -469,6 +557,7 @@ type ApiIntegrationCollection() =
     interface ICollectionFixture<ApiFixture>
 
 [<Collection("api-integration")>]
+[<Trait("Category", "Integration")>]
 type Phase1ApiTests(fixture: ApiFixture) =
     let issuePat (subject: string) (scopes: string array) (ttlMinutes: int) =
         fixture.RequireAvailable()
@@ -558,6 +647,29 @@ type Phase1ApiTests(fixture: ApiFixture) =
                   PackageNamespace = packageNamespace
                   PackageName = packageName
                   Version = version }
+            )
+
+        fixture.Client.Send(request)
+
+    let evaluatePolicyWithToken
+        (token: string)
+        (repoKey: string)
+        (action: string)
+        (versionId: Guid)
+        (decisionHint: string)
+        (reason: string)
+        (policyEngineVersion: string)
+        =
+        use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/policy/evaluations")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+
+        request.Content <-
+            JsonContent.Create(
+                { Action = action
+                  VersionId = versionId
+                  DecisionHint = decisionHint
+                  Reason = reason
+                  PolicyEngineVersion = policyEngineVersion }
             )
 
         fixture.Client.Send(request)
@@ -875,6 +987,120 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         let conflictBody = ensureStatus HttpStatusCode.Conflict conflictResponse
         Assert.Contains("cannot be reused as a draft", conflictBody)
+
+    [<Fact>]
+    member _.``P4-02 policy evaluate endpoint enforces authz and records default allow decision`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p402-authz-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p402-authz"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p402-authz-writer") [| $"repo:{repoKey}:write" |] 60
+        let readToken, _ = issuePat (makeSubject "p402-authz-reader") [| $"repo:{repoKey}:read" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p402-authz-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let packageName = $"policy-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use unauthorizedRequest = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/policy/evaluations")
+
+        unauthorizedRequest.Content <-
+            JsonContent.Create(
+                { Action = "publish"
+                  VersionId = versionId
+                  DecisionHint = ""
+                  Reason = "default path"
+                  PolicyEngineVersion = "policy-test-v1" }
+            )
+
+        use unauthorizedResponse = fixture.Client.Send(unauthorizedRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedResponse |> ignore
+
+        use forbiddenResponse =
+            evaluatePolicyWithToken readToken repoKey "publish" versionId "" "default path" "policy-test-v1"
+
+        ensureStatus HttpStatusCode.Forbidden forbiddenResponse |> ignore
+
+        use createdResponse =
+            evaluatePolicyWithToken promoteToken repoKey "publish" versionId "" "default path" "policy-test-v1"
+
+        let createdBody = ensureStatus HttpStatusCode.Created createdResponse
+        use createdDoc = JsonDocument.Parse(createdBody)
+
+        Assert.Equal("allow", createdDoc.RootElement.GetProperty("decision").GetString())
+        Assert.Equal("default_allow", createdDoc.RootElement.GetProperty("decisionSource").GetString())
+        Assert.False(createdDoc.RootElement.GetProperty("quarantined").GetBoolean())
+
+        let persistedCount = fixture.CountPolicyEvaluations(versionId)
+        let persistedDecision = fixture.TryReadLatestPolicyDecision(versionId)
+        let quarantineStatus = fixture.TryReadQuarantineStatus(versionId)
+
+        Assert.Equal(1L, persistedCount)
+        Assert.Equal(Some "allow", persistedDecision)
+        Assert.Equal(None, quarantineStatus)
+
+        use auditResponse = getAuditWithToken adminToken 200
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let policyEvaluatedLogged =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun entry -> entry.GetProperty("action").GetString() = "policy.evaluated")
+
+        Assert.True(policyEvaluatedLogged, "Expected policy.evaluated action in audit log.")
+
+    [<Fact>]
+    member _.``P4-02 policy evaluate quarantine decision upserts quarantine item`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p402-quarantine-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p402-quarantine"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p402-quarantine-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p402-quarantine-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"quarantine-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use quarantineResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                versionId
+                "quarantine"
+                "policy engine flagged this version"
+                "policy-test-v2"
+
+        let quarantineBody = ensureStatus HttpStatusCode.Created quarantineResponse
+        use quarantineDoc = JsonDocument.Parse(quarantineBody)
+
+        Assert.Equal("quarantine", quarantineDoc.RootElement.GetProperty("decision").GetString())
+        Assert.Equal("hint_quarantine", quarantineDoc.RootElement.GetProperty("decisionSource").GetString())
+        Assert.True(quarantineDoc.RootElement.GetProperty("quarantined").GetBoolean())
+        let mutable quarantineIdProp = Unchecked.defaultof<JsonElement>
+        Assert.True(quarantineDoc.RootElement.TryGetProperty("quarantineId", &quarantineIdProp))
+
+        let persistedCount = fixture.CountPolicyEvaluations(versionId)
+        let persistedDecision = fixture.TryReadLatestPolicyDecision(versionId)
+        let quarantineStatus = fixture.TryReadQuarantineStatus(versionId)
+
+        Assert.Equal(1L, persistedCount)
+        Assert.Equal(Some "quarantine", persistedDecision)
+        Assert.Equal(Some "quarantined", quarantineStatus)
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =
