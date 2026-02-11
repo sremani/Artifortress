@@ -5,6 +5,11 @@ db_user="${POSTGRES_USER:-artifortress}"
 target_db="${TARGET_DB:-${POSTGRES_DB:-artifortress}}"
 restore_path="${RESTORE_PATH:-}"
 
+if [[ ! "$target_db" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  echo "TARGET_DB must match ^[A-Za-z_][A-Za-z0-9_]*$"
+  exit 1
+fi
+
 if [ -z "$restore_path" ]; then
   echo "RESTORE_PATH is required."
   echo "Example: RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore"

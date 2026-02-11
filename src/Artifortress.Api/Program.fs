@@ -832,18 +832,28 @@ let private checkPostgresReadiness (state: AppState) =
     | Error err -> false, Some err
 
 let private checkObjectStorageReadiness (state: AppState) (cancellationToken: Threading.CancellationToken) =
-    try
-        match state.ObjectStorageClient.CheckAvailability(cancellationToken).Result with
-        | Ok () -> true, None
-        | Error err -> false, Some(describeObjectStorageError err)
-    with ex ->
-        let message =
-            if String.IsNullOrWhiteSpace ex.Message then
-                "Object storage readiness check failed."
-            else
-                ex.Message
+    task {
+        use timeoutCts = new Threading.CancellationTokenSource(TimeSpan.FromSeconds(3.0))
+        use linkedCts = Threading.CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
 
-        false, Some message
+        try
+            let! checkResult = state.ObjectStorageClient.CheckAvailability(linkedCts.Token)
+
+            match checkResult with
+            | Ok () -> return true, None
+            | Error err -> return false, Some(describeObjectStorageError err)
+        with
+        | :? OperationCanceledException when timeoutCts.IsCancellationRequested && not cancellationToken.IsCancellationRequested ->
+            return false, Some "Object storage readiness check timed out."
+        | ex ->
+            let message =
+                if String.IsNullOrWhiteSpace ex.Message then
+                    "Object storage readiness check failed."
+                else
+                    ex.Message
+
+            return false, Some message
+    }
 
 let ensureTenantId (state: AppState) (conn: NpgsqlConnection) =
     use cmd =
@@ -3825,31 +3835,35 @@ let main args =
 
     app.MapGet(
         "/health/ready",
-        Func<HttpContext, IResult>(fun ctx ->
-            let postgresHealthy, postgresDetail = checkPostgresReadiness state
-            let objectStorageHealthy, objectStorageDetail = checkObjectStorageReadiness state ctx.RequestAborted
+        Func<HttpContext, Threading.Tasks.Task<IResult>>(fun ctx ->
+            task {
+                let postgresHealthy, postgresDetail = checkPostgresReadiness state
+                let! objectStorageHealthy, objectStorageDetail = checkObjectStorageReadiness state ctx.RequestAborted
 
-            let dependencies =
-                [| {| name = "postgres"
-                      healthy = postgresHealthy
-                      detail = postgresDetail |}
-                   {| name = "object_storage"
-                      healthy = objectStorageHealthy
-                      detail = objectStorageDetail |} |]
+                let dependencies =
+                    [| {| name = "postgres"
+                          healthy = postgresHealthy
+                          detail = postgresDetail |}
+                       {| name = "object_storage"
+                          healthy = objectStorageHealthy
+                          detail = objectStorageDetail |} |]
 
-            if postgresHealthy && objectStorageHealthy then
-                Results.Ok(
-                    {| status = "ready"
-                       checkedAtUtc = nowUtc ()
-                       dependencies = dependencies |}
-                )
-            else
-                Results.Json(
-                    {| status = "not_ready"
-                       checkedAtUtc = nowUtc ()
-                       dependencies = dependencies |},
-                    statusCode = StatusCodes.Status503ServiceUnavailable
-                ))
+                if postgresHealthy && objectStorageHealthy then
+                    return
+                        Results.Ok(
+                            {| status = "ready"
+                               checkedAtUtc = nowUtc ()
+                               dependencies = dependencies |}
+                        )
+                else
+                    return
+                        Results.Json(
+                            {| status = "not_ready"
+                               checkedAtUtc = nowUtc ()
+                               dependencies = dependencies |},
+                            statusCode = StatusCodes.Status503ServiceUnavailable
+                        )
+            })
     )
     |> ignore
 
