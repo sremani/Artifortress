@@ -115,6 +115,8 @@ Demonstration assets:
   - `patches/stryker-net/0006-mut07b-fsharp-mutant-emission-quarantine.patch`
   - `patches/stryker-net/0007-mut07b-fsharp-path-selection.patch`
   - `scripts/mutation-fsharp-spike.sh`
+  - `scripts/mutation-fsharp-native-run.sh`
+  - `scripts/mutation-fsharp-native-score.sh`
   - `scripts/mutation-trackb-bootstrap.sh`
   - `scripts/mutation-trackb-build.sh`
   - `scripts/mutation-trackb-spike.sh`
@@ -123,8 +125,12 @@ Demonstration assets:
   - `.github/workflows/mutation-track.yml`
   - `docs/32-fsharp-mutation-track-tickets.md`
   - `docs/33-fsharp-mutation-trackb-plan.md`
+  - `docs/34-fsharp-native-mutation-tickets.md`
+  - `docs/35-native-mutation-gate-promotion.md`
   - `docs/reports/mutation-spike-fsharp-latest.md`
   - `docs/reports/mutation-track-latest.md`
+  - `docs/reports/mutation-native-fsharp-latest.md`
+  - `docs/reports/mutation-native-score-latest.md`
   - `docs/reports/mutation-trackb-mut06-latest.md`
   - `docs/reports/mutation-trackb-mut07c-compile-validation.md`
 
@@ -155,5 +161,5 @@ Not implemented yet:
 - Next implementation targets:
   - post-GA identity integration (OIDC/SAML).
   - search read-model query-serving and rebuild/recovery maturity.
-  - Track B F# mutation capability hardening beyond current ticket plan (runtime activation path to move quarantined mutants into executable tested statuses and score computation).
+  - F# native mutation finish plan (runtime lane + non-blocking CI + score threshold policy are active; next work is merge-gate promotion after burn-in).
   - continue expanding property-based and integration stress coverage around lifecycle and policy/search paths.

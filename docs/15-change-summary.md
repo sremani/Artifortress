@@ -437,3 +437,78 @@ This change set combines:
 - Added/updated reports:
   - `docs/reports/mutation-trackb-mut06-latest.md`
   - `docs/reports/mutation-trackb-mut07c-compile-validation.md`
+
+## Native F# Mutation Runtime Pivot Addendum (2026-02-11, latest)
+
+### Strategic pivot
+
+- Primary side-quest execution path now favors F#-first native runtime execution instead of waiting on Stryker-fork runtime activation maturity.
+
+### Code and tooling changes
+
+- `tools/Artifortress.MutationTrack/Program.fs`
+  - Added `run-fsharp-native` command.
+  - Added native runtime status model:
+    - `killed`
+    - `survived`
+    - `compile_error`
+    - `infrastructure_error`
+  - Added native runtime markdown/json report generation.
+  - Reused safety guards for scratch-root and workspace/source-path containment.
+- `scripts/mutation-fsharp-native-run.sh` (new)
+  - Added one-command native runtime lane runner + CI summary/metrics outputs.
+- `Makefile`
+  - Added `mutation-fsharp-native` target.
+- `docs/34-fsharp-native-mutation-tickets.md` (new)
+  - Added F#-native side-quest finish ticket board.
+
+### Validation outcome
+
+- `MAX_MUTANTS=3 make mutation-fsharp-native` passed with:
+  - selected mutants: `3`
+  - killed: `2`
+  - survived: `1`
+  - compile errors: `0`
+  - infrastructure errors: `0`
+- This confirms real runtime-executed mutant statuses are now available in-repo without depending on fork runtime activation.
+
+## Native Mutation CI/Score Completion Addendum (2026-02-11, latest)
+
+### Code and workflow changes
+
+- `.github/workflows/mutation-track.yml`
+  - Added non-blocking `mutation-native` job that runs:
+    - `MAX_MUTANTS=6 make mutation-fsharp-native`
+    - `MIN_MUTATION_SCORE=40 make mutation-fsharp-native-score`
+  - Added native artifact upload bundle.
+  - Added promotion toggle support via GitHub variables:
+    - `MUTATION_NATIVE_ENFORCE`
+    - `MUTATION_NATIVE_MAX_MUTANTS`
+    - `MUTATION_NATIVE_MIN_SCORE`
+- `tools/Artifortress.MutationTrack/Program.fs`
+  - Expanded safe candidate support to include `=` mutations in guarded boolean-expression contexts.
+- `scripts/mutation-fsharp-native-score.sh` (new)
+  - Added native mutation score computation and threshold gate (`MIN_MUTATION_SCORE`).
+  - Emits markdown + CI summary + JSON metrics artifacts.
+- `Makefile`
+  - Added `mutation-fsharp-native-score` target.
+- `docs/35-native-mutation-gate-promotion.md` (new)
+  - Added promotion criteria and operational rollout/rollback guide for enabling blocking mutation gate mode.
+
+### Ticket outcomes
+
+- `MUTN-05`: done (native CI lane added).
+- `MUTN-06`: done (safe rewrite set expanded; higher selected mutant count with compile safety retained).
+- `MUTN-07`: done (score policy/reporting implemented).
+
+### Validation evidence
+
+- `MAX_MUTANTS=6 make mutation-fsharp-native`:
+  - selected: `6`
+  - killed: `5`
+  - survived: `1`
+  - compile errors: `0`
+  - infrastructure errors: `0`
+- `MIN_MUTATION_SCORE=40 make mutation-fsharp-native-score`:
+  - score: `83.33`
+  - threshold met: `true`

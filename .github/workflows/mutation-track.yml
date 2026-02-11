@@ -54,3 +54,45 @@ jobs:
             artifacts/ci/mutation-trackb-assert-metrics.json
             artifacts/ci/mutation-trackb-compile-validate-summary.txt
             artifacts/ci/mutation-trackb-compile-validate-metrics.json
+
+  mutation-native:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ vars.MUTATION_NATIVE_ENFORCE != 'true' }}
+    env:
+      MUTATION_NATIVE_MAX_MUTANTS: ${{ vars.MUTATION_NATIVE_MAX_MUTANTS }}
+      MUTATION_NATIVE_MIN_SCORE: ${{ vars.MUTATION_NATIVE_MIN_SCORE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Show native lane mode
+        run: |
+          echo "MUTATION_NATIVE_ENFORCE=${{ vars.MUTATION_NATIVE_ENFORCE }}"
+          echo "MUTATION_NATIVE_MAX_MUTANTS=${MUTATION_NATIVE_MAX_MUTANTS:-6}"
+          echo "MUTATION_NATIVE_MIN_SCORE=${MUTATION_NATIVE_MIN_SCORE:-40}"
+
+      - name: Run native F# mutation runtime lane
+        run: MAX_MUTANTS=${MUTATION_NATIVE_MAX_MUTANTS:-6} make mutation-fsharp-native
+
+      - name: Compute native mutation score
+        if: always()
+        run: MIN_MUTATION_SCORE=${MUTATION_NATIVE_MIN_SCORE:-40} make mutation-fsharp-native-score
+
+      - name: Upload native mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-native-artifacts
+          path: |
+            docs/reports/mutation-native-fsharp-latest.md
+            artifacts/mutation/mutation-native-fsharp-latest.json
+            docs/reports/mutation-native-score-latest.md
+            artifacts/ci/mutation-native-fsharp-summary.txt
+            artifacts/ci/mutation-native-fsharp-metrics.json
+            artifacts/ci/mutation-native-score-summary.txt
+            artifacts/ci/mutation-native-score.json

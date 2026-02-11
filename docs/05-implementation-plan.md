@@ -13,7 +13,7 @@ This roadmap converts the design into execution phases with exit criteria.
 | Phase 4 | complete | P4-01 through P4-10 complete, including policy/quarantine/search workflow and demo/runbook. |
 | Phase 5 | complete | P5-01 through P5-08 complete, including tombstone, GC dry-run/execute, reconcile API, and demo/runbook. |
 | Phase 6 | complete | P6-01 through P6-10 complete, including readiness hardening, ops summary, DR drill, security closure, and rollback runbooks. |
-| Post-GA | planned | OIDC/SAML integration, search read-model serving maturity, and Track B mutation runtime activation work (MUT-01 through MUT-10 implementation complete; next step is moving quarantined mutants into executable tested statuses). |
+| Post-GA | planned | OIDC/SAML integration, search read-model serving maturity, and F# native mutation hardening (native runtime + non-blocking CI + score policy are active; next step is merge-gate promotion after burn-in). |
 
 ## Phase 0: Foundation (1-2 weeks)
 

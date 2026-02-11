@@ -13,7 +13,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 5: complete through P5-08 (tombstone lifecycle + GC dry-run/execute + reconcile summary + admin authz/audit + demo/runbook).
 - Phase 6: complete through P6-10 (dependency-backed readiness, ops summary, backup/restore + DR drill, security closure, upgrade/rollback runbooks, GA demo/report).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: post-GA roadmap items (OIDC/SAML, search read-model serving maturity) plus post-plan Track B mutation runtime activation work (MUT-01 through MUT-10 implementation complete; mutants currently quarantined pending executable runtime activation path).
+- Current build-out focus: post-GA roadmap items (OIDC/SAML, search read-model serving maturity) plus F# native mutation hardening (native runtime lane + non-blocking CI lane + score threshold reporting are active; next step is merge-gate promotion policy).
 
 ## Implemented Today
 
@@ -99,6 +99,8 @@ Run mutation track workflows:
 ```bash
 make mutation-spike
 make mutation-track
+make mutation-fsharp-native
+make mutation-fsharp-native-score
 make mutation-trackb-spike
 make mutation-trackb-assert
 make mutation-trackb-compile-validate
@@ -184,9 +186,13 @@ make mutation-trackb-compile-validate
 - `docs/31-operations-howto.md`: day-2 operations, incident handling, and drill cadence guide.
 - `docs/32-fsharp-mutation-track-tickets.md`: Track B mutation ticket board and current status.
 - `docs/33-fsharp-mutation-trackb-plan.md`: Track B strategy for F# mutation support via upstream/fork work.
+- `docs/34-fsharp-native-mutation-tickets.md`: F#-first native mutation finish plan and ticket board.
+- `docs/35-native-mutation-gate-promotion.md`: promotion criteria and rollout guide for making native mutation lane blocking.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
 - `docs/reports/mutation-spike-fsharp-latest.md`: latest F# mutation feasibility report artifact.
 - `docs/reports/mutation-track-latest.md`: latest wrapper default mutation run report artifact.
+- `docs/reports/mutation-native-fsharp-latest.md`: latest native F# runtime mutation report artifact.
+- `docs/reports/mutation-native-score-latest.md`: latest native mutation score and threshold evaluation report.
 - `docs/reports/mutation-trackb-mut06-latest.md`: latest patched-fork Track B mutation run report artifact (currently shows quarantined emitted F# mutants).
 - `docs/reports/mutation-trackb-mut07c-compile-validation.md`: latest compile-validation artifact for sampled F# mutant rewrites.
 

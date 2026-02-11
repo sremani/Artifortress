@@ -7,7 +7,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill mutation-spike mutation-track mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo
 
 help:
 	@echo "Targets:"
@@ -28,6 +28,8 @@ help:
 	@echo "  phase6-drill       Run Phase 6 RPO/RTO backup-restore drill"
 	@echo "  mutation-spike     Run F# mutation feasibility spike (wrapper CLI) and generate report"
 	@echo "  mutation-track     Run mutation wrapper default flow and generate report"
+	@echo "  mutation-fsharp-native     Run native F# mutation runtime lane and generate report"
+	@echo "  mutation-fsharp-native-score  Compute native mutation score and threshold report"
 	@echo "  mutation-trackb-bootstrap  Prepare patched Stryker.NET workspace for MUT-06"
 	@echo "  mutation-trackb-build      Build patched Stryker.NET CLI in local workspace"
 	@echo "  mutation-trackb-spike      Run wrapper flow against patched Stryker.NET CLI"
@@ -114,6 +116,12 @@ mutation-spike:
 
 mutation-track:
 	dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- run
+
+mutation-fsharp-native:
+	./scripts/mutation-fsharp-native-run.sh
+
+mutation-fsharp-native-score:
+	./scripts/mutation-fsharp-native-score.sh
 
 mutation-trackb-bootstrap:
 	./scripts/mutation-trackb-bootstrap.sh

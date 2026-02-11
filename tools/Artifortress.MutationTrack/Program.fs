@@ -87,6 +87,43 @@ type FsharpCompileValidationResult = {
     Entries: FsharpCompileValidationEntry list
 }
 
+type FsharpNativeRuntimeOptions = {
+    SourceFilePath: string
+    TestProjectPath: string
+    MaxMutants: int
+    ScratchRoot: string
+    ReportPath: string
+    ResultJsonPath: string
+}
+
+type FsharpNativeMutantStatus =
+    | Killed
+    | Survived
+    | CompileError
+    | InfrastructureError
+
+type FsharpNativeMutantEntry = {
+    Index: int
+    Candidate: FsharpOperatorCandidate
+    MutantWorkspacePath: string
+    Status: FsharpNativeMutantStatus
+    ExitCode: int
+    FirstErrorLine: string option
+    DurationMs: int64
+}
+
+type FsharpNativeRuntimeResult = {
+    StartedAtUtc: DateTimeOffset
+    FinishedAtUtc: DateTimeOffset
+    TotalCandidatesDiscovered: int
+    SelectedMutantCount: int
+    KilledCount: int
+    SurvivedCount: int
+    CompileErrorCount: int
+    InfrastructureErrorCount: int
+    Entries: FsharpNativeMutantEntry list
+}
+
 let private nowUtc () = DateTimeOffset.UtcNow
 let private utf8NoBom = new UTF8Encoding(false)
 
@@ -244,6 +281,9 @@ let rec private copyDirectoryRecursive (sourceDir: string) (targetDir: string) =
                 name.Equals("bin", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("obj", StringComparison.OrdinalIgnoreCase)
                 || name.Equals(".git", StringComparison.OrdinalIgnoreCase)
+                || name.Equals(".cache", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("artifacts", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("chengis", StringComparison.OrdinalIgnoreCase)
             )
         then
             let targetSubDirectory = Path.Combine(targetDir, name)
@@ -270,6 +310,14 @@ let private defaultOptionsForFsharpCompileValidation () =
       ScratchRoot = "artifacts/mutation/mut07c-compile"
       ReportPath = "docs/reports/mutation-trackb-mut07c-compile-validation.md"
       ResultJsonPath = "artifacts/mutation/mut07c-compile-validation.json" }
+
+let private defaultOptionsForFsharpNativeRuntime () =
+    { SourceFilePath = "src/Artifortress.Domain/Library.fs"
+      TestProjectPath = "tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj"
+      MaxMutants = 12
+      ScratchRoot = "artifacts/mutation/native-fsharp-runtime"
+      ReportPath = "docs/reports/mutation-native-fsharp-latest.md"
+      ResultJsonPath = "artifacts/mutation/mutation-native-fsharp-latest.json" }
 
 let private withOverridesFromArgs (options: MutationOptions) (arguments: Map<string, string>) =
     let tryGet key =
@@ -324,6 +372,28 @@ let private withFsharpCompileValidationOverrides (options: FsharpCompileValidati
     { options with
         ProjectPath = tryGet "project" |> Option.defaultValue options.ProjectPath
         SourceFilePath = tryGet "source-file" |> Option.defaultValue options.SourceFilePath
+        MaxMutants =
+            tryGet "max-mutants"
+            |> Option.map (parseIntOrDefault options.MaxMutants)
+            |> Option.defaultValue options.MaxMutants
+        ScratchRoot = tryGet "scratch-root" |> Option.defaultValue options.ScratchRoot
+        ReportPath = tryGet "report" |> Option.defaultValue options.ReportPath
+        ResultJsonPath = tryGet "result-json" |> Option.defaultValue options.ResultJsonPath }
+
+let private withFsharpNativeRuntimeOverrides (options: FsharpNativeRuntimeOptions) (arguments: Map<string, string>) =
+    let tryGet key =
+        match arguments.TryFind(key) with
+        | Some value when not (String.IsNullOrWhiteSpace value) -> Some value
+        | _ -> None
+
+    let parseIntOrDefault defaultValue (raw: string) =
+        match Int32.TryParse(raw) with
+        | true, parsed when parsed > 0 -> parsed
+        | _ -> defaultValue
+
+    { options with
+        SourceFilePath = tryGet "source-file" |> Option.defaultValue options.SourceFilePath
+        TestProjectPath = tryGet "test-project" |> Option.defaultValue options.TestProjectPath
         MaxMutants =
             tryGet "max-mutants"
             |> Option.map (parseIntOrDefault options.MaxMutants)
@@ -394,6 +464,13 @@ let private formatFsharpOperatorFamily (family: FsharpOperatorFamily) =
     | Comparison -> "comparison"
     | Arithmetic -> "arithmetic"
 
+let private formatFsharpNativeMutantStatus (status: FsharpNativeMutantStatus) =
+    match status with
+    | Killed -> "killed"
+    | Survived -> "survived"
+    | CompileError -> "compile_error"
+    | InfrastructureError -> "infrastructure_error"
+
 let private tryResolveFsharpReplacement (operatorToken: string) =
     match operatorToken with
     | "&&" -> Some("||", Boolean)
@@ -410,8 +487,7 @@ let private tryResolveFsharpReplacement (operatorToken: string) =
     | "/" -> Some("*", Arithmetic)
     | _ -> None
 
-let private isCompileValidationTokenSupported (operatorToken: string) =
-    operatorToken <> "="
+let private isCompileValidationTokenSupported (_operatorToken: string) = true
 
 let private isIdentifierCharacter (ch: char) =
     Char.IsLetterOrDigit ch || ch = '_' || ch = '\''
@@ -427,7 +503,25 @@ let private isCompileValidationContextSafe (line: string) (matchStart: int) (ope
         let nextIndex = matchStart + operatorToken.Length
         if nextIndex < line.Length then Some line.[nextIndex] else None
 
+    let prefix =
+        if matchStart <= 0 then
+            ""
+        else
+            line.Substring(0, matchStart)
+
     match operatorToken with
+    | "=" ->
+        let isFirstLetBindingEquals =
+            prefix.IndexOf("let ", StringComparison.Ordinal) >= 0
+            && prefix.IndexOf("=", StringComparison.Ordinal) < 0
+
+        previousChar = Some ' '
+        && nextChar = Some ' '
+        && not isFirstLetBindingEquals
+        && (line.Contains("||", StringComparison.Ordinal)
+            || line.Contains("&&", StringComparison.Ordinal)
+            || line.Contains(" if ", StringComparison.Ordinal)
+            || line.TrimStart().StartsWith("if ", StringComparison.Ordinal))
     | "-" -> nextChar <> Some '>' && previousChar <> Some '<'
     | "<" ->
         nextChar <> Some '-'
@@ -576,6 +670,29 @@ let private isRelativePathWithinParent (relativePath: string) =
     && relativePath <> ".."
     && not (relativePath.StartsWith(".." + string Path.DirectorySeparatorChar, StringComparison.Ordinal))
     && not (relativePath.StartsWith(".." + string Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
+
+let private classifyNativeMutantRun (exitCode: int) (output: string) =
+    if exitCode = 0 then
+        Survived
+    elif
+        containsAny
+            output
+            [ ": error "
+              "error FS"
+              "error CS"
+              "Build FAILED." ]
+    then
+        CompileError
+    elif
+        containsAny
+            output
+            [ "Failed!"
+              "tests failed"
+              "One or more tests failed" ]
+    then
+        Killed
+    else
+        InfrastructureError
 
 let private writeFsharpCompileValidationJsonReport
     (options: FsharpCompileValidationOptions)
@@ -814,6 +931,263 @@ let private runFsharpCompileValidation (arguments: Map<string, string>) =
             else
                 1
 
+let private tryFindFirstFailureLine (output: string) =
+    output.Split([| '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
+    |> Array.tryFind (fun line ->
+        line.IndexOf(": error ", StringComparison.OrdinalIgnoreCase) >= 0
+        || line.IndexOf("Failed ", StringComparison.OrdinalIgnoreCase) >= 0
+        || line.IndexOf("Assertion", StringComparison.OrdinalIgnoreCase) >= 0)
+
+let private writeFsharpNativeRuntimeJsonReport
+    (options: FsharpNativeRuntimeOptions)
+    (result: FsharpNativeRuntimeResult)
+    =
+    ensureParentDirectory options.ResultJsonPath
+
+    use writer = new StreamWriter(options.ResultJsonPath, false, utf8NoBom)
+    let generatedAtText = (nowUtc ()).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    let startedAtText = result.StartedAtUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    let finishedAtText = result.FinishedAtUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+    writer.WriteLine("{")
+    writer.WriteLine($"  \"generatedAtUtc\": \"{generatedAtText}\",")
+    writer.WriteLine($"  \"startedAtUtc\": \"{startedAtText}\",")
+    writer.WriteLine($"  \"finishedAtUtc\": \"{finishedAtText}\",")
+    writer.WriteLine($"  \"sourceFilePath\": \"{jsonEscape options.SourceFilePath}\",")
+    writer.WriteLine($"  \"testProjectPath\": \"{jsonEscape options.TestProjectPath}\",")
+    writer.WriteLine($"  \"maxMutants\": {options.MaxMutants},")
+    writer.WriteLine($"  \"totalCandidatesDiscovered\": {result.TotalCandidatesDiscovered},")
+    writer.WriteLine($"  \"selectedMutantCount\": {result.SelectedMutantCount},")
+    writer.WriteLine($"  \"killedCount\": {result.KilledCount},")
+    writer.WriteLine($"  \"survivedCount\": {result.SurvivedCount},")
+    writer.WriteLine($"  \"compileErrorCount\": {result.CompileErrorCount},")
+    writer.WriteLine($"  \"infrastructureErrorCount\": {result.InfrastructureErrorCount},")
+    writer.WriteLine("  \"entries\": [")
+
+    result.Entries
+    |> List.iteri (fun index entry ->
+        let delimiter =
+            if index + 1 = result.Entries.Length then
+                ""
+            else
+                ","
+
+        let firstErrorText =
+            match entry.FirstErrorLine with
+            | Some value -> $"\"{jsonEscape value}\""
+            | None -> "null"
+
+        writer.WriteLine("    {")
+        writer.WriteLine($"      \"index\": {entry.Index},")
+        writer.WriteLine($"      \"line\": {entry.Candidate.Line},")
+        writer.WriteLine($"      \"column\": {entry.Candidate.Column},")
+        writer.WriteLine($"      \"family\": \"{formatFsharpOperatorFamily entry.Candidate.Family}\",")
+        writer.WriteLine($"      \"operatorToken\": \"{jsonEscape entry.Candidate.OperatorToken}\",")
+        writer.WriteLine($"      \"replacementToken\": \"{jsonEscape entry.Candidate.ReplacementToken}\",")
+        writer.WriteLine($"      \"mutantWorkspacePath\": \"{jsonEscape entry.MutantWorkspacePath}\",")
+        writer.WriteLine($"      \"status\": \"{formatFsharpNativeMutantStatus entry.Status}\",")
+        writer.WriteLine($"      \"exitCode\": {entry.ExitCode},")
+        writer.WriteLine($"      \"durationMs\": {entry.DurationMs},")
+        writer.WriteLine($"      \"firstErrorLine\": {firstErrorText}")
+        writer.WriteLine($"    }}{delimiter}")
+    )
+
+    writer.WriteLine("  ]")
+    writer.WriteLine("}")
+
+let private writeFsharpNativeRuntimeMarkdownReport
+    (options: FsharpNativeRuntimeOptions)
+    (result: FsharpNativeRuntimeResult)
+    =
+    ensureParentDirectory options.ReportPath
+
+    use writer = new StreamWriter(options.ReportPath, false, utf8NoBom)
+    let generatedAtText = (nowUtc ()).ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+    writer.WriteLine("# Native F# Mutation Runtime Report")
+    writer.WriteLine()
+    writer.WriteLine($"Generated at: {generatedAtText}")
+    writer.WriteLine()
+    writer.WriteLine("## Inputs")
+    writer.WriteLine()
+    writer.WriteLine($"- source file path: `{options.SourceFilePath}`")
+    writer.WriteLine($"- test project path: `{options.TestProjectPath}`")
+    writer.WriteLine($"- max mutants: `{options.MaxMutants}`")
+    writer.WriteLine($"- scratch root: `{options.ScratchRoot}`")
+    writer.WriteLine()
+    writer.WriteLine("## Summary")
+    writer.WriteLine()
+    writer.WriteLine($"- discovered candidates: `{result.TotalCandidatesDiscovered}`")
+    writer.WriteLine($"- selected mutants: `{result.SelectedMutantCount}`")
+    writer.WriteLine($"- killed: `{result.KilledCount}`")
+    writer.WriteLine($"- survived: `{result.SurvivedCount}`")
+    writer.WriteLine($"- compile errors: `{result.CompileErrorCount}`")
+    writer.WriteLine($"- infrastructure errors: `{result.InfrastructureErrorCount}`")
+    writer.WriteLine()
+    writer.WriteLine("## Mutant Outcomes")
+    writer.WriteLine()
+    writer.WriteLine("| # | Location | Mutation | Status | Duration (ms) |")
+    writer.WriteLine("|---|---|---|---|---|")
+
+    result.Entries
+    |> List.iter (fun entry ->
+        writer.WriteLine(
+            $"| {entry.Index} | L{entry.Candidate.Line}:C{entry.Candidate.Column} | `{entry.Candidate.OperatorToken} -> {entry.Candidate.ReplacementToken}` | {formatFsharpNativeMutantStatus entry.Status} | {entry.DurationMs} |"
+        )
+    )
+
+let private runFsharpNativeRuntime (arguments: Map<string, string>) =
+    let options =
+        defaultOptionsForFsharpNativeRuntime ()
+        |> fun value -> withFsharpNativeRuntimeOverrides value arguments
+
+    let workspaceRoot = Path.GetFullPath(Environment.CurrentDirectory)
+    let sourcePath = Path.GetFullPath(options.SourceFilePath)
+    let testProjectPath = Path.GetFullPath(options.TestProjectPath)
+    let scratchRoot = Path.GetFullPath(options.ScratchRoot)
+    let artifactsRoot = Path.Combine(workspaceRoot, "artifacts") |> Path.GetFullPath
+
+    if not (File.Exists(sourcePath)) then
+        eprintfn "Source file does not exist: %s" sourcePath
+        1
+    elif not (File.Exists(testProjectPath)) then
+        eprintfn "Test project does not exist: %s" testProjectPath
+        1
+    elif not (isPathWithinRoot artifactsRoot scratchRoot) then
+        eprintfn "Scratch root must be within %s. Received: %s" artifactsRoot scratchRoot
+        1
+    else
+        let sourceRelativePath = Path.GetRelativePath(workspaceRoot, sourcePath)
+        let testProjectRelativePath = Path.GetRelativePath(workspaceRoot, testProjectPath)
+
+        if not (isRelativePathWithinParent sourceRelativePath) then
+            eprintfn "Source file must reside under workspace root. Source: %s" sourcePath
+            1
+        elif not (isRelativePathWithinParent testProjectRelativePath) then
+            eprintfn "Test project must reside under workspace root. Test project: %s" testProjectPath
+            1
+        else
+            let baselineExitCode, baselineOutput =
+                runProcessCapture
+                    workspaceRoot
+                    "dotnet"
+                    [ "test"
+                      testProjectPath
+                      "--configuration"
+                      "Debug"
+                      "-v"
+                      "minimal"
+                      "--nologo" ]
+
+            if baselineExitCode <> 0 then
+                eprintfn "Baseline tests failed. Aborting native mutation runtime."
+                eprintfn "%s" baselineOutput
+                1
+            else
+                let sourceText = File.ReadAllText(sourcePath)
+                let sourceLines = File.ReadAllLines(sourcePath)
+                let allCandidates = discoverFsharpOperatorCandidates sourceText sourceLines
+                let selectedCandidates = selectCompileValidationCandidates options.MaxMutants allCandidates
+                let startedAt = nowUtc ()
+
+                if Directory.Exists(scratchRoot) then
+                    Directory.Delete(scratchRoot, true)
+
+                Directory.CreateDirectory(scratchRoot) |> ignore
+
+                let entries = ResizeArray<FsharpNativeMutantEntry>()
+
+                selectedCandidates
+                |> List.iteri (fun index candidate ->
+                    let mutantIndex = index + 1
+                    let mutantWorkspacePath = Path.Combine(scratchRoot, $"mutant-{mutantIndex:D3}")
+                    copyDirectoryRecursive workspaceRoot mutantWorkspacePath
+                    let mutantSourcePath = Path.Combine(mutantWorkspacePath, sourceRelativePath)
+                    let mutantTestProjectPath = Path.Combine(mutantWorkspacePath, testProjectRelativePath)
+                    let mutable status = InfrastructureError
+                    let mutable exitCode = 1
+                    let mutable firstErrorLine: string option = None
+                    let stopwatch = Stopwatch.StartNew()
+
+                    if
+                        candidate.StartIndex < 0
+                        || candidate.StartIndex + candidate.OperatorToken.Length > sourceText.Length
+                        || sourceText.Substring(candidate.StartIndex, candidate.OperatorToken.Length) <> candidate.OperatorToken
+                    then
+                        firstErrorLine <- Some "candidate_span_mismatch"
+                    else
+                        let mutantSourceText =
+                            sourceText.Remove(candidate.StartIndex, candidate.OperatorToken.Length).Insert(candidate.StartIndex, candidate.ReplacementToken)
+
+                        File.WriteAllText(mutantSourcePath, mutantSourceText, utf8NoBom)
+
+                        let testExitCode, testOutput =
+                            runProcessCapture
+                                mutantWorkspacePath
+                                "dotnet"
+                                [ "test"
+                                  mutantTestProjectPath
+                                  "--configuration"
+                                  "Debug"
+                                  "-v"
+                                  "minimal"
+                                  "--nologo" ]
+
+                        exitCode <- testExitCode
+                        status <- classifyNativeMutantRun testExitCode testOutput
+
+                        if status <> Survived then
+                            firstErrorLine <- tryFindFirstBuildErrorLine testOutput |> Option.orElseWith (fun () -> tryFindFirstFailureLine testOutput)
+
+                    stopwatch.Stop()
+
+                    entries.Add(
+                        { Index = mutantIndex
+                          Candidate = candidate
+                          MutantWorkspacePath = mutantWorkspacePath
+                          Status = status
+                          ExitCode = exitCode
+                          FirstErrorLine = firstErrorLine
+                          DurationMs = stopwatch.ElapsedMilliseconds }
+                    )
+                )
+
+                let entriesList = entries |> Seq.toList
+                let killedCount = entriesList |> List.filter (fun entry -> entry.Status = Killed) |> List.length
+                let survivedCount = entriesList |> List.filter (fun entry -> entry.Status = Survived) |> List.length
+                let compileErrorCount = entriesList |> List.filter (fun entry -> entry.Status = CompileError) |> List.length
+                let infraCount = entriesList |> List.filter (fun entry -> entry.Status = InfrastructureError) |> List.length
+
+                let result =
+                    { StartedAtUtc = startedAt
+                      FinishedAtUtc = nowUtc ()
+                      TotalCandidatesDiscovered = allCandidates.Length
+                      SelectedMutantCount = entriesList.Length
+                      KilledCount = killedCount
+                      SurvivedCount = survivedCount
+                      CompileErrorCount = compileErrorCount
+                      InfrastructureErrorCount = infraCount
+                      Entries = entriesList }
+
+                writeFsharpNativeRuntimeMarkdownReport options result
+                writeFsharpNativeRuntimeJsonReport options result
+
+                printfn "native_fsharp_mutation_discovered=%d" result.TotalCandidatesDiscovered
+                printfn "native_fsharp_mutation_selected=%d" result.SelectedMutantCount
+                printfn "native_fsharp_mutation_killed=%d" result.KilledCount
+                printfn "native_fsharp_mutation_survived=%d" result.SurvivedCount
+                printfn "native_fsharp_mutation_compile_errors=%d" result.CompileErrorCount
+                printfn "native_fsharp_mutation_infra_errors=%d" result.InfrastructureErrorCount
+                printfn "native_fsharp_mutation_report=%s" options.ReportPath
+                printfn "native_fsharp_mutation_result_json=%s" options.ResultJsonPath
+
+                if result.SelectedMutantCount = 0 then
+                    1
+                elif result.CompileErrorCount > 0 || result.InfrastructureErrorCount > 0 then
+                    1
+                else
+                    0
+
 let private writeJsonReport (result: MutationRunResult) (options: MutationOptions) =
     ensureParentDirectory options.ResultJsonPath
 
@@ -1036,6 +1410,7 @@ let private writeUsage () =
     printfn "  spike                 Run default F# feasibility spike workflow."
     printfn "  run                   Run configurable mutation workflow."
     printfn "  validate-fsharp-mutants  Compile-validate sampled F# operator mutants."
+    printfn "  run-fsharp-native     Run native F# mutation runtime against local tests."
     printfn "  report                Regenerate markdown report from existing log."
     printfn "  classify-failure      Classify a log and exit code."
     printfn ""
@@ -1164,6 +1539,7 @@ let main argv =
         | "report" -> runReportFromExistingLog arguments
         | "classify-failure" -> runClassifyFailure arguments
         | "validate-fsharp-mutants" -> runFsharpCompileValidation arguments
+        | "run-fsharp-native" -> runFsharpNativeRuntime arguments
         | "help"
         | "--help"
         | "-h" ->
