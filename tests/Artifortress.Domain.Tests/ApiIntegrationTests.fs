@@ -677,6 +677,37 @@ where tenant_id = @tenant_id
 
         tx.Commit()
 
+    member this.ResetSearchPipelineStateGlobal() =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        use tx = conn.BeginTransaction()
+
+        use deleteJobsCmd =
+            new NpgsqlCommand(
+                """
+delete from search_index_jobs;
+""",
+                conn,
+                tx
+            )
+
+        deleteJobsCmd.ExecuteNonQuery() |> ignore
+
+        use deleteEventsCmd =
+            new NpgsqlCommand(
+                """
+delete from outbox_events
+where event_type = 'version.published';
+""",
+                conn,
+                tx
+            )
+
+        deleteEventsCmd.ExecuteNonQuery() |> ignore
+        tx.Commit()
+
     member this.IsOutboxDelivered(eventId: Guid) =
         this.RequireAvailable()
 
@@ -1522,7 +1553,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-04 outbox sweep enqueues search index job and marks event delivered`` () =
         fixture.RequireAvailable()
-        fixture.ResetSearchPipelineStateForTenant()
+        fixture.ResetSearchPipelineStateGlobal()
 
         let adminToken, _ = issuePat (makeSubject "p404-admin") [| "repo:*:admin" |] 60
         let repoKey = makeRepoKey "p404-sweep"
@@ -1560,7 +1591,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-04 outbox sweep requeues malformed version published event`` () =
         fixture.RequireAvailable()
-        fixture.ResetSearchPipelineStateForTenant()
+        fixture.ResetSearchPipelineStateGlobal()
 
         let baselineJobs = fixture.CountSearchIndexJobsForTenant()
         let malformedEventId = fixture.InsertOutboxEvent("version.published", "package_version", "not-a-guid", "{}")
@@ -1580,7 +1611,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-05 search job sweep completes pending job for published version`` () =
         fixture.RequireAvailable()
-        fixture.ResetSearchPipelineStateForTenant()
+        fixture.ResetSearchPipelineStateGlobal()
 
         let adminToken, _ = issuePat (makeSubject "p405-complete-admin") [| "repo:*:admin" |] 60
         let repoKey = makeRepoKey "p405-complete"
@@ -1622,7 +1653,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-05 search job sweep fails unpublished version and honors max attempts`` () =
         fixture.RequireAvailable()
-        fixture.ResetSearchPipelineStateForTenant()
+        fixture.ResetSearchPipelineStateGlobal()
 
         let adminToken, _ = issuePat (makeSubject "p405-fail-admin") [| "repo:*:admin" |] 60
         let repoKey = makeRepoKey "p405-fail"
@@ -2073,6 +2104,149 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         Assert.True(hasPublishEntry, "Expected fail-closed policy.timeout audit entry for publish action.")
         Assert.True(hasPromoteEntry, "Expected fail-closed policy.timeout audit entry for promote action.")
+
+    [<Fact>]
+    member _.``P4-09 deny decision persists without quarantine side effects`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p409-deny-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p409-deny"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p409-deny-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p409-deny-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"p409-deny-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use denyResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                versionId
+                "deny"
+                "p409 deny test"
+                "policy-test-v5"
+
+        let denyBody = ensureStatus HttpStatusCode.Created denyResponse
+        use denyDoc = JsonDocument.Parse(denyBody)
+        Assert.Equal("deny", denyDoc.RootElement.GetProperty("decision").GetString())
+        Assert.Equal("hint_deny", denyDoc.RootElement.GetProperty("decisionSource").GetString())
+        Assert.False(denyDoc.RootElement.GetProperty("quarantined").GetBoolean())
+
+        let mutable quarantineIdProp = Unchecked.defaultof<JsonElement>
+        Assert.True(denyDoc.RootElement.TryGetProperty("quarantineId", &quarantineIdProp))
+        Assert.Equal(JsonValueKind.Null, quarantineIdProp.ValueKind)
+
+        Assert.Equal(1L, fixture.CountPolicyEvaluations(versionId))
+        Assert.Equal(Some "deny", fixture.TryReadLatestPolicyDecision(versionId))
+        Assert.Equal(None, fixture.TryReadQuarantineStatus(versionId))
+
+    [<Fact>]
+    member _.``P4-09 degraded search pipeline does not block quarantine flow correctness`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p409-search-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p409-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p409-search-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p409-search-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let searchPackageName = $"p409-search-fallback-{Guid.NewGuid():N}"
+
+        use searchDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" searchPackageName "1.0.0"
+
+        let searchDraftBody = ensureStatus HttpStatusCode.Created searchDraftResponse
+        use searchDraftDoc = JsonDocument.Parse(searchDraftBody)
+        let searchVersionId = searchDraftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let payloadJson = JsonSerializer.Serialize({| versionId = searchVersionId |})
+
+        fixture.InsertOutboxEvent("version.published", "package_version", searchVersionId.ToString(), payloadJson)
+        |> ignore
+
+        let outboxOutcome = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(1, outboxOutcome.ClaimedCount)
+        Assert.Equal(1, outboxOutcome.EnqueuedCount)
+        Assert.Equal(1, outboxOutcome.DeliveredCount)
+        Assert.Equal(0, outboxOutcome.RequeuedCount)
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(50, 1)
+        Assert.Equal(1, jobOutcome.ClaimedCount)
+        Assert.Equal(0, jobOutcome.CompletedCount)
+        Assert.Equal(1, jobOutcome.FailedCount)
+
+        match fixture.TryReadSearchIndexJobForVersion(searchVersionId) with
+        | None -> failwith "Expected failed search job state for unpublished version."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("failed", status)
+            Assert.Equal(1, attempts)
+            Assert.Equal(Some "version_not_published", lastError)
+
+        let malformedEventId = fixture.InsertOutboxEvent("version.published", "package_version", "not-a-guid", "{}")
+        let malformedOutcome = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(1, malformedOutcome.ClaimedCount)
+        Assert.Equal(0, malformedOutcome.EnqueuedCount)
+        Assert.Equal(0, malformedOutcome.DeliveredCount)
+        Assert.Equal(1, malformedOutcome.RequeuedCount)
+        Assert.False(fixture.IsOutboxDelivered(malformedEventId))
+
+        let policyPackageName = $"p409-policy-{Guid.NewGuid():N}"
+
+        use policyDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" policyPackageName "1.0.1"
+
+        let policyDraftBody = ensureStatus HttpStatusCode.Created policyDraftResponse
+        use policyDraftDoc = JsonDocument.Parse(policyDraftBody)
+        let policyVersionId = policyDraftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use quarantineResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                policyVersionId
+                "quarantine"
+                "p409 degraded-search quarantine check"
+                "policy-test-v5"
+
+        let quarantineBody = ensureStatus HttpStatusCode.Created quarantineResponse
+        use quarantineDoc = JsonDocument.Parse(quarantineBody)
+        let quarantineId = quarantineDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        Assert.Equal("quarantine", quarantineDoc.RootElement.GetProperty("decision").GetString())
+        Assert.True(quarantineDoc.RootElement.GetProperty("quarantined").GetBoolean())
+
+        use releaseResponse = releaseQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.OK releaseResponse |> ignore
+
+        Assert.Equal(1L, fixture.CountPolicyEvaluations(policyVersionId))
+        Assert.Equal(Some "quarantine", fixture.TryReadLatestPolicyDecision(policyVersionId))
+        Assert.Equal(Some "released", fixture.TryReadQuarantineStatus(policyVersionId))
+
+        use releasedListResponse = listQuarantineWithToken promoteToken repoKey (Some "released")
+        let releasedListBody = ensureStatus HttpStatusCode.OK releasedListResponse
+        use releasedListDoc = JsonDocument.Parse(releasedListBody)
+
+        let listedReleased =
+            releasedListDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun item ->
+                item.GetProperty("quarantineId").GetGuid() = quarantineId
+                && item.GetProperty("status").GetString() = "released")
+
+        Assert.True(
+            listedReleased,
+            "Expected quarantine release flow to remain correct while search pipeline has degraded events/jobs."
+        )
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =

@@ -9,7 +9,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 1: complete.
 - Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
 - Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
-- Phase 4: implemented through P4-08 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics).
+- Phase 4: implemented through P4-09 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics + deny/search-fallback integration coverage).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
 - Current build-out focus: P2-09/P2-10 closeout, Phase 3 publish workflow completion, and Phase 4 follow-on hardening (`P4-09` onward).
 

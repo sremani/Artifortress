@@ -18,7 +18,7 @@ Status key:
 | P4-06 | Resolve/read-path behavior when version is quarantined | P4-03 | done |
 | P4-07 | AuthZ + audit coverage for policy/quarantine APIs | P4-02, P4-03 | done |
 | P4-08 | Policy timeout/fail-closed semantics with deterministic errors | P4-02 | done |
-| P4-09 | Integration tests for deny/quarantine/search fallback behavior | P4-03, P4-05, P4-06, P4-08 | todo |
+| P4-09 | Integration tests for deny/quarantine/search fallback behavior | P4-03, P4-05, P4-06, P4-08 | done |
 | P4-10 | Phase 4 runbook and demo script updates | P4-09 | todo |
 
 ## Current Implementation Notes (2026-02-11)
@@ -107,6 +107,13 @@ Status key:
     - `policy.timeout` with repo/version/action metadata.
   - Added integration tests that verify fail-closed behavior for both `publish` and `promote` actions:
     - no policy/quarantine persistence occurs on timeout paths.
+- P4-09 completed:
+  - Added integration test coverage for explicit `deny` policy decisions:
+    - persisted policy evaluation decision is `deny`.
+    - no quarantine item side effects for deny path.
+  - Added integration test coverage for degraded search pipeline behavior:
+    - malformed outbox event requeue + failed unpublished search job paths are exercised.
+    - policy quarantine->release flow remains correct while degraded search events/jobs exist.
 
 ## Ticket Details
 

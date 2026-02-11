@@ -145,4 +145,4 @@ Not implemented yet:
   - add throughput baseline/load report (`P2-09`).
   - add Phase 2 demo script and runbook updates (`P2-10`).
   - implement publish workflow APIs after draft create baseline (`P3-03` onward).
-  - continue Phase 4 hardening (`P4-09` onward).
+  - complete Phase 4 runbook/demo closeout (`P4-10`).
