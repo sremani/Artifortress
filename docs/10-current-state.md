@@ -55,23 +55,26 @@ Persistence:
 Automated checks currently passing:
 - `make format`.
 - `make test` (non-integration filter) with `84` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo` with `122` passing tests.
+- `make test-integration` with `40` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo` with `124` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `75` FsCheck properties across domain, API, object storage config, and extracted worker internals (three extraction waves).
 
-Environment-dependent checks (currently blocked locally):
-- `make test-integration` requires Postgres (`localhost:5432`) and MinIO (`localhost:9000`) availability.
+Environment note:
+- Integration checks require Postgres (`localhost:5432`) and MinIO (`localhost:9000`) availability.
 
 Demonstration assets:
 - `scripts/phase1-demo.sh`
 - `docs/09-phase1-runbook.md`
+- `scripts/phase4-demo.sh`
+- `docs/16-phase4-runbook.md`
 
 ## 4. Known Gaps vs Target Architecture
 
 Not implemented yet:
 - Atomic draft/publish package version workflow.
 - Transactional outbox worker processing.
-- Search indexing read-model integration and degraded-path fallback behavior validation (`P4-09`).
+- Search indexing read-model query-serving integration beyond the current queue/job scaffolding.
 - OIDC/SAML identity provider integration.
 - Throughput baseline/load report publication (`P2-09`).
 - Phase 2 scripted demo and runbook (`P2-10`).
@@ -145,4 +148,4 @@ Not implemented yet:
   - add throughput baseline/load report (`P2-09`).
   - add Phase 2 demo script and runbook updates (`P2-10`).
   - implement publish workflow APIs after draft create baseline (`P3-03` onward).
-  - complete Phase 4 runbook/demo closeout (`P4-10`).
+  - continue Phase 3 publish workflow implementation (`P3-03` onward).

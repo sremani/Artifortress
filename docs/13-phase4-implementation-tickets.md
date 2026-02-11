@@ -19,7 +19,7 @@ Status key:
 | P4-07 | AuthZ + audit coverage for policy/quarantine APIs | P4-02, P4-03 | done |
 | P4-08 | Policy timeout/fail-closed semantics with deterministic errors | P4-02 | done |
 | P4-09 | Integration tests for deny/quarantine/search fallback behavior | P4-03, P4-05, P4-06, P4-08 | done |
-| P4-10 | Phase 4 runbook and demo script updates | P4-09 | todo |
+| P4-10 | Phase 4 runbook and demo script updates | P4-09 | done |
 
 ## Current Implementation Notes (2026-02-11)
 
@@ -114,6 +114,13 @@ Status key:
   - Added integration test coverage for degraded search pipeline behavior:
     - malformed outbox event requeue + failed unpublished search job paths are exercised.
     - policy quarantine->release flow remains correct while degraded search events/jobs exist.
+- P4-10 completed:
+  - Added executable Phase 4 demo script:
+    - `scripts/phase4-demo.sh`
+  - Added Phase 4 runbook:
+    - `docs/16-phase4-runbook.md`
+  - Added make target for one-command execution:
+    - `make phase4-demo`
 
 ## Ticket Details
 
