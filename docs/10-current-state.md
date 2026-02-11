@@ -21,6 +21,7 @@ Persistence:
 - Core tables from `0001_init.sql` plus identity/RBAC tables from `0002_phase1_identity_and_rbac.sql`.
 - Upload-session and publish/policy migrations from `0003_phase2_upload_sessions.sql`, `0004_phase3_publish_guardrails.sql`, `0005_phase3_published_immutability_hardening.sql`, and `0006_phase4_policy_search_quarantine_scaffold.sql`.
 - Manifest persistence migration `0007_phase3_manifest_persistence.sql`.
+- Phase 5 lifecycle migration `0008_phase5_tombstones_gc_reconcile.sql`.
 - Token hash persistence only; plaintext token is response-only at issuance time.
 
 ## 2. API Endpoints (Implemented)
@@ -42,6 +43,7 @@ Persistence:
 - `PUT /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
 - `GET /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
 - `POST /v1/repos/{repoKey}/packages/versions/{versionId}/publish`
+- `POST /v1/repos/{repoKey}/packages/versions/{versionId}/tombstone`
 - `POST /v1/repos/{repoKey}/policy/evaluations`
 - `GET /v1/repos/{repoKey}/quarantine`
 - `GET /v1/repos/{repoKey}/quarantine/{quarantineId}`
@@ -53,6 +55,8 @@ Persistence:
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
 - `GET /v1/repos/{repoKey}/blobs/{digest}`
+- `POST /v1/admin/gc/runs`
+- `GET /v1/admin/reconcile/blobs`
 - `GET /v1/audit`
 
 ## 3. Verification Status
@@ -60,8 +64,8 @@ Persistence:
 Automated checks currently passing:
 - `make format`.
 - `make test` (non-integration filter) with `84` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` with `47` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` with `131` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` with `53` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` with `137` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `75` FsCheck properties across domain, API, object storage config, and extracted worker internals (three extraction waves).
 - `make phase2-load` baseline run:
@@ -85,6 +89,8 @@ Demonstration assets:
 - `docs/19-phase3-runbook.md`
 - `scripts/phase4-demo.sh`
 - `docs/16-phase4-runbook.md`
+- `scripts/phase5-demo.sh`
+- `docs/21-phase5-runbook.md`
 
 ## 4. Known Gaps vs Target Architecture
 
@@ -95,81 +101,16 @@ Not implemented yet:
 
 ## 5. Next Delivery Focus
 
-- Phase 2 implemented work:
-  - `db/migrations/0003_phase2_upload_sessions.sql` for session persistence.
-  - object storage client module in `src/Artifortress.Api/ObjectStorage.fs`.
-  - upload session create API: `POST /v1/repos/{repoKey}/uploads`.
-  - multipart lifecycle APIs:
-    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
-    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
-    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
-  - commit verification API:
-    - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
-  - blob download API:
-    - `GET /v1/repos/{repoKey}/blobs/{digest}` (single-range support, scoped to blobs committed in the requested repository)
-  - upload audit coverage:
-    - session create, part URL issuance, complete, abort, commit success, and commit verification failure.
-  - reliability hardening:
-    - best-effort object-store multipart abort on upload-session create race/failure paths.
-    - null-safe role and scope parsing in domain layer.
-    - migration script SQL quoting hardening for version tracking.
-  - Phase 3 implementation:
-    - publish guardrail migrations:
-      - `db/migrations/0004_phase3_publish_guardrails.sql`
-      - `db/migrations/0005_phase3_published_immutability_hardening.sql`
-      - `db/migrations/0007_phase3_manifest_persistence.sql`
-    - draft version create API (`POST /v1/repos/{repoKey}/packages/versions/drafts`) with idempotent draft reuse semantics.
-    - artifact entry persistence API (`POST /v1/repos/{repoKey}/packages/versions/{versionId}/entries`) with draft-state + digest visibility checks.
-    - manifest APIs:
-      - `PUT /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
-      - `GET /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
-    - package publish API (`POST /v1/repos/{repoKey}/packages/versions/{versionId}/publish`) with:
-      - single-transaction draft->published transition
-      - in-transaction audit write
-      - replay-safe outbox emission (`version.published`) without duplicate event on idempotent retry.
-    - publish-workflow audit actions:
-      - `package.version.entries.upserted`
-      - `package.version.manifest.upserted`
-      - `package.version.published`
-  - Phase 4 implementation:
-    - policy/quarantine/search scaffold migration `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`.
-    - policy decision history table (`policy_evaluations`).
-    - quarantine workflow table (`quarantine_items`).
-    - search indexing job queue table (`search_index_jobs`).
-    - policy evaluation API (`POST /v1/repos/{repoKey}/policy/evaluations`) with deterministic `allow|deny|quarantine` outcomes.
-    - quarantine-item upsert side effect for `quarantine` decisions.
-    - policy evaluation audit action: `policy.evaluated`.
-    - quarantine state APIs for list/get/release/reject.
-    - quarantine resolution audit actions:
-      - `quarantine.released`
-      - `quarantine.rejected`
-    - worker outbox producer for `version.published` events to enqueue `search_index_jobs`.
-    - idempotent enqueue via `(tenant_id, version_id)` upsert for search-index jobs.
-    - worker search-index job processor sweep with claim/process/complete/fail transitions.
-    - bounded retry semantics for failed search-index jobs (attempt caps + backoff).
-    - worker pure-helper extraction for deeper PBT coverage:
-      - `src/Artifortress.Worker/WorkerInternals.fs` with `WorkerOutboxParsing`, `WorkerRetryPolicy`, and `WorkerEnvParsing`.
-      - second-wave DB-adjacent helper extraction with `WorkerDbParameters`, `WorkerOutboxFlow`, and `WorkerJobFlow`.
-      - third-wave SQL-row and reducer helper extraction with `WorkerDataShapes` and `WorkerSweepMetrics`.
-      - worker runtime wiring updated to consume extracted helpers in sweep and config parsing paths.
-      - worker extraction ticket board and implementation notes in `docs/14-worker-pbt-extraction-tickets.md`.
-    - quarantine-aware blob download enforcement:
-      - `GET /v1/repos/{repoKey}/blobs/{digest}` returns `423` (`quarantined_blob`) when digest is linked to a `quarantined` or `rejected` version.
-      - blob reads resume after quarantine status transitions to `released`.
-    - policy timeout fail-closed semantics:
-      - policy evaluation returns deterministic `503` (`policy_timeout`) on timeout.
-      - timeout path is fail-closed (`failClosed=true`) and does not persist policy/quarantine mutations.
-      - timeout budget configurable via `Policy:EvaluationTimeoutMs` (default `250` ms).
-    - expanded integration coverage:
-      - expired-session rejection paths.
-      - dedupe-path second-create behavior.
-      - invalid range (`400`) and unsatisfiable range (`416`) responses.
-      - authz rejection matrix across new upload/download endpoints.
-      - audit action matrix assertions for upload lifecycle operations.
-      - repo-scoped blob visibility regression test.
-      - policy/quarantine authz matrix assertions on quarantine get/reject endpoints.
-      - policy/quarantine mutation audit metadata assertions (actor/resource/details).
-      - policy timeout fail-closed assertions across both `publish` and `promote` actions.
+- Phase 5 is complete with the following new lifecycle capabilities:
+  - migration `db/migrations/0008_phase5_tombstones_gc_reconcile.sql`.
+  - tombstone API: `POST /v1/repos/{repoKey}/packages/versions/{versionId}/tombstone`.
+  - admin GC API: `POST /v1/admin/gc/runs` (dry-run + execute).
+  - admin reconcile API: `GET /v1/admin/reconcile/blobs`.
+  - lifecycle audit actions for tombstone, GC, and reconcile operations.
+  - integration coverage `P5-01` through `P5-05`.
+  - executable demo/runbook:
+    - `scripts/phase5-demo.sh`
+    - `docs/21-phase5-runbook.md`
 - Next implementation targets:
-  - continue Phase 5 planning for deletion lifecycle, GC, and repair workflows.
-  - keep expanding property-based and integration stress coverage around publish/policy/search behavior.
+  - Phase 6 hardening and GA readiness (SLO/alerts, backup/restore drills, security closure).
+  - continue expanding property-based and integration stress coverage around lifecycle and policy/search paths.

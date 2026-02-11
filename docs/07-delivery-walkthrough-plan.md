@@ -2,14 +2,15 @@
 
 This plan defines the execution sequence we will walk through, with every phase mapped to features, dependencies, and demo milestones.
 
-## 0. Execution Status Snapshot (2026-02-10)
+## 0. Execution Status Snapshot (2026-02-11)
 
 - Phase 0 is complete.
 - Phase 1 is complete.
-- Phase 2 is in progress (`P2-01` through `P2-08` complete).
-- Next active delivery focus is `P2-09` throughput baseline and `P2-10` demo/runbook updates.
-- Phase 3 kickoff has started with `P3-01`/`P3-02` (publish guardrails + draft version create API baseline).
-- Phase 4 kickoff has started with `P4-01` (policy/quarantine/search schema scaffold).
+- Phase 2 is complete through `P2-10`.
+- Phase 3 is complete through `P3-10`.
+- Phase 4 is complete through `P4-10`.
+- Phase 5 is complete through `P5-08`.
+- Next active delivery focus is Phase 6 hardening and GA-readiness workstreams.
 - OIDC-specific walkthrough steps are deferred; Phase 1 demo uses PAT bootstrap/admin flows.
 
 ## 1. Full Feature Inventory
@@ -103,7 +104,7 @@ Exit gate:
 - Upload and download path hits performance and correctness baselines.
 
 Current implementation note:
-- Phase 2 APIs and coverage are implemented through `P2-08`; remaining delivery work is throughput/reporting (`P2-09`) and scripted demo/runbook completion (`P2-10`).
+- Phase 2 is complete through `P2-10`, including throughput baseline and runbook/demo coverage.
 
 ## Phase 3: Atomic Package Publish
 
@@ -194,7 +195,7 @@ We will run formal walkthrough reviews at the end of each phase:
 
 ## 5. Recommended Execution Order
 
-1. Complete `P2-09` throughput baseline and `P2-10` demo/runbook updates.
-2. Execute Phase 3 as the minimum viable release extension track.
-3. Start controlled production trial after Phase 3 completion.
-4. Finish Phases 4-6 for full policy/search/operations maturity.
+1. Keep Phase 5 demo/runbook verification in CI/release checklist (`make phase5-demo`).
+2. Start Phase 6 hardening backlog (SLOs, alerting, backup/restore drills).
+3. Execute security closure and rollback/runbook rehearsals.
+4. Run final launch-readiness review and sign-off.

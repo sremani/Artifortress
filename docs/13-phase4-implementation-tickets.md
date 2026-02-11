@@ -23,6 +23,9 @@ Status key:
 
 ## Current Implementation Notes (2026-02-11)
 
+- Phase transition note:
+  - Phase 5 board lives in `docs/20-phase5-implementation-tickets.md`.
+
 - P4-01 completed:
   - Added migration `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`.
   - Added `policy_evaluations` table + indexes for policy decision history and query patterns.

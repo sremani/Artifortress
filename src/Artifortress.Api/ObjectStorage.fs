@@ -79,6 +79,9 @@ type IObjectStorageClient =
         byteRange: (int64 * int64 option) option *
         cancellationToken: CancellationToken -> Task<Result<DownloadedObject, ObjectStorageError>>
 
+    abstract member DeleteObject:
+        objectKey: string * cancellationToken: CancellationToken -> Task<Result<unit, ObjectStorageError>>
+
 let private normalizeText (value: string) =
     if String.IsNullOrWhiteSpace value then "" else value.Trim()
 
@@ -304,6 +307,23 @@ type private S3ObjectStorageClient(config: ObjectStorageConfig) =
                                       ContentRange = contentRange
                                       StatusCode = response.HttpStatusCode
                                       Dispose = (fun () -> response.Dispose()) }
+                    with ex ->
+                        return Error(mapException ex)
+            }
+
+        member _.DeleteObject(objectKey: string, cancellationToken: CancellationToken) =
+            task {
+                let normalizedObjectKey = normalizeText objectKey
+
+                if String.IsNullOrWhiteSpace normalizedObjectKey then
+                    return Error(InvalidRequest "Object key is required.")
+                else
+                    try
+                        let request = DeleteObjectRequest()
+                        request.BucketName <- config.Bucket
+                        request.Key <- normalizedObjectKey
+                        let! _ = s3Client.DeleteObjectAsync(request, cancellationToken)
+                        return Ok()
                     with ex ->
                         return Error(mapException ex)
             }

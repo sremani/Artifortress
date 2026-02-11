@@ -65,6 +65,19 @@ type UpsertManifestRequest = {
 }
 
 [<CLIMutable>]
+type TombstoneVersionRequest = {
+    Reason: string
+    RetentionDays: int
+}
+
+[<CLIMutable>]
+type RunGcRequest = {
+    DryRun: bool
+    RetentionGraceHours: int
+    BatchSize: int
+}
+
+[<CLIMutable>]
 type CreateUploadSessionRequest = {
     ExpectedDigest: string
     ExpectedLength: int64
@@ -199,6 +212,28 @@ type PublishVersionOutcome =
     | PublishVersionSuccess of PackageVersionTargetRecord * DateTimeOffset * Guid option
     | PublishVersionAlreadyPublished of PackageVersionTargetRecord
 
+type TombstoneVersionOutcome =
+    | TombstoneVersionMissing
+    | TombstoneVersionStateConflict of string
+    | TombstoneVersionSuccess of PackageVersionTargetRecord * DateTimeOffset * DateTimeOffset
+    | TombstoneVersionAlreadyTombstoned of PackageVersionTargetRecord * DateTimeOffset option
+
+type GcCandidateBlob = {
+    Digest: string
+    StorageKey: string
+}
+
+type GcRunResult = {
+    RunId: Guid
+    Mode: string
+    MarkedCount: int
+    CandidateBlobCount: int
+    DeletedBlobCount: int
+    DeletedVersionCount: int
+    DeleteErrorCount: int
+    CandidateDigests: string list
+}
+
 type UploadSessionRecord = {
     UploadId: Guid
     RepoKey: string
@@ -265,6 +300,9 @@ type AppState = {
     ObjectStorageClient: IObjectStorageClient
     PresignPartTtlSeconds: int
     PolicyEvaluationTimeoutMs: int
+    DefaultTombstoneRetentionDays: int
+    DefaultGcRetentionGraceHours: int
+    DefaultGcBatchSize: int
 }
 
 let nowUtc () = DateTimeOffset.UtcNow
@@ -433,6 +471,40 @@ let validateManifestRequest (packageType: string) (request: UpsertManifestReques
     |> Result.map (fun manifestBlobDigest ->
         let manifestJson = request.Manifest.GetRawText()
         manifestJson, manifestBlobDigest)
+
+let validateTombstoneRequest (defaultRetentionDays: int) (request: TombstoneVersionRequest) =
+    let reason = normalizeText request.Reason
+    let retentionDays = if request.RetentionDays > 0 then request.RetentionDays else defaultRetentionDays
+
+    if String.IsNullOrWhiteSpace reason then
+        Error "reason is required."
+    elif retentionDays < 1 || retentionDays > 3650 then
+        Error "retentionDays must be between 1 and 3650."
+    else
+        Ok(reason, retentionDays)
+
+let validateGcRequest
+    (defaultRetentionGraceHours: int)
+    (defaultBatchSize: int)
+    (requestOption: RunGcRequest option)
+    =
+    match requestOption with
+    | None -> Ok(true, defaultRetentionGraceHours, defaultBatchSize)
+    | Some request ->
+        let retentionGraceHours = request.RetentionGraceHours
+
+        let batchSize =
+            if request.BatchSize = 0 then
+                defaultBatchSize
+            else
+                request.BatchSize
+
+        if retentionGraceHours < 0 || retentionGraceHours > 24 * 365 then
+            Error "retentionGraceHours must be between 0 and 8760."
+        elif batchSize < 1 || batchSize > 5000 then
+            Error "batchSize must be between 1 and 5000."
+        else
+            Ok(request.DryRun, retentionGraceHours, batchSize)
 
 let validateEvaluatePolicyRequest (request: EvaluatePolicyRequest) =
     let action = normalizeText request.Action |> fun value -> value.ToLowerInvariant()
@@ -720,6 +792,17 @@ let readJsonBody<'T> (ctx: HttpContext) =
             Ok payload
     with ex ->
         Error $"Invalid JSON body: {ex.Message}"
+
+let readOptionalJsonBody<'T> (ctx: HttpContext) =
+    let hasBody =
+        (ctx.Request.ContentLength.HasValue && ctx.Request.ContentLength.Value > 0L)
+        || ctx.Request.Headers.ContainsKey("Transfer-Encoding")
+        || (ctx.Request.Body.CanSeek && ctx.Request.Body.Length > 0L)
+
+    if hasBody then
+        readJsonBody<'T> ctx |> Result.map Some
+    else
+        Ok None
 
 let withConnection (state: AppState) (handler: NpgsqlConnection -> Result<'T, string>) : Result<'T, string> =
     try
@@ -1788,6 +1871,636 @@ returning event_id;
         | _ ->
             tx.Rollback()
             Ok outcome
+
+let private tryReadTombstoneRetentionForVersionInTransaction
+    (versionId: Guid)
+    (conn: NpgsqlConnection)
+    (tx: NpgsqlTransaction)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select retention_until
+from tombstones
+where version_id = @version_id
+limit 1;
+""",
+            conn,
+            tx
+        )
+
+    cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+    let scalar = cmd.ExecuteScalar()
+
+    if isNull scalar || scalar = box DBNull.Value then
+        Ok None
+    else
+        match scalar with
+        | :? DateTimeOffset as dto -> Ok(Some dto)
+        | :? DateTime as dt -> Ok(Some(toUtcDateTimeOffset dt))
+        | _ -> Error "Unexpected retention_until type returned from tombstones."
+
+let tombstoneVersionForRepo
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (reason: string)
+    (retentionDays: int)
+    (deletedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use tx = conn.BeginTransaction()
+
+    let outcomeResult =
+        tryReadLockedPackageVersionTargetForRepo tenantId repoKey versionId conn tx
+        |> Result.bind (fun targetOption ->
+            match targetOption with
+            | None -> Ok TombstoneVersionMissing
+            | Some target when target.State = "tombstoned" ->
+                tryReadTombstoneRetentionForVersionInTransaction versionId conn tx
+                |> Result.map (fun retentionUntil -> TombstoneVersionAlreadyTombstoned(target, retentionUntil))
+            | Some target when target.State <> "draft" && target.State <> "published" ->
+                Ok(TombstoneVersionStateConflict target.State)
+            | Some target ->
+                let retentionUntilUtc = (nowUtc ()).AddDays(float retentionDays)
+
+                use updateCmd =
+                    new NpgsqlCommand(
+                        """
+update package_versions
+set state = 'tombstoned',
+    tombstoned_at = now(),
+    tombstone_reason = @reason
+where tenant_id = @tenant_id
+  and version_id = @version_id
+  and state in ('draft', 'published')
+returning tombstoned_at;
+""",
+                        conn,
+                        tx
+                    )
+
+                updateCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                updateCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+                updateCmd.Parameters.AddWithValue("reason", reason) |> ignore
+
+                let tombstonedAtScalar = updateCmd.ExecuteScalar()
+
+                if isNull tombstonedAtScalar || tombstonedAtScalar = box DBNull.Value then
+                    Ok(TombstoneVersionStateConflict "tombstone_transition_failed")
+                else
+                    let tombstonedAtResult =
+                        match tombstonedAtScalar with
+                        | :? DateTimeOffset as dto -> Ok dto
+                        | :? DateTime as dt -> Ok(toUtcDateTimeOffset dt)
+                        | _ -> Error "Unexpected tombstoned_at type returned from tombstone update."
+
+                    tombstonedAtResult
+                    |> Result.bind (fun tombstonedAtUtc ->
+                        use tombstoneCmd =
+                            new NpgsqlCommand(
+                                """
+insert into tombstones
+  (tenant_id, repo_id, version_id, deleted_by_subject, deleted_at, retention_until, reason)
+values
+  (@tenant_id, @repo_id, @version_id, @deleted_by_subject, now(), @retention_until, @reason)
+on conflict (version_id)
+do update set
+  deleted_by_subject = excluded.deleted_by_subject,
+  deleted_at = now(),
+  retention_until = excluded.retention_until,
+  reason = excluded.reason;
+""",
+                                conn,
+                                tx
+                            )
+
+                        tombstoneCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                        tombstoneCmd.Parameters.AddWithValue("repo_id", target.RepoId) |> ignore
+                        tombstoneCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+                        tombstoneCmd.Parameters.AddWithValue("deleted_by_subject", deletedBySubject) |> ignore
+                        tombstoneCmd.Parameters.AddWithValue("retention_until", retentionUntilUtc) |> ignore
+                        tombstoneCmd.Parameters.AddWithValue("reason", reason) |> ignore
+                        tombstoneCmd.ExecuteNonQuery() |> ignore
+
+                        insertAuditRecordInTransaction
+                            tenantId
+                            deletedBySubject
+                            "package.version.tombstoned"
+                            "package_version"
+                            (versionId.ToString())
+                            (Map.ofList
+                                [ "repoKey", target.RepoKey
+                                  "packageType", target.PackageType
+                                  "packageName", target.PackageName
+                                  "version", target.Version
+                                  "retentionDays", retentionDays.ToString()
+                                  "reason", reason ])
+                            conn
+                            tx
+                        |> Result.map (fun () ->
+                            let tombstonedTarget =
+                                { target with
+                                    State = "tombstoned"
+                                    PublishedAtUtc = target.PublishedAtUtc }
+
+                            TombstoneVersionSuccess(tombstonedTarget, tombstonedAtUtc, retentionUntilUtc))))
+
+    match outcomeResult with
+    | Error err ->
+        tx.Rollback()
+        Error err
+    | Ok outcome ->
+        match outcome with
+        | TombstoneVersionSuccess _ ->
+            tx.Commit()
+            Ok outcome
+        | _ ->
+            tx.Rollback()
+            Ok outcome
+
+let private insertGcRun
+    (tenantId: Guid)
+    (initiatedBySubject: string)
+    (mode: string)
+    (retentionGraceHours: int)
+    (batchSize: int)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into gc_runs
+  (tenant_id, initiated_by_subject, mode, retention_grace_hours, batch_size)
+values
+  (@tenant_id, @initiated_by_subject, @mode, @retention_grace_hours, @batch_size)
+returning run_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("initiated_by_subject", initiatedBySubject) |> ignore
+    cmd.Parameters.AddWithValue("mode", mode) |> ignore
+    cmd.Parameters.AddWithValue("retention_grace_hours", retentionGraceHours) |> ignore
+    cmd.Parameters.AddWithValue("batch_size", batchSize) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    if isNull scalar || scalar = box DBNull.Value then
+        Error "GC run insert did not return run id."
+    else
+        match scalar with
+        | :? Guid as runId -> Ok runId
+        | _ -> Error "Unexpected GC run id type returned from database."
+
+let private insertGcMarksForRun (tenantId: Guid) (runId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into gc_marks (run_id, digest)
+select @run_id, roots.digest
+from (
+  select distinct ae.blob_digest as digest
+  from artifact_entries ae
+  join package_versions pv on pv.version_id = ae.version_id
+  left join tombstones ts on ts.version_id = pv.version_id
+  where pv.tenant_id = @tenant_id
+    and (
+      pv.state <> 'tombstoned'
+      or ts.retention_until > now()
+      or ts.version_id is null
+    )
+
+  union
+
+  select distinct m.manifest_blob_digest as digest
+  from manifests m
+  join package_versions pv on pv.version_id = m.version_id
+  left join tombstones ts on ts.version_id = pv.version_id
+  where pv.tenant_id = @tenant_id
+    and m.manifest_blob_digest is not null
+    and (
+      pv.state <> 'tombstoned'
+      or ts.retention_until > now()
+      or ts.version_id is null
+    )
+) roots;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("run_id", runId) |> ignore
+    let rows = cmd.ExecuteNonQuery()
+    Ok rows
+
+let private deleteExpiredTombstonedVersions (tenantId: Guid) (batchSize: int) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+with doomed as (
+  select pv.version_id
+  from package_versions pv
+  join tombstones ts on ts.version_id = pv.version_id
+  where pv.tenant_id = @tenant_id
+    and pv.state = 'tombstoned'
+    and ts.retention_until <= now()
+  order by ts.retention_until, pv.created_at
+  limit @batch_size
+)
+delete from package_versions pv
+using doomed d
+where pv.version_id = d.version_id
+returning pv.version_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("batch_size", batchSize) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let deleted = ResizeArray<Guid>()
+
+    let rec loop () =
+        if reader.Read() then
+            deleted.Add(reader.GetGuid(0))
+            loop ()
+
+    loop ()
+    Ok(deleted |> Seq.toList)
+
+let private readExpiredTombstonedVersionIds (tenantId: Guid) (batchSize: int) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select pv.version_id
+from package_versions pv
+join tombstones ts on ts.version_id = pv.version_id
+where pv.tenant_id = @tenant_id
+  and pv.state = 'tombstoned'
+  and ts.retention_until <= now()
+order by ts.retention_until, pv.created_at
+limit @batch_size;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("batch_size", batchSize) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let versionIds = ResizeArray<Guid>()
+
+    let rec loop () =
+        if reader.Read() then
+            versionIds.Add(reader.GetGuid(0))
+            loop ()
+
+    loop ()
+    Ok(versionIds |> Seq.toList)
+
+let private readGcCandidateBlobsForRun
+    (runId: Guid)
+    (retentionGraceHours: int)
+    (batchSize: int)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select b.digest, b.storage_key
+from blobs b
+where b.created_at <= now() - make_interval(hours => @retention_grace_hours)
+  and not exists (
+    select 1 from gc_marks gm
+    where gm.run_id = @run_id
+      and gm.digest = b.digest
+  )
+  and not exists (
+    select 1 from artifact_entries ae
+    where ae.blob_digest = b.digest
+  )
+  and not exists (
+    select 1 from manifests m
+    where m.manifest_blob_digest = b.digest
+  )
+order by b.created_at
+limit @batch_size;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("run_id", runId) |> ignore
+    cmd.Parameters.AddWithValue("retention_grace_hours", retentionGraceHours) |> ignore
+    cmd.Parameters.AddWithValue("batch_size", batchSize) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let candidates = ResizeArray<GcCandidateBlob>()
+
+    let rec loop () =
+        if reader.Read() then
+            candidates.Add(
+                { Digest = reader.GetString(0)
+                  StorageKey = reader.GetString(1) }
+            )
+
+            loop ()
+
+    loop ()
+    Ok(candidates |> Seq.toList)
+
+let private deleteBlobsByDigests (digests: string list) (conn: NpgsqlConnection) =
+    if digests.IsEmpty then
+        Ok 0
+    else
+        use cmd =
+            new NpgsqlCommand(
+                """
+delete from blobs
+where digest = any(@digests);
+""",
+                conn
+            )
+
+        let digestsParam = cmd.Parameters.Add("digests", NpgsqlDbType.Array ||| NpgsqlDbType.Char)
+        digestsParam.Value <- (digests |> List.toArray)
+
+        let rows = cmd.ExecuteNonQuery()
+        Ok rows
+
+let private clearUploadSessionCommittedBlobReferences (digests: string list) (conn: NpgsqlConnection) =
+    if digests.IsEmpty then
+        Ok 0
+    else
+        use cmd =
+            new NpgsqlCommand(
+                """
+update upload_sessions
+set committed_blob_digest = null
+where committed_blob_digest = any(@digests);
+""",
+                conn
+            )
+
+        let digestsParam = cmd.Parameters.Add("digests", NpgsqlDbType.Array ||| NpgsqlDbType.Char)
+        digestsParam.Value <- (digests |> List.toArray)
+
+        let rows = cmd.ExecuteNonQuery()
+        Ok rows
+
+let private finalizeGcRun
+    (runId: Guid)
+    (markedCount: int)
+    (candidateBlobCount: int)
+    (deletedBlobCount: int)
+    (deletedVersionCount: int)
+    (deleteErrorCount: int)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+update gc_runs
+set completed_at = now(),
+    marked_count = @marked_count,
+    candidate_blob_count = @candidate_blob_count,
+    deleted_blob_count = @deleted_blob_count,
+    deleted_version_count = @deleted_version_count,
+    delete_error_count = @delete_error_count
+where run_id = @run_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("run_id", runId) |> ignore
+    cmd.Parameters.AddWithValue("marked_count", markedCount) |> ignore
+    cmd.Parameters.AddWithValue("candidate_blob_count", candidateBlobCount) |> ignore
+    cmd.Parameters.AddWithValue("deleted_blob_count", deletedBlobCount) |> ignore
+    cmd.Parameters.AddWithValue("deleted_version_count", deletedVersionCount) |> ignore
+    cmd.Parameters.AddWithValue("delete_error_count", deleteErrorCount) |> ignore
+    cmd.ExecuteNonQuery() |> ignore
+    Ok()
+
+let runGcSweep
+    (objectStorageClient: IObjectStorageClient)
+    (tenantId: Guid)
+    (initiatedBySubject: string)
+    (dryRun: bool)
+    (retentionGraceHours: int)
+    (batchSize: int)
+    (cancellationToken: Threading.CancellationToken)
+    (conn: NpgsqlConnection)
+    =
+    let mode = if dryRun then "dry_run" else "execute"
+
+    insertGcRun tenantId initiatedBySubject mode retentionGraceHours batchSize conn
+    |> Result.bind (fun runId ->
+        insertGcMarksForRun tenantId runId conn
+        |> Result.bind (fun markedCount ->
+            let versionResult =
+                if dryRun then
+                    readExpiredTombstonedVersionIds tenantId batchSize conn
+                    |> Result.map (fun versionIds -> versionIds, 0)
+                else
+                    deleteExpiredTombstonedVersions tenantId batchSize conn
+                    |> Result.map (fun versionIds -> versionIds, versionIds.Length)
+
+            versionResult
+            |> Result.bind (fun (_versionIds, deletedVersionCount) ->
+                readGcCandidateBlobsForRun runId retentionGraceHours batchSize conn
+                |> Result.bind (fun candidates ->
+                    let candidateBlobCount = candidates.Length
+                    let candidateDigests = candidates |> List.map (fun candidate -> candidate.Digest)
+
+                    let deleteResult =
+                        if dryRun then
+                            Ok(0, 0)
+                        else
+                            let mutable deletableDigests = []
+                            let mutable deleteErrorCount = 0
+
+                            for candidate in candidates do
+                                match objectStorageClient.DeleteObject(candidate.StorageKey, cancellationToken).Result with
+                                | Ok () ->
+                                    deletableDigests <- candidate.Digest :: deletableDigests
+                                | Error(NotFound _) ->
+                                    deletableDigests <- candidate.Digest :: deletableDigests
+                                | Error _ ->
+                                    deleteErrorCount <- deleteErrorCount + 1
+
+                            let digestsToDelete = deletableDigests |> List.rev
+
+                            clearUploadSessionCommittedBlobReferences digestsToDelete conn
+                            |> Result.bind (fun _ -> deleteBlobsByDigests digestsToDelete conn)
+                            |> Result.map (fun deletedBlobCount -> deletedBlobCount, deleteErrorCount)
+
+                    deleteResult
+                    |> Result.bind (fun (deletedBlobCount, deleteErrorCount) ->
+                        finalizeGcRun
+                            runId
+                            markedCount
+                            candidateBlobCount
+                            deletedBlobCount
+                            deletedVersionCount
+                            deleteErrorCount
+                            conn
+                        |> Result.map (fun () ->
+                            { RunId = runId
+                              Mode = mode
+                              MarkedCount = markedCount
+                              CandidateBlobCount = candidateBlobCount
+                              DeletedBlobCount = deletedBlobCount
+                              DeletedVersionCount = deletedVersionCount
+                              DeleteErrorCount = deleteErrorCount
+                              CandidateDigests = candidateDigests |> List.truncate 20 }))))))
+
+let readBlobReconcileSummary (tenantId: Guid) (sampleLimit: int) (conn: NpgsqlConnection) =
+    let scalarCount (sql: string) =
+        use cmd = new NpgsqlCommand(sql, conn)
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> Ok count
+        | :? int32 as count -> Ok(int64 count)
+        | _ -> Error "Unexpected count type returned during reconcile query."
+
+    let missingArtifactCountSql =
+        """
+select count(*)
+from artifact_entries ae
+join package_versions pv on pv.version_id = ae.version_id
+left join blobs b on b.digest = ae.blob_digest
+where pv.tenant_id = @tenant_id
+  and b.digest is null;
+"""
+
+    let missingManifestCountSql =
+        """
+select count(*)
+from manifests m
+left join blobs b on b.digest = m.manifest_blob_digest
+where m.tenant_id = @tenant_id
+  and m.manifest_blob_digest is not null
+  and b.digest is null;
+"""
+
+    let orphanBlobCountSql =
+        """
+select count(*)
+from blobs b
+where not exists (
+  select 1 from artifact_entries ae where ae.blob_digest = b.digest
+)
+and not exists (
+  select 1 from manifests m where m.manifest_blob_digest = b.digest
+);
+"""
+
+    scalarCount missingArtifactCountSql
+    |> Result.bind (fun missingArtifactBlobRefs ->
+        scalarCount missingManifestCountSql
+        |> Result.bind (fun missingManifestBlobRefs ->
+            scalarCount orphanBlobCountSql
+            |> Result.bind (fun orphanBlobCount ->
+                use missingArtifactSampleCmd =
+                    new NpgsqlCommand(
+                        """
+select ae.version_id::text || ':' || ae.relative_path || ':' || ae.blob_digest
+from artifact_entries ae
+join package_versions pv on pv.version_id = ae.version_id
+left join blobs b on b.digest = ae.blob_digest
+where pv.tenant_id = @tenant_id
+  and b.digest is null
+order by ae.entry_id
+limit @sample_limit;
+""",
+                        conn
+                    )
+
+                missingArtifactSampleCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                missingArtifactSampleCmd.Parameters.AddWithValue("sample_limit", sampleLimit) |> ignore
+
+                use missingArtifactReader = missingArtifactSampleCmd.ExecuteReader()
+                let missingArtifactSamples = ResizeArray<string>()
+
+                let rec readMissingArtifact () =
+                    if missingArtifactReader.Read() then
+                        missingArtifactSamples.Add(missingArtifactReader.GetString(0))
+                        readMissingArtifact ()
+
+                readMissingArtifact ()
+                missingArtifactReader.Close()
+
+                use missingManifestSampleCmd =
+                    new NpgsqlCommand(
+                        """
+select m.version_id::text || ':' || m.manifest_blob_digest
+from manifests m
+left join blobs b on b.digest = m.manifest_blob_digest
+where m.tenant_id = @tenant_id
+  and m.manifest_blob_digest is not null
+  and b.digest is null
+order by m.version_id
+limit @sample_limit;
+""",
+                        conn
+                    )
+
+                missingManifestSampleCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                missingManifestSampleCmd.Parameters.AddWithValue("sample_limit", sampleLimit) |> ignore
+
+                use missingManifestReader = missingManifestSampleCmd.ExecuteReader()
+                let missingManifestSamples = ResizeArray<string>()
+
+                let rec readMissingManifest () =
+                    if missingManifestReader.Read() then
+                        missingManifestSamples.Add(missingManifestReader.GetString(0))
+                        readMissingManifest ()
+
+                readMissingManifest ()
+                missingManifestReader.Close()
+
+                use orphanSampleCmd =
+                    new NpgsqlCommand(
+                        """
+select b.digest
+from blobs b
+where not exists (
+  select 1 from artifact_entries ae where ae.blob_digest = b.digest
+)
+and not exists (
+  select 1 from manifests m where m.manifest_blob_digest = b.digest
+)
+order by b.created_at desc
+limit @sample_limit;
+""",
+                        conn
+                    )
+
+                orphanSampleCmd.Parameters.AddWithValue("sample_limit", sampleLimit) |> ignore
+
+                use orphanReader = orphanSampleCmd.ExecuteReader()
+                let orphanSamples = ResizeArray<string>()
+
+                let rec readOrphans () =
+                    if orphanReader.Read() then
+                        orphanSamples.Add(orphanReader.GetString(0))
+                        readOrphans ()
+
+                readOrphans ()
+
+                Ok(
+                    {| checkedAtUtc = nowUtc ()
+                       missingArtifactBlobRefs = missingArtifactBlobRefs
+                       missingManifestBlobRefs = missingManifestBlobRefs
+                       orphanBlobCount = orphanBlobCount
+                       sampleLimit = sampleLimit
+                       missingArtifactSamples = missingArtifactSamples |> Seq.toArray
+                       missingManifestSamples = missingManifestSamples |> Seq.toArray
+                       orphanBlobSamples = orphanSamples |> Seq.toArray |}))))
 
 let evaluatePolicyForVersion
     (tenantId: Guid)
@@ -2915,12 +3628,36 @@ let main args =
             | true, value when value > 0 -> value
             | _ -> 250
 
+        let defaultTombstoneRetentionDays =
+            let raw = builder.Configuration.["Lifecycle:DefaultTombstoneRetentionDays"]
+
+            match Int32.TryParse raw with
+            | true, value when value >= 1 && value <= 3650 -> value
+            | _ -> 30
+
+        let defaultGcRetentionGraceHours =
+            let raw = builder.Configuration.["Lifecycle:DefaultGcRetentionGraceHours"]
+
+            match Int32.TryParse raw with
+            | true, value when value >= 0 && value <= 24 * 365 -> value
+            | _ -> 24
+
+        let defaultGcBatchSize =
+            let raw = builder.Configuration.["Lifecycle:DefaultGcBatchSize"]
+
+            match Int32.TryParse raw with
+            | true, value when value >= 1 && value <= 5000 -> value
+            | _ -> 200
+
         { ConnectionString = connectionString
           TenantSlug = "default"
           TenantName = "Default Tenant"
           ObjectStorageClient = objectStorageClient
           PresignPartTtlSeconds = objectStorageConfig.PresignPartTtlSeconds
-          PolicyEvaluationTimeoutMs = policyEvaluationTimeoutMs }
+          PolicyEvaluationTimeoutMs = policyEvaluationTimeoutMs
+          DefaultTombstoneRetentionDays = defaultTombstoneRetentionDays
+          DefaultGcRetentionGraceHours = defaultGcRetentionGraceHours
+          DefaultGcBatchSize = defaultGcBatchSize }
 
     let app = builder.Build()
 
@@ -3609,6 +4346,76 @@ let main args =
                                    eventEmitted = outboxEventId.IsSome
                                    idempotent = false |}
                             ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/packages/versions/{versionId}/tombstone",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let versionIdRaw = normalizeText (ctx.Request.RouteValues["versionId"].ToString())
+
+            let parsedVersionId =
+                match Guid.TryParse(versionIdRaw) with
+                | true, parsed -> Ok parsed
+                | _ -> Error "versionId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedVersionId with
+                | Error err -> badRequest err
+                | Ok versionId ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match readJsonBody<TombstoneVersionRequest> ctx with
+                        | Error err -> badRequest err
+                        | Ok request ->
+                            match validateTombstoneRequest state.DefaultTombstoneRetentionDays request with
+                            | Error err -> badRequest err
+                            | Ok(reason, retentionDays) ->
+                                match
+                                    withConnection
+                                        state
+                                        (tombstoneVersionForRepo
+                                            principal.TenantId
+                                            repoKey
+                                            versionId
+                                            reason
+                                            retentionDays
+                                            principal.Subject)
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok TombstoneVersionMissing ->
+                                    Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
+                                | Ok(TombstoneVersionStateConflict stateValue) ->
+                                    conflict $"Package version is in state '{stateValue}' and cannot be tombstoned."
+                                | Ok(TombstoneVersionAlreadyTombstoned(target, retentionUntilUtc)) ->
+                                    Results.Ok(
+                                        {| versionId = target.VersionId
+                                           repoKey = target.RepoKey
+                                           packageType = target.PackageType
+                                           packageNamespace = target.PackageNamespace
+                                           packageName = target.PackageName
+                                           version = target.Version
+                                           state = target.State
+                                           retentionUntilUtc = retentionUntilUtc
+                                           idempotent = true |}
+                                    )
+                                | Ok(TombstoneVersionSuccess(target, tombstonedAtUtc, retentionUntilUtc)) ->
+                                    Results.Ok(
+                                        {| versionId = target.VersionId
+                                           repoKey = target.RepoKey
+                                           packageType = target.PackageType
+                                           packageNamespace = target.PackageNamespace
+                                           packageName = target.PackageName
+                                           version = target.Version
+                                           state = target.State
+                                           tombstonedAtUtc = tombstonedAtUtc
+                                           retentionUntilUtc = retentionUntilUtc
+                                           idempotent = false |}
+                                    ))
     )
     |> ignore
 
@@ -4616,6 +5423,114 @@ let main args =
                                                 contentType = (downloaded.ContentType |> Option.defaultValue "application/octet-stream")
                                             )
     ))
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/reconcile/blobs",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                let sampleLimitRaw = ctx.Request.Query["limit"].ToString()
+
+                let sampleLimit =
+                    match Int32.TryParse(sampleLimitRaw) with
+                    | true, parsed when parsed > 0 -> min parsed 200
+                    | _ -> 20
+
+                match withConnection state (readBlobReconcileSummary principal.TenantId sampleLimit) with
+                | Error err -> serviceUnavailable err
+                | Ok summary ->
+                    match
+                        writeAudit
+                            state
+                            principal.TenantId
+                            principal.Subject
+                            "reconcile.blobs.checked"
+                            "reconcile"
+                            (principal.TenantId.ToString())
+                            (Map.ofList
+                                [ "sampleLimit", sampleLimit.ToString()
+                                  "missingArtifactBlobRefs", summary.missingArtifactBlobRefs.ToString()
+                                  "missingManifestBlobRefs", summary.missingManifestBlobRefs.ToString()
+                                  "orphanBlobCount", summary.orphanBlobCount.ToString() ])
+                    with
+                    | Error err -> serviceUnavailable err
+                    | Ok () -> Results.Ok(summary))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/gc/runs",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match readOptionalJsonBody<RunGcRequest> ctx with
+                | Error err -> badRequest err
+                | Ok requestOption ->
+                    match
+                        validateGcRequest
+                            state.DefaultGcRetentionGraceHours
+                            state.DefaultGcBatchSize
+                            requestOption
+                    with
+                    | Error err -> badRequest err
+                    | Ok(dryRun, retentionGraceHours, batchSize) ->
+                        match
+                            withConnection
+                                state
+                                (runGcSweep
+                                    state.ObjectStorageClient
+                                    principal.TenantId
+                                    principal.Subject
+                                    dryRun
+                                    retentionGraceHours
+                                    batchSize
+                                    ctx.RequestAborted)
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok gcRun ->
+                            let auditAction =
+                                if dryRun then
+                                    "gc.run.dry_run"
+                                else
+                                    "gc.run.execute"
+
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    auditAction
+                                    "gc_run"
+                                    (gcRun.RunId.ToString())
+                                    (Map.ofList
+                                        [ "mode", gcRun.Mode
+                                          "retentionGraceHours", retentionGraceHours.ToString()
+                                          "batchSize", batchSize.ToString()
+                                          "markedCount", gcRun.MarkedCount.ToString()
+                                          "candidateBlobCount", gcRun.CandidateBlobCount.ToString()
+                                          "deletedBlobCount", gcRun.DeletedBlobCount.ToString()
+                                          "deletedVersionCount", gcRun.DeletedVersionCount.ToString()
+                                          "deleteErrorCount", gcRun.DeleteErrorCount.ToString() ])
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok () ->
+                                Results.Ok(
+                                    {| runId = gcRun.RunId
+                                       mode = gcRun.Mode
+                                       dryRun = dryRun
+                                       retentionGraceHours = retentionGraceHours
+                                       batchSize = batchSize
+                                       markedCount = gcRun.MarkedCount
+                                       candidateBlobCount = gcRun.CandidateBlobCount
+                                       deletedBlobCount = gcRun.DeletedBlobCount
+                                       deletedVersionCount = gcRun.DeletedVersionCount
+                                       deleteErrorCount = gcRun.DeleteErrorCount
+                                       candidateDigests = gcRun.CandidateDigests |> List.toArray |}
+                                ))
+    )
     |> ignore
 
     app.MapGet(

@@ -11,7 +11,8 @@ This roadmap converts the design into execution phases with exit criteria.
 | Phase 2 | complete | P2-01 through P2-10 complete, including throughput baseline/load report and executable demo/runbook. |
 | Phase 3 | complete | P3-01 through P3-10 complete, including atomic publish + outbox + demo/runbook. |
 | Phase 4 | complete | P4-01 through P4-10 complete, including policy/quarantine/search workflow and demo/runbook. |
-| Phase 5+ | planned | GC/repair, hardening. |
+| Phase 5 | complete | P5-01 through P5-08 complete, including tombstone, GC dry-run/execute, reconcile API, and demo/runbook. |
+| Phase 6 | planned | Hardening and GA readiness. |
 
 ## Phase 0: Foundation (1-2 weeks)
 
@@ -139,7 +140,7 @@ Mitigation:
 ## Minimum Viable Release Cut
 
 MVR includes:
-- Phases 0 through 3 fully complete.
-- basic Phase 5 tombstone flow (without automated hard-delete).
+- Phases 0 through 5 fully complete.
+- Demo/runbook-backed lifecycle operations (tombstone, GC, reconcile) with integration coverage.
 
-This enables production trials with strong integrity guarantees before full policy/search/GC maturity.
+This enables production trials with end-to-end lifecycle controls before Phase 6 hardening/GA closure.

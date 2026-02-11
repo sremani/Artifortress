@@ -10,8 +10,9 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 2: complete through P2-10 (upload/download APIs + verification + coverage + throughput baseline + demo/runbook).
 - Phase 3: complete through P3-10 (artifact entry + manifest APIs, atomic publish, outbox emission, authz/audit coverage, integration tests, demo/runbook).
 - Phase 4: implemented through P4-10 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics + deny/search-fallback integration coverage + demo/runbook).
+- Phase 5: complete through P5-08 (tombstone lifecycle + GC dry-run/execute + reconcile summary + admin authz/audit + demo/runbook).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: post-Phase-4 hardening and follow-on roadmap items.
+- Current build-out focus: Phase 6 hardening and GA readiness.
 
 ## Implemented Today
 
@@ -26,12 +27,16 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Dedupe-by-digest fast path.
   - Blob download with range support, repository-scoped visibility enforcement, and quarantine/reject blocking (`423 quarantined_blob`).
   - Audit actions for upload lifecycle operations.
+- Lifecycle operations (Phase 5):
+  - Version tombstone API with retention windows.
+  - Admin GC run API with safe dry-run mode and execute hard-delete mode.
+  - Admin reconcile API for metadata/blob drift summary.
 - Hardening updates:
   - Constant-time bootstrap token comparison.
   - Best-effort multipart abort on upload-session create race/failure paths.
   - Null-safe scope/role parsing guards in domain layer.
 - Persistence:
-  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, `db/migrations/0003_phase2_upload_sessions.sql`, `db/migrations/0004_phase3_publish_guardrails.sql`, `db/migrations/0005_phase3_published_immutability_hardening.sql`, and `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`.
+  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, `db/migrations/0003_phase2_upload_sessions.sql`, `db/migrations/0004_phase3_publish_guardrails.sql`, `db/migrations/0005_phase3_published_immutability_hardening.sql`, `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`, `db/migrations/0007_phase3_manifest_persistence.sql`, and `db/migrations/0008_phase5_tombstones_gc_reconcile.sql`.
 - Test coverage:
   - Domain unit tests.
   - API integration tests across authz, upload lifecycle, commit verification, dedupe, range behavior, and audit action matrix.
@@ -75,6 +80,11 @@ Run Phase 4 demo flow:
 make phase4-demo
 ```
 
+Run Phase 5 demo flow:
+```bash
+make phase5-demo
+```
+
 ## API Surface (Current)
 
 - `GET /health/live`
@@ -94,6 +104,7 @@ make phase4-demo
 - `PUT /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
 - `GET /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
 - `POST /v1/repos/{repoKey}/packages/versions/{versionId}/publish`
+- `POST /v1/repos/{repoKey}/packages/versions/{versionId}/tombstone`
 - `POST /v1/repos/{repoKey}/policy/evaluations`
 - `GET /v1/repos/{repoKey}/quarantine`
 - `GET /v1/repos/{repoKey}/quarantine/{quarantineId}`
@@ -104,6 +115,8 @@ make phase4-demo
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
 - `GET /v1/repos/{repoKey}/blobs/{digest}`
+- `POST /v1/admin/gc/runs`
+- `GET /v1/admin/reconcile/blobs`
 - `GET /v1/audit`
 
 ## Repository Layout
@@ -134,6 +147,8 @@ make phase4-demo
 - `docs/17-phase2-runbook.md`: executable Phase 2 upload/download demo + load baseline runbook.
 - `docs/18-phase2-throughput-baseline.md`: latest recorded Phase 2 throughput baseline and target outcomes.
 - `docs/19-phase3-runbook.md`: executable Phase 3 draft/manifest/publish demo runbook.
+- `docs/20-phase5-implementation-tickets.md`: active Phase 5 ticket board and acceptance criteria.
+- `docs/21-phase5-runbook.md`: executable Phase 5 tombstone/GC/reconcile demo runbook.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
 
 ## ADRs

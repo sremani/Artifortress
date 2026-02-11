@@ -7,7 +7,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo
 
 help:
 	@echo "Targets:"
@@ -29,6 +29,7 @@ help:
 	@echo "  phase2-load        Run Phase 2 throughput baseline script"
 	@echo "  phase3-demo        Run Phase 3 draft/manifest/publish demo script"
 	@echo "  phase4-demo        Run Phase 4 policy/quarantine/search demo script"
+	@echo "  phase5-demo        Run Phase 5 tombstone/gc/reconcile demo script"
 
 restore:
 	@for project in $(PROJECTS); do \
@@ -105,3 +106,6 @@ phase3-demo: build
 
 phase4-demo: build
 	./scripts/phase4-demo.sh
+
+phase5-demo: build
+	./scripts/phase5-demo.sh

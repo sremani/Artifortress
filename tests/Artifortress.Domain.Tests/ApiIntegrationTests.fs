@@ -73,6 +73,19 @@ type UpsertManifestRequest = {
 }
 
 [<CLIMutable>]
+type TombstoneVersionRequest = {
+    Reason: string
+    RetentionDays: int
+}
+
+[<CLIMutable>]
+type RunGcRequest = {
+    DryRun: bool
+    RetentionGraceHours: int
+    BatchSize: int
+}
+
+[<CLIMutable>]
 type EvaluatePolicyRequest = {
     Action: string
     VersionId: Guid
@@ -646,6 +659,100 @@ where tenant_id = @tenant_id
         | :? int32 as count -> int64 count
         | _ -> failwith $"Unexpected outbox event count scalar for version {versionId}."
 
+    member this.CountTombstonesForVersion(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from tombstones
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected tombstone count scalar for version {versionId}."
+
+    member this.ExpireTombstoneRetention(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update tombstones
+set retention_until = now() - interval '1 hour'
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not expire tombstone retention for version {versionId}."
+
+    member this.SeedOrphanBlob(digest: string, lengthBytes: int64) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let storageKey = $"integration/orphan/{digest}"
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+insert into blobs (digest, length_bytes, storage_key)
+values (@digest, @length_bytes, @storage_key)
+on conflict (digest)
+do update set storage_key = excluded.storage_key;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("digest", digest) |> ignore
+        cmd.Parameters.AddWithValue("length_bytes", lengthBytes) |> ignore
+        cmd.Parameters.AddWithValue("storage_key", storageKey) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
+
+    member this.BlobExists(digest: string) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select exists(
+  select 1
+  from blobs
+  where digest = @digest
+);
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("digest", digest) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? bool as existsValue -> existsValue
+        | _ -> failwith $"Unexpected blob exists scalar for digest {digest}."
+
     member this.TryMutatePublishedVersionMetadata(versionId: Guid) =
         this.RequireAvailable()
 
@@ -1151,6 +1258,58 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
         fixture.Client.Send(request)
+
+    let tombstoneVersionWithToken (token: string) (repoKey: string) (versionId: Guid) (reason: string) (retentionDays: int) =
+        use request =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/tombstone")
+
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <- JsonContent.Create({ Reason = reason; RetentionDays = retentionDays })
+        fixture.Client.Send(request)
+
+    let runGcWithToken (token: string) (requestBody: RunGcRequest option) =
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/gc/runs")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+
+        match requestBody with
+        | Some body -> request.Content <- JsonContent.Create(body)
+        | None -> ()
+
+        fixture.Client.Send(request)
+
+    let reconcileBlobsWithToken (token: string) (limit: int) =
+        use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/admin/reconcile/blobs?limit={limit}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let createPublishedVersionWithBlob (repoKey: string) (writeToken: string) (promoteToken: string) (packageName: string) =
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let digest = tokenHashFor $"p5-digest-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, digest, 512L)
+
+        let entries =
+            [| { RelativePath = "lib/package.nupkg"
+                 BlobDigest = digest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = digest
+                 SizeBytes = 512L } |]
+
+        use entriesResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entries
+        ensureStatus HttpStatusCode.OK entriesResponse |> ignore
+
+        use manifestDoc = JsonDocument.Parse("""{"id":"phase5.package","version":"1.0.0"}""")
+        let manifest = manifestDoc.RootElement.Clone()
+        use manifestResponse = upsertManifestWithToken writeToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.OK manifestResponse |> ignore
+
+        use publishResponse = publishVersionWithToken promoteToken repoKey versionId
+        ensureStatus HttpStatusCode.OK publishResponse |> ignore
+
+        versionId, digest
 
     let evaluatePolicyWithToken
         (token: string)
@@ -2858,6 +3017,216 @@ type Phase1ApiTests(fixture: ApiFixture) =
             listedReleased,
             "Expected quarantine release flow to remain correct while search pipeline has degraded events/jobs."
         )
+
+    [<Fact>]
+    member _.``P5-01 tombstone endpoint enforces authz and transitions published version to tombstoned`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p501-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p501-tombstone"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p501-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p501-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionId, _ =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p501-{Guid.NewGuid():N}"
+
+        use unauthorizedRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/tombstone")
+
+        unauthorizedRequest.Content <- JsonContent.Create({ Reason = "phase5 unauthorized"; RetentionDays = 7 })
+        use unauthorizedResponse = fixture.Client.Send(unauthorizedRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedResponse |> ignore
+
+        use forbiddenResponse = tombstoneVersionWithToken writeToken repoKey versionId "phase5 forbidden" 7
+        ensureStatus HttpStatusCode.Forbidden forbiddenResponse |> ignore
+
+        use successResponse = tombstoneVersionWithToken promoteToken repoKey versionId "phase5 retention test" 7
+        let successBody = ensureStatus HttpStatusCode.OK successResponse
+        use successDoc = JsonDocument.Parse(successBody)
+        Assert.Equal("tombstoned", successDoc.RootElement.GetProperty("state").GetString())
+        Assert.False(successDoc.RootElement.GetProperty("idempotent").GetBoolean())
+
+        Assert.Equal(Some "tombstoned", fixture.TryReadVersionState(versionId))
+        Assert.Equal(1L, fixture.CountTombstonesForVersion(versionId))
+
+    [<Fact>]
+    member _.``P5-01 tombstone endpoint is idempotent on repeated request`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p501-idem-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p501-idem"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p501-idem-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p501-idem-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionId, _ =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p501-idem-{Guid.NewGuid():N}"
+
+        use firstResponse = tombstoneVersionWithToken promoteToken repoKey versionId "phase5 first tombstone" 10
+        ensureStatus HttpStatusCode.OK firstResponse |> ignore
+
+        use secondResponse = tombstoneVersionWithToken promoteToken repoKey versionId "phase5 second tombstone" 10
+        let secondBody = ensureStatus HttpStatusCode.OK secondResponse
+        use secondDoc = JsonDocument.Parse(secondBody)
+        Assert.True(secondDoc.RootElement.GetProperty("idempotent").GetBoolean())
+
+    [<Fact>]
+    member _.``P5-02 GC dry-run reports orphan candidates without deleting blobs`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p502-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p502-gc"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p502-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p502-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionId, tombstonedDigest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p502-{Guid.NewGuid():N}"
+
+        use tombstoneResponse = tombstoneVersionWithToken promoteToken repoKey versionId "phase5 gc dry-run" 1
+        ensureStatus HttpStatusCode.OK tombstoneResponse |> ignore
+        fixture.ExpireTombstoneRetention(versionId)
+
+        let orphanDigest = tokenHashFor $"p502-orphan-{Guid.NewGuid():N}"
+        fixture.SeedOrphanBlob(orphanDigest, 321L)
+
+        use gcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = true
+                      RetentionGraceHours = 0
+                      BatchSize = 250 })
+
+        let gcBody = ensureStatus HttpStatusCode.OK gcResponse
+        use gcDoc = JsonDocument.Parse(gcBody)
+        Assert.Equal("dry_run", gcDoc.RootElement.GetProperty("mode").GetString())
+        Assert.Equal(0, gcDoc.RootElement.GetProperty("deletedBlobCount").GetInt32())
+        Assert.Equal(0, gcDoc.RootElement.GetProperty("deletedVersionCount").GetInt32())
+
+        let candidateBlobCount = gcDoc.RootElement.GetProperty("candidateBlobCount").GetInt32()
+        Assert.True(candidateBlobCount >= 1, "Expected at least one GC candidate in dry-run.")
+        Assert.Equal(Some "tombstoned", fixture.TryReadVersionState(versionId))
+        Assert.True(fixture.BlobExists(tombstonedDigest), "Dry-run must not delete referenced tombstoned blobs.")
+        Assert.True(fixture.BlobExists(orphanDigest), "Dry-run must not delete blob rows.")
+
+    [<Fact>]
+    member _.``P5-03 GC execute hard-deletes expired tombstoned versions and orphan blobs`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p503-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p503-gc"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p503-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p503-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionId, digest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p503-{Guid.NewGuid():N}"
+
+        use tombstoneResponse = tombstoneVersionWithToken promoteToken repoKey versionId "phase5 gc execute" 1
+        ensureStatus HttpStatusCode.OK tombstoneResponse |> ignore
+        fixture.ExpireTombstoneRetention(versionId)
+
+        let orphanDigest = tokenHashFor $"p503-orphan-{Guid.NewGuid():N}"
+        fixture.SeedOrphanBlob(orphanDigest, 211L)
+
+        Assert.True(fixture.BlobExists(digest))
+        Assert.True(fixture.BlobExists(orphanDigest))
+
+        use gcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = false
+                      RetentionGraceHours = 0
+                      BatchSize = 500 })
+
+        let gcBody = ensureStatus HttpStatusCode.OK gcResponse
+        use gcDoc = JsonDocument.Parse(gcBody)
+        Assert.Equal("execute", gcDoc.RootElement.GetProperty("mode").GetString())
+
+        let deletedVersionCount = gcDoc.RootElement.GetProperty("deletedVersionCount").GetInt32()
+        let deletedBlobCount = gcDoc.RootElement.GetProperty("deletedBlobCount").GetInt32()
+
+        Assert.True(deletedVersionCount >= 1, "Expected at least one tombstoned version hard-deleted.")
+        Assert.True(deletedBlobCount >= 1, "Expected at least one orphan blob hard-deleted.")
+
+        Assert.Equal(None, fixture.TryReadVersionState(versionId))
+        Assert.False(fixture.BlobExists(digest))
+        Assert.False(fixture.BlobExists(orphanDigest))
+
+    [<Fact>]
+    member _.``P5-04 reconcile endpoint reports blob drift summary`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p504-admin") [| "repo:*:admin" |] 60
+
+        let orphanDigest = tokenHashFor $"p504-orphan-{Guid.NewGuid():N}"
+        fixture.SeedOrphanBlob(orphanDigest, 133L)
+
+        use reconcileResponse = reconcileBlobsWithToken adminToken 50
+        let reconcileBody = ensureStatus HttpStatusCode.OK reconcileResponse
+        use reconcileDoc = JsonDocument.Parse(reconcileBody)
+
+        let orphanBlobCount = reconcileDoc.RootElement.GetProperty("orphanBlobCount").GetInt64()
+        Assert.True(orphanBlobCount >= 1L)
+
+        let orphanSamples =
+            reconcileDoc.RootElement.GetProperty("orphanBlobSamples").EnumerateArray()
+            |> Seq.choose (fun element -> element.GetString() |> Option.ofObj)
+            |> Seq.toList
+
+        Assert.Contains(orphanDigest, orphanSamples)
+
+    [<Fact>]
+    member _.``P5-05 admin GC and reconcile endpoints enforce unauthorized, forbidden, and authorized paths`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p505-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p505-authz"
+        createRepoAsAdmin adminToken repoKey
+
+        let promoteToken, _ = issuePat (makeSubject "p505-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        use unauthorizedReconcileRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/reconcile/blobs?limit=10")
+        use unauthorizedReconcileResponse = fixture.Client.Send(unauthorizedReconcileRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedReconcileResponse |> ignore
+
+        use forbiddenReconcileResponse = reconcileBlobsWithToken promoteToken 10
+        ensureStatus HttpStatusCode.Forbidden forbiddenReconcileResponse |> ignore
+
+        use authorizedReconcileResponse = reconcileBlobsWithToken adminToken 10
+        ensureStatus HttpStatusCode.OK authorizedReconcileResponse |> ignore
+
+        use unauthorizedGcRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/gc/runs")
+        unauthorizedGcRequest.Content <- JsonContent.Create({ DryRun = true; RetentionGraceHours = 0; BatchSize = 100 })
+        use unauthorizedGcResponse = fixture.Client.Send(unauthorizedGcRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedGcResponse |> ignore
+
+        use forbiddenGcResponse =
+            runGcWithToken
+                promoteToken
+                (Some
+                    { DryRun = true
+                      RetentionGraceHours = 0
+                      BatchSize = 100 })
+
+        ensureStatus HttpStatusCode.Forbidden forbiddenGcResponse |> ignore
+
+        use authorizedGcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = true
+                      RetentionGraceHours = 0
+                      BatchSize = 100 })
+
+        ensureStatus HttpStatusCode.OK authorizedGcResponse |> ignore
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =

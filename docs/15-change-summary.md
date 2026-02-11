@@ -126,5 +126,58 @@ This change set combines:
 
 - `make format` passed.
 - `make test` (non-integration filter) passed: `84` tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `47` integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `131` total tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `53` integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `137` total tests.
+
+## Phase 5 Completion Addendum (2026-02-11)
+
+### Code changes
+
+- `db/migrations/0008_phase5_tombstones_gc_reconcile.sql` (new)
+  - Added `tombstones`, `gc_runs`, and `gc_marks` lifecycle tables and indexes.
+  - Updated `upload_sessions_committed_blob_digest_fkey` behavior to `ON DELETE SET NULL`.
+- `src/Artifortress.Api/ObjectStorage.fs`
+  - Added `DeleteObject` to `IObjectStorageClient` and S3 implementation.
+- `src/Artifortress.Api/Program.fs`
+  - Added tombstone endpoint:
+    - `POST /v1/repos/{repoKey}/packages/versions/{versionId}/tombstone`
+  - Added admin GC/reconcile endpoints:
+    - `POST /v1/admin/gc/runs`
+    - `GET /v1/admin/reconcile/blobs`
+  - Added tombstone/GC/reconcile validation, DB handlers, and audit integration.
+  - Fixed GC dry-run safety to avoid version/blob mutations.
+  - Added upload-session committed-blob reference cleanup before blob hard-delete.
+- `scripts/phase5-demo.sh` (new)
+  - Added executable Phase 5 end-to-end workflow script.
+- `Makefile`
+  - Added `phase5-demo` target.
+
+### Test changes
+
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added Phase 5 integration tests:
+    - tombstone authz/transition/idempotency (`P5-01`)
+    - GC dry-run safety and candidate reporting (`P5-02`)
+    - GC execute hard-delete flow (`P5-03`)
+    - reconcile drift summary (`P5-04`)
+    - admin endpoint authz matrix (`P5-05`)
+
+### Documentation changes
+
+- `docs/20-phase5-implementation-tickets.md` (new)
+  - Added full Phase 5 ticket board, notes, and acceptance criteria.
+- `docs/21-phase5-runbook.md` (new)
+  - Added executable runbook for Phase 5 lifecycle demo.
+- Updated:
+  - `README.md`
+  - `docs/05-implementation-plan.md`
+  - `docs/07-delivery-walkthrough-plan.md`
+  - `docs/10-current-state.md`
+
+### Updated verification
+
+- `make build` passed.
+- `make test` passed: `84` tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `53` integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `137` total tests.
+- `make format` passed.
