@@ -1,0 +1,43 @@
+phase6_alert_thresholds:
+  source_endpoint: /v1/admin/ops/summary
+  checks:
+    - metric: pendingOutboxEvents
+      severity: warning
+      comparator: ">"
+      threshold: 50
+      rationale: "outbox backlog should stay small during steady state"
+    - metric: pendingOutboxEvents
+      severity: critical
+      comparator: ">"
+      threshold: 200
+      rationale: "large undelivered outbox backlog risks delayed downstream processing"
+    - metric: oldestPendingOutboxAgeSeconds
+      severity: warning
+      comparator: ">"
+      threshold: 300
+      rationale: "pending events should not age beyond 5 minutes"
+    - metric: oldestPendingOutboxAgeSeconds
+      severity: critical
+      comparator: ">"
+      threshold: 900
+      rationale: "pending events older than 15 minutes require operator action"
+    - metric: failedSearchJobs
+      severity: warning
+      comparator: ">"
+      threshold: 5
+      rationale: "failed search jobs indicate indexing reliability issues"
+    - metric: failedSearchJobs
+      severity: critical
+      comparator: ">"
+      threshold: 20
+      rationale: "high failed-job volume risks stale search behavior"
+    - metric: incompleteGcRuns
+      severity: warning
+      comparator: ">"
+      threshold: 0
+      rationale: "stuck GC runs should be investigated"
+    - metric: recentPolicyTimeouts24h
+      severity: warning
+      comparator: ">"
+      threshold: 0
+      rationale: "policy timeout events should be rare and triaged quickly"

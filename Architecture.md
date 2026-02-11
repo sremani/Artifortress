@@ -1,6 +1,6 @@
 # Artifortress Architecture Snapshot
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 This document describes current architecture and explicitly separates implemented behavior from planned design.
 
@@ -26,30 +26,29 @@ Current database migrations:
 - `db/migrations/0004_phase3_publish_guardrails.sql`
 - `db/migrations/0005_phase3_published_immutability_hardening.sql`
 - `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`
+- `db/migrations/0007_phase3_manifest_persistence.sql`
+- `db/migrations/0008_phase5_tombstones_gc_reconcile.sql`
 
 Current data-plane capabilities:
 - Upload session create plus multipart lifecycle (`parts`, `complete`, `abort`).
 - Commit-time digest/size verification with deterministic mismatch handling.
 - Dedupe by digest when blob already exists.
 - Blob download endpoint with single-range support.
+- Tombstone lifecycle with retention windows.
+- Admin GC run API (`dry_run` and `execute`) and reconcile summary API.
+- Readiness checks with live Postgres/object-storage probes.
+- Admin operations summary endpoint for backlog/risk posture.
 
 Current auth model:
 - PAT bootstrap issuance via `X-Bootstrap-Token` (for initial/admin bootstrap cases).
 - Repo-scoped RBAC with `read`, `write`, `admin`, `promote`.
 - `admin` wildcard scope used for global admin operations.
 
-## Planned Runtime (Not Yet Implemented)
+## Planned Runtime (Post-GA)
 
-Metadata/publish plane:
-- Draft version create path is now implemented (`POST /v1/repos/{repoKey}/packages/versions/drafts`).
-- Remaining: publish transaction for version + artifact entries + outbox + audit.
-- Phase 3 kickoff guardrails are now in place at the DB layer for published-row immutability.
-
-Event/index/policy plane:
-- Outbox workers and external side effects.
-- Search indexing pipeline.
-- Quarantine/policy gates and promotion flow.
-- Phase 4 kickoff schema scaffold for policy decisions, quarantine items, and search index jobs is now in place.
+- OIDC/SAML identity-provider integration.
+- Search read-model query serving beyond queue/job scaffolding.
+- Continued reliability hardening and scale posture improvements.
 
 ## Invariants We Already Enforce
 
@@ -63,9 +62,9 @@ Event/index/policy plane:
 
 ## Invariants Targeted Next
 
-- Atomic publish semantics with no partial version visibility.
-- Tombstone-first deletion with GC safety checks.
-- Side effects driven exclusively from committed outbox events.
+- Identity federation while preserving current PAT security invariants.
+- Search read-model consistency/rebuild guarantees.
+- Operational scale hardening under sustained backlog pressure.
 
 ## References
 

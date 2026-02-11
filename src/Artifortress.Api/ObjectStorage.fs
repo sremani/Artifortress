@@ -82,6 +82,9 @@ type IObjectStorageClient =
     abstract member DeleteObject:
         objectKey: string * cancellationToken: CancellationToken -> Task<Result<unit, ObjectStorageError>>
 
+    abstract member CheckAvailability:
+        cancellationToken: CancellationToken -> Task<Result<unit, ObjectStorageError>>
+
 let private normalizeText (value: string) =
     if String.IsNullOrWhiteSpace value then "" else value.Trim()
 
@@ -326,6 +329,18 @@ type private S3ObjectStorageClient(config: ObjectStorageConfig) =
                         return Ok()
                     with ex ->
                         return Error(mapException ex)
+            }
+
+        member _.CheckAvailability(cancellationToken: CancellationToken) =
+            task {
+                try
+                    let request = ListObjectsV2Request()
+                    request.BucketName <- config.Bucket
+                    request.MaxKeys <- 1
+                    let! _ = s3Client.ListObjectsV2Async(request, cancellationToken)
+                    return Ok()
+                with ex ->
+                    return Error(mapException ex)
             }
 
 let createClient (config: ObjectStorageConfig) : IObjectStorageClient = S3ObjectStorageClient(config) :> IObjectStorageClient

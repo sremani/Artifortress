@@ -812,6 +812,39 @@ let withConnection (state: AppState) (handler: NpgsqlConnection -> Result<'T, st
     with ex ->
         Error $"Database operation failed: {ex.Message}"
 
+let private describeObjectStorageError (err: ObjectStorageError) =
+    match err with
+    | InvalidRequest message
+    | NotFound message
+    | InvalidRange message
+    | AccessDenied message
+    | TransientFailure message
+    | UnexpectedFailure message -> message
+
+let private checkPostgresReadiness (state: AppState) =
+    match
+        withConnection state (fun conn ->
+            use cmd = new NpgsqlCommand("select 1;", conn)
+            cmd.ExecuteScalar() |> ignore
+            Ok())
+    with
+    | Ok () -> true, None
+    | Error err -> false, Some err
+
+let private checkObjectStorageReadiness (state: AppState) (cancellationToken: Threading.CancellationToken) =
+    try
+        match state.ObjectStorageClient.CheckAvailability(cancellationToken).Result with
+        | Ok () -> true, None
+        | Error err -> false, Some(describeObjectStorageError err)
+    with ex ->
+        let message =
+            if String.IsNullOrWhiteSpace ex.Message then
+                "Object storage readiness check failed."
+            else
+                ex.Message
+
+        false, Some message
+
 let ensureTenantId (state: AppState) (conn: NpgsqlConnection) =
     use cmd =
         new NpgsqlCommand(
@@ -2526,6 +2559,98 @@ limit @sample_limit;
                        missingManifestSamples = missingManifestSamples |> Seq.toArray
                        orphanBlobSamples = orphanSamples |> Seq.toArray |}))))
 
+let readOpsSummary (tenantId: Guid) (conn: NpgsqlConnection) =
+    let scalarCount (sql: string) =
+        use cmd = new NpgsqlCommand(sql, conn)
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> Ok count
+        | :? int32 as count -> Ok(int64 count)
+        | _ -> Error "Unexpected count type returned during operations summary query."
+
+    let pendingOutboxSql =
+        """
+select count(*)
+from outbox_events
+where tenant_id = @tenant_id
+  and delivered_at is null;
+"""
+
+    let availableOutboxSql =
+        """
+select count(*)
+from outbox_events
+where tenant_id = @tenant_id
+  and delivered_at is null
+  and available_at <= now();
+"""
+
+    let oldestPendingOutboxAgeSecondsSql =
+        """
+select coalesce(max(extract(epoch from (now() - occurred_at))), 0)::bigint
+from outbox_events
+where tenant_id = @tenant_id
+  and delivered_at is null;
+"""
+
+    let failedSearchJobsSql =
+        """
+select count(*)
+from search_index_jobs
+where tenant_id = @tenant_id
+  and status = 'failed';
+"""
+
+    let pendingSearchJobsSql =
+        """
+select count(*)
+from search_index_jobs
+where tenant_id = @tenant_id
+  and status in ('pending', 'processing');
+"""
+
+    let incompleteGcRunsSql =
+        """
+select count(*)
+from gc_runs
+where tenant_id = @tenant_id
+  and completed_at is null;
+"""
+
+    let recentPolicyTimeoutsSql =
+        """
+select count(*)
+from audit_log
+where tenant_id = @tenant_id
+  and action = 'policy.timeout'
+  and occurred_at >= now() - interval '24 hours';
+"""
+
+    scalarCount pendingOutboxSql
+    |> Result.bind (fun pendingOutboxEvents ->
+        scalarCount availableOutboxSql
+        |> Result.bind (fun availableOutboxEvents ->
+            scalarCount oldestPendingOutboxAgeSecondsSql
+            |> Result.bind (fun oldestPendingOutboxAgeSeconds ->
+                scalarCount failedSearchJobsSql
+                |> Result.bind (fun failedSearchJobs ->
+                    scalarCount pendingSearchJobsSql
+                    |> Result.bind (fun pendingSearchJobs ->
+                        scalarCount incompleteGcRunsSql
+                        |> Result.bind (fun incompleteGcRuns ->
+                            scalarCount recentPolicyTimeoutsSql
+                            |> Result.map (fun recentPolicyTimeouts24h ->
+                                {| checkedAtUtc = nowUtc ()
+                                   pendingOutboxEvents = pendingOutboxEvents
+                                   availableOutboxEvents = availableOutboxEvents
+                                   oldestPendingOutboxAgeSeconds = oldestPendingOutboxAgeSeconds
+                                   failedSearchJobs = failedSearchJobs
+                                   pendingSearchJobs = pendingSearchJobs
+                                   incompleteGcRuns = incompleteGcRuns
+                                   recentPolicyTimeouts24h = recentPolicyTimeouts24h |})))))))
+
 let evaluatePolicyForVersion
     (tenantId: Guid)
     (repoKey: string)
@@ -3700,11 +3825,31 @@ let main args =
 
     app.MapGet(
         "/health/ready",
-        Func<IResult>(fun () ->
-            Results.Ok(
-                {| status = "ready"
-                   dependencies = [| "postgres"; "minio"; "redis" |] |}
-            ))
+        Func<HttpContext, IResult>(fun ctx ->
+            let postgresHealthy, postgresDetail = checkPostgresReadiness state
+            let objectStorageHealthy, objectStorageDetail = checkObjectStorageReadiness state ctx.RequestAborted
+
+            let dependencies =
+                [| {| name = "postgres"
+                      healthy = postgresHealthy
+                      detail = postgresDetail |}
+                   {| name = "object_storage"
+                      healthy = objectStorageHealthy
+                      detail = objectStorageDetail |} |]
+
+            if postgresHealthy && objectStorageHealthy then
+                Results.Ok(
+                    {| status = "ready"
+                       checkedAtUtc = nowUtc ()
+                       dependencies = dependencies |}
+                )
+            else
+                Results.Json(
+                    {| status = "not_ready"
+                       checkedAtUtc = nowUtc ()
+                       dependencies = dependencies |},
+                    statusCode = StatusCodes.Status503ServiceUnavailable
+                ))
     )
     |> ignore
 
@@ -5447,6 +5592,37 @@ let main args =
                                                 contentType = (downloaded.ContentType |> Option.defaultValue "application/octet-stream")
                                             )
     ))
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/ops/summary",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (readOpsSummary principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok summary ->
+                    match
+                        writeAudit
+                            state
+                            principal.TenantId
+                            principal.Subject
+                            "ops.summary.read"
+                            "operations"
+                            (principal.TenantId.ToString())
+                            (Map.ofList
+                                [ "pendingOutboxEvents", summary.pendingOutboxEvents.ToString()
+                                  "availableOutboxEvents", summary.availableOutboxEvents.ToString()
+                                  "oldestPendingOutboxAgeSeconds", summary.oldestPendingOutboxAgeSeconds.ToString()
+                                  "failedSearchJobs", summary.failedSearchJobs.ToString()
+                                  "pendingSearchJobs", summary.pendingSearchJobs.ToString()
+                                  "incompleteGcRuns", summary.incompleteGcRuns.ToString()
+                                  "recentPolicyTimeouts24h", summary.recentPolicyTimeouts24h.ToString() ])
+                    with
+                    | Error err -> serviceUnavailable err
+                    | Ok () -> Results.Ok(summary))
+    )
     |> ignore
 
     app.MapGet(

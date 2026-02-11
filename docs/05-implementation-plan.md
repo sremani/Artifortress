@@ -12,7 +12,8 @@ This roadmap converts the design into execution phases with exit criteria.
 | Phase 3 | complete | P3-01 through P3-10 complete, including atomic publish + outbox + demo/runbook. |
 | Phase 4 | complete | P4-01 through P4-10 complete, including policy/quarantine/search workflow and demo/runbook. |
 | Phase 5 | complete | P5-01 through P5-08 complete, including tombstone, GC dry-run/execute, reconcile API, and demo/runbook. |
-| Phase 6 | planned | Hardening and GA readiness. |
+| Phase 6 | complete | P6-01 through P6-10 complete, including readiness hardening, ops summary, DR drill, security closure, and rollback runbooks. |
+| Post-GA | planned | OIDC/SAML integration and search read-model serving maturity. |
 
 ## Phase 0: Foundation (1-2 weeks)
 
@@ -103,6 +104,13 @@ Exit criteria:
 - RPO/RTO drill passes.
 - no P0/P1 open launch blockers.
 
+Current implementation note:
+- Phase 6 is complete in this repository through:
+  - dependency-backed `/health/ready` checks,
+  - admin `/v1/admin/ops/summary` endpoint + audit,
+  - `db-backup`, `db-restore`, and `phase6-drill` scripts,
+  - security closure and upgrade/rollback runbooks.
+
 ## Cross-Cutting Workstreams
 
 - Correctness:
@@ -137,10 +145,12 @@ Mitigation:
 - bounded retry with dead-letter queue.
 - backlog alerts and worker autoscale policies.
 
-## Minimum Viable Release Cut
+## GA Release Cut
 
-MVR includes:
-- Phases 0 through 5 fully complete.
-- Demo/runbook-backed lifecycle operations (tombstone, GC, reconcile) with integration coverage.
+GA includes:
+- Phases 0 through 6 fully complete.
+- readiness hardening with dependency probes and admin operations summary.
+- backup/restore + RPO/RTO drill automation.
+- security closure and upgrade/rollback runbooks.
 
-This enables production trials with end-to-end lifecycle controls before Phase 6 hardening/GA closure.
+This represents launch-ready scope for the current roadmap.

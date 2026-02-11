@@ -1282,6 +1282,11 @@ type Phase1ApiTests(fixture: ApiFixture) =
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
         fixture.Client.Send(request)
 
+    let opsSummaryWithToken (token: string) =
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/ops/summary")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
     let createPublishedVersionWithBlob (repoKey: string) (writeToken: string) (promoteToken: string) (packageName: string) =
         use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
         let draftBody = ensureStatus HttpStatusCode.Created draftResponse
@@ -3182,6 +3187,85 @@ type Phase1ApiTests(fixture: ApiFixture) =
             |> Seq.toList
 
         Assert.Contains(orphanDigest, orphanSamples)
+
+    [<Fact>]
+    member _.``P6-01 readiness endpoint reports healthy postgres and object storage dependencies`` () =
+        fixture.RequireAvailable()
+
+        use response = fixture.Client.GetAsync("/health/ready").Result
+        let body = ensureStatus HttpStatusCode.OK response
+        use doc = JsonDocument.Parse(body)
+        Assert.Equal("ready", doc.RootElement.GetProperty("status").GetString())
+
+        let dependencies =
+            doc.RootElement.GetProperty("dependencies").EnumerateArray()
+            |> Seq.map (fun element ->
+                let name = element.GetProperty("name").GetString()
+                let healthy = element.GetProperty("healthy").GetBoolean()
+                name, healthy)
+            |> Seq.toList
+
+        let postgresHealthy =
+            dependencies
+            |> List.tryFind (fun (name, _) -> name = "postgres")
+            |> Option.map snd
+            |> Option.defaultValue false
+
+        let objectStorageHealthy =
+            dependencies
+            |> List.tryFind (fun (name, _) -> name = "object_storage")
+            |> Option.map snd
+            |> Option.defaultValue false
+
+        Assert.True(postgresHealthy)
+        Assert.True(objectStorageHealthy)
+
+    [<Fact>]
+    member _.``P6-02 ops summary endpoint enforces authz and emits audit`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p602-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p602-ops"
+        createRepoAsAdmin adminToken repoKey
+        let promoteToken, _ = issuePat (makeSubject "p602-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        use unauthorizedRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/ops/summary")
+        use unauthorizedResponse = fixture.Client.Send(unauthorizedRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedResponse |> ignore
+
+        use forbiddenResponse = opsSummaryWithToken promoteToken
+        ensureStatus HttpStatusCode.Forbidden forbiddenResponse |> ignore
+
+        use successResponse = opsSummaryWithToken adminToken
+        let successBody = ensureStatus HttpStatusCode.OK successResponse
+        use successDoc = JsonDocument.Parse(successBody)
+
+        let pendingOutbox = successDoc.RootElement.GetProperty("pendingOutboxEvents").GetInt64()
+        let availableOutbox = successDoc.RootElement.GetProperty("availableOutboxEvents").GetInt64()
+        let oldestPendingAge = successDoc.RootElement.GetProperty("oldestPendingOutboxAgeSeconds").GetInt64()
+        let failedSearchJobs = successDoc.RootElement.GetProperty("failedSearchJobs").GetInt64()
+        let pendingSearchJobs = successDoc.RootElement.GetProperty("pendingSearchJobs").GetInt64()
+        let incompleteGcRuns = successDoc.RootElement.GetProperty("incompleteGcRuns").GetInt64()
+        let recentPolicyTimeouts24h = successDoc.RootElement.GetProperty("recentPolicyTimeouts24h").GetInt64()
+
+        Assert.True(pendingOutbox >= 0L)
+        Assert.True(availableOutbox >= 0L)
+        Assert.True(oldestPendingAge >= 0L)
+        Assert.True(failedSearchJobs >= 0L)
+        Assert.True(pendingSearchJobs >= 0L)
+        Assert.True(incompleteGcRuns >= 0L)
+        Assert.True(recentPolicyTimeouts24h >= 0L)
+
+        use auditResponse = getAuditWithToken adminToken 200
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let hasOpsAudit =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun entry ->
+                entry.GetProperty("action").GetString() = "ops.summary.read")
+
+        Assert.True(hasOpsAudit, "Expected ops.summary.read audit action.")
 
     [<Fact>]
     member _.``P5-05 admin GC and reconcile endpoints enforce unauthorized, forbidden, and authorized paths`` () =

@@ -11,8 +11,9 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 3: complete through P3-10 (artifact entry + manifest APIs, atomic publish, outbox emission, authz/audit coverage, integration tests, demo/runbook).
 - Phase 4: implemented through P4-10 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics + deny/search-fallback integration coverage + demo/runbook).
 - Phase 5: complete through P5-08 (tombstone lifecycle + GC dry-run/execute + reconcile summary + admin authz/audit + demo/runbook).
+- Phase 6: complete through P6-10 (dependency-backed readiness, ops summary, backup/restore + DR drill, security closure, upgrade/rollback runbooks, GA demo/report).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: Phase 6 hardening and GA readiness.
+- Current build-out focus: post-GA roadmap items (OIDC/SAML, search read-model serving maturity).
 
 ## Implemented Today
 
@@ -31,6 +32,10 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Version tombstone API with retention windows.
   - Admin GC run API with safe dry-run mode and execute hard-delete mode.
   - Admin reconcile API for metadata/blob drift summary.
+- Phase 6 hardening:
+  - Readiness endpoint checks actual dependencies (Postgres + object storage) and returns deterministic non-ready responses.
+  - Admin operations summary endpoint for backlog and lifecycle health posture.
+  - Backup/restore scripts and DR drill automation with markdown report artifacts.
 - Hardening updates:
   - Constant-time bootstrap token comparison.
   - Best-effort multipart abort on upload-session create race/failure paths.
@@ -85,6 +90,11 @@ Run Phase 5 demo flow:
 make phase5-demo
 ```
 
+Run Phase 6 readiness demo:
+```bash
+make phase6-demo
+```
+
 ## API Surface (Current)
 
 - `GET /health/live`
@@ -116,6 +126,7 @@ make phase5-demo
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
 - `GET /v1/repos/{repoKey}/blobs/{digest}`
 - `POST /v1/admin/gc/runs`
+- `GET /v1/admin/ops/summary`
 - `GET /v1/admin/reconcile/blobs`
 - `GET /v1/audit`
 
@@ -128,6 +139,7 @@ make phase5-demo
 - `db/migrations`: SQL schema migrations.
 - `scripts`: migration, smoke, and demo scripts.
 - `.github/workflows/ci.yml`: restore/build/test/format CI workflow.
+- `deploy/phase6-alert-thresholds.yaml`: Phase 6 SLO/alert threshold reference for operations.
 
 ## Documentation Map
 
@@ -149,6 +161,10 @@ make phase5-demo
 - `docs/19-phase3-runbook.md`: executable Phase 3 draft/manifest/publish demo runbook.
 - `docs/20-phase5-implementation-tickets.md`: active Phase 5 ticket board and acceptance criteria.
 - `docs/21-phase5-runbook.md`: executable Phase 5 tombstone/GC/reconcile demo runbook.
+- `docs/22-phase6-implementation-tickets.md`: active Phase 6 ticket board and acceptance criteria.
+- `docs/23-phase6-runbook.md`: executable Phase 6 hardening/GA demo runbook.
+- `docs/24-security-review-closure.md`: Phase 6 security closure and launch blocker status.
+- `docs/25-upgrade-rollback-runbook.md`: deterministic production upgrade and rollback procedure.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
 
 ## ADRs

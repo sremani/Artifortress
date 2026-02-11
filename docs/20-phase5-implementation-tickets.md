@@ -21,6 +21,9 @@ Status key:
 
 ## Current Implementation Notes (2026-02-11)
 
+- Phase transition note:
+  - Phase 6 board lives in `docs/22-phase6-implementation-tickets.md`.
+
 - P5-01 completed:
   - Added migration `db/migrations/0008_phase5_tombstones_gc_reconcile.sql` with:
     - `tombstones` table + retention index.

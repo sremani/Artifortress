@@ -7,7 +7,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo
 
 help:
 	@echo "Targets:"
@@ -23,6 +23,9 @@ help:
 	@echo "  storage-bootstrap  Create MinIO bucket for development"
 	@echo "  db-migrate         Apply SQL migrations"
 	@echo "  db-smoke           Verify baseline schema exists"
+	@echo "  db-backup          Create Postgres backup file (set BACKUP_PATH to override)"
+	@echo "  db-restore         Restore Postgres backup file (requires RESTORE_PATH)"
+	@echo "  phase6-drill       Run Phase 6 RPO/RTO backup-restore drill"
 	@echo "  smoke              End-to-end phase-0 smoke run"
 	@echo "  phase1-demo        Run Phase 1 auth/repo demo script"
 	@echo "  phase2-demo        Run Phase 2 upload/download demo script"
@@ -30,6 +33,7 @@ help:
 	@echo "  phase3-demo        Run Phase 3 draft/manifest/publish demo script"
 	@echo "  phase4-demo        Run Phase 4 policy/quarantine/search demo script"
 	@echo "  phase5-demo        Run Phase 5 tombstone/gc/reconcile demo script"
+	@echo "  phase6-demo        Run Phase 6 GA readiness demo script"
 
 restore:
 	@for project in $(PROJECTS); do \
@@ -89,6 +93,15 @@ db-migrate: wait-db
 db-smoke: db-migrate
 	./scripts/db-smoke.sh
 
+db-backup:
+	./scripts/db-backup.sh
+
+db-restore:
+	./scripts/db-restore.sh
+
+phase6-drill:
+	./scripts/phase6-drill.sh
+
 smoke: dev-up wait-db storage-bootstrap db-smoke build test test-integration
 	./scripts/smoke-api.sh
 
@@ -109,3 +122,6 @@ phase4-demo: build
 
 phase5-demo: build
 	./scripts/phase5-demo.sh
+
+phase6-demo: build
+	./scripts/phase6-demo.sh

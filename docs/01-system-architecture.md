@@ -1,6 +1,6 @@
 # Artifortress System Architecture
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 ## 1. Objectives
 
@@ -14,15 +14,15 @@ Last updated: 2026-02-10
 Implemented:
 - Phase 0 foundation (solution, local stack, migrations, CI checks).
 - Phase 1 control-plane auth/repo APIs with PostgreSQL persistence.
-- Phase 2 data plane through P2-08 (upload session lifecycle, commit verification, dedupe path, blob download with range support, and integration/audit coverage).
-
-In progress next:
-- P2-09 throughput baseline and load-test reporting.
-- Phase 3 kickoff (`P3-01`/`P3-02`) complete: DB publish guardrails plus draft version create API baseline.
-- Phase 4 kickoff (`P4-01`) complete: DB scaffold for policy evaluation, quarantine workflow, and search indexing jobs.
+- Phase 2 data plane completion (upload lifecycle, verification, dedupe, range download, throughput baseline).
+- Phase 3 publish workflow completion (draft/entries/manifest/publish, outbox emission, immutability enforcement).
+- Phase 4 policy/search/quarantine controls.
+- Phase 5 deletion lifecycle (tombstone, GC, reconcile).
+- Phase 6 hardening and GA readiness (dependency-backed readiness, ops summary, DR drill, security + rollback runbooks).
 
 Planned later:
-- Atomic publish, outbox-driven integrations, search/policy pipeline, deletion lifecycle and GC hardening.
+- OIDC/SAML identity integration.
+- Search read-model query serving and rebuild/recovery maturity.
 
 ## 3. Core Architecture
 
@@ -31,34 +31,37 @@ Truth and bytes are intentionally separated:
 - Blob bytes in object storage.
 - Cache and index layers are rebuildable derivatives.
 
-This separation is implemented for control-plane metadata plus Phase 2 ingest/download flows, with publish/index/event planes still planned.
+This separation is implemented across control-plane metadata, publish/policy workflows, and lifecycle operations.
 
 ## 4. Runtime Planes
 
-1. Control plane (implemented in Phase 1)
+1. Control plane (implemented)
 - PAT issue/revoke and bearer auth validation.
 - Repository CRUD with repo-scoped RBAC checks.
 - Role binding management.
 - Privileged action audit persistence.
 
-2. Data plane (implemented through P2-08)
+2. Data plane (implemented)
 - Upload session create + multipart lifecycle (`parts`, `complete`, `abort`).
 - Commit verification for expected digest and expected size.
 - Dedupe-by-digest fast path.
 - Blob download with single-range support.
-- Remaining in this phase: throughput baseline/reporting (`P2-09`) and demo/runbook completion (`P2-10`).
+- Tombstone, GC, and reconcile lifecycle controls.
 
-3. Metadata/publish plane (partially implemented)
-- Draft version create endpoint is live (`POST /v1/repos/{repoKey}/packages/versions/drafts`).
-- Publish transaction and artifact-entry persistence flows remain in progress.
+3. Metadata/publish plane (implemented)
+- Draft version create endpoint.
+- Artifact entry and manifest persistence.
+- Atomic publish + outbox emission + immutability guardrails.
 
-4. Index plane (planned)
-- Search indexing and metadata query acceleration.
+4. Index plane (partially implemented)
+- Worker-based search-index job enqueue and processing.
 - Rebuildable from PostgreSQL + object metadata.
+- Query-serving read model remains planned.
 
-5. Event plane (planned)
+5. Event plane (implemented baseline)
 - Transactional outbox in PostgreSQL.
-- Worker consumers for indexing, notifications, and reconciliation.
+- Worker consumers for search-index enqueue/processing.
+- Additional downstream consumers remain planned.
 
 ## 5. Hard Invariants
 
@@ -67,12 +70,13 @@ Invariants enforced now:
 2. Revoked and expired tokens cannot authenticate.
 3. Privileged mutations are RBAC-gated and audited.
 4. Published package-version identity fields are immutable at the database trigger layer.
+5. Tombstone-first delete and dry-run-first GC semantics.
+6. Dependency-backed readiness checks gate production readiness status.
 
 Invariants targeted by next phases:
-1. Package/version-level immutability guarantees once publish workflow is implemented.
-2. Atomic package version publication.
-3. Tombstone-first delete followed by safe GC.
-4. All side effects occur post-commit through outbox processing.
+1. Identity federation while preserving PAT/RBAC security invariants.
+2. Search read-model consistency/rebuild guarantees under outage.
+3. Expanded side-effect consumers with bounded retry and operability controls.
 
 ## 6. Consistency Model
 
@@ -125,5 +129,5 @@ Planned:
 
 - No plaintext token persistence.
 - No authorization bypass for repository mutation endpoints.
-- No mutable package-version semantics once publish is implemented.
+- No mutable package-version identity semantics after publish.
 - No direct search writes from request path once index plane is introduced.

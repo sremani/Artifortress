@@ -56,6 +56,7 @@ Persistence:
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
 - `GET /v1/repos/{repoKey}/blobs/{digest}`
 - `POST /v1/admin/gc/runs`
+- `GET /v1/admin/ops/summary`
 - `GET /v1/admin/reconcile/blobs`
 - `GET /v1/audit`
 
@@ -64,8 +65,8 @@ Persistence:
 Automated checks currently passing:
 - `make format`.
 - `make test` (non-integration filter) with `84` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` with `53` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` with `137` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` with `56` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` with `140` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `75` FsCheck properties across domain, API, object storage config, and extracted worker internals (three extraction waves).
 - `make phase2-load` baseline run:
@@ -91,26 +92,37 @@ Demonstration assets:
 - `docs/16-phase4-runbook.md`
 - `scripts/phase5-demo.sh`
 - `docs/21-phase5-runbook.md`
+- `scripts/phase6-drill.sh`
+- `scripts/phase6-demo.sh`
+- `docs/23-phase6-runbook.md`
+- `docs/24-security-review-closure.md`
+- `docs/25-upgrade-rollback-runbook.md`
 
 ## 4. Known Gaps vs Target Architecture
 
 Not implemented yet:
-- Transactional outbox worker processing.
 - Search indexing read-model query-serving integration beyond the current queue/job scaffolding.
 - OIDC/SAML identity provider integration.
 
 ## 5. Next Delivery Focus
 
-- Phase 5 is complete with the following new lifecycle capabilities:
-  - migration `db/migrations/0008_phase5_tombstones_gc_reconcile.sql`.
-  - tombstone API: `POST /v1/repos/{repoKey}/packages/versions/{versionId}/tombstone`.
-  - admin GC API: `POST /v1/admin/gc/runs` (dry-run + execute).
-  - admin reconcile API: `GET /v1/admin/reconcile/blobs`.
-  - lifecycle audit actions for tombstone, GC, and reconcile operations.
-  - integration coverage `P5-01` through `P5-05`.
-  - executable demo/runbook:
-    - `scripts/phase5-demo.sh`
-    - `docs/21-phase5-runbook.md`
+- Phase 6 is complete with the following hardening capabilities:
+  - dependency-backed readiness checks (`/health/ready`) for Postgres + object storage.
+  - admin operations summary endpoint:
+    - `GET /v1/admin/ops/summary`
+  - operations-summary audit action:
+    - `ops.summary.read`
+  - backup/restore and drill tooling:
+    - `scripts/db-backup.sh`
+    - `scripts/db-restore.sh`
+    - `scripts/phase6-drill.sh`
+    - `scripts/phase6-demo.sh`
+  - Phase 6 runbooks and closure docs:
+    - `docs/22-phase6-implementation-tickets.md`
+    - `docs/23-phase6-runbook.md`
+    - `docs/24-security-review-closure.md`
+    - `docs/25-upgrade-rollback-runbook.md`
 - Next implementation targets:
-  - Phase 6 hardening and GA readiness (SLO/alerts, backup/restore drills, security closure).
+  - post-GA identity integration (OIDC/SAML).
+  - search read-model query-serving and rebuild/recovery maturity.
   - continue expanding property-based and integration stress coverage around lifecycle and policy/search paths.

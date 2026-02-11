@@ -126,8 +126,8 @@ This change set combines:
 
 - `make format` passed.
 - `make test` (non-integration filter) passed: `84` tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `53` integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `137` total tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
 
 ## Phase 5 Completion Addendum (2026-02-11)
 
@@ -178,6 +178,72 @@ This change set combines:
 
 - `make build` passed.
 - `make test` passed: `84` tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `53` integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `137` total tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
+- `make format` passed.
+
+## Phase 6 Completion Addendum (2026-02-11)
+
+### Code changes
+
+- `src/Artifortress.Api/ObjectStorage.fs`
+  - Added object storage readiness probe contract:
+    - `CheckAvailability`.
+- `src/Artifortress.Api/Program.fs`
+  - Hardened readiness endpoint:
+    - `/health/ready` now checks Postgres + object storage and returns `503` when not ready.
+  - Added operations summary endpoint:
+    - `GET /v1/admin/ops/summary`.
+  - Added operations-summary audit action:
+    - `ops.summary.read`.
+  - Added GC failure finalization path to avoid indefinitely incomplete runs.
+- `scripts/db-backup.sh` (new)
+  - Added deterministic Postgres backup helper.
+- `scripts/db-restore.sh` (new)
+  - Added recreate-and-restore workflow helper.
+- `scripts/phase6-drill.sh` (new)
+  - Added RPO/RTO drill with table-parity verification and markdown report output.
+- `scripts/phase6-demo.sh` (new)
+  - Added one-command Phase 6 readiness workflow.
+- `deploy/phase6-alert-thresholds.yaml` (new)
+  - Added reference alert thresholds for operations summary metrics.
+- `Makefile`
+  - Added targets:
+    - `db-backup`
+    - `db-restore`
+    - `phase6-drill`
+    - `phase6-demo`
+
+### Test changes
+
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added:
+    - `P6-01 readiness endpoint reports healthy postgres and object storage dependencies`
+    - `P6-02 ops summary endpoint enforces authz and emits audit`
+  - Added:
+    - `P6-02` unauthorized/forbidden/authorized authz checks for `/v1/admin/ops/summary`.
+    - audit assertion for `ops.summary.read`.
+
+### Documentation changes
+
+- `docs/22-phase6-implementation-tickets.md` (new)
+  - Added Phase 6 ticket board and implementation notes.
+- `docs/23-phase6-runbook.md` (new)
+  - Added Phase 6 runbook for readiness/demo/drill workflows.
+- `docs/24-security-review-closure.md` (new)
+  - Added security closure checklist and launch blocker status.
+- `docs/25-upgrade-rollback-runbook.md` (new)
+  - Added deterministic upgrade and rollback procedure.
+- Updated:
+  - `README.md`
+  - `docs/05-implementation-plan.md`
+  - `docs/07-delivery-walkthrough-plan.md`
+  - `docs/10-current-state.md`
+
+### Updated verification
+
+- `make build` passed.
+- `make test` passed: `84` tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
 - `make format` passed.

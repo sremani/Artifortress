@@ -10,7 +10,8 @@ This plan defines the execution sequence we will walk through, with every phase 
 - Phase 3 is complete through `P3-10`.
 - Phase 4 is complete through `P4-10`.
 - Phase 5 is complete through `P5-08`.
-- Next active delivery focus is Phase 6 hardening and GA-readiness workstreams.
+- Phase 6 is complete through `P6-10`.
+- Next active delivery focus is post-GA roadmap work (OIDC/SAML integration and search read-model maturity).
 - OIDC-specific walkthrough steps are deferred; Phase 1 demo uses PAT bootstrap/admin flows.
 
 ## 1. Full Feature Inventory
@@ -195,7 +196,7 @@ We will run formal walkthrough reviews at the end of each phase:
 
 ## 5. Recommended Execution Order
 
-1. Keep Phase 5 demo/runbook verification in CI/release checklist (`make phase5-demo`).
-2. Start Phase 6 hardening backlog (SLOs, alerting, backup/restore drills).
-3. Execute security closure and rollback/runbook rehearsals.
-4. Run final launch-readiness review and sign-off.
+1. Keep Phase 6 readiness checks in release checklist (`make phase6-demo`).
+2. Prioritize OIDC/SAML identity integration with phased rollout.
+3. Implement search read-model query serving and rebuild/recovery playbook.
+4. Continue reliability hardening and PBT/integration stress expansion.
