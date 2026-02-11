@@ -430,6 +430,34 @@ where version_id = @version_id;
         if rows <> 1 then
             failwith $"Could not publish package version {versionId} in test fixture."
 
+    member this.InsertArtifactEntryForVersion(versionId: Guid, relativePath: string, blobDigest: string, sizeBytes: int64) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+insert into artifact_entries
+  (version_id, relative_path, blob_digest, checksum_sha256, size_bytes)
+values
+  (@version_id, @relative_path, @blob_digest, @checksum_sha256, @size_bytes);
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        cmd.Parameters.AddWithValue("relative_path", relativePath) |> ignore
+        cmd.Parameters.AddWithValue("blob_digest", blobDigest) |> ignore
+        cmd.Parameters.AddWithValue("checksum_sha256", blobDigest) |> ignore
+        cmd.Parameters.AddWithValue("size_bytes", sizeBytes) |> ignore
+
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not insert artifact entry for version {versionId}."
+
     member this.TryMutatePublishedVersionMetadata(versionId: Guid) =
         this.RequireAvailable()
 
@@ -611,6 +639,43 @@ where tenant_id = @tenant_id;
         | :? int64 as count -> count
         | :? int32 as count -> int64 count
         | _ -> failwith "Unexpected tenant search_index_jobs count scalar value."
+
+    member this.ResetSearchPipelineStateForTenant() =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let tenantId = ensureTenantId conn
+        use tx = conn.BeginTransaction()
+
+        use deleteJobsCmd =
+            new NpgsqlCommand(
+                """
+delete from search_index_jobs
+where tenant_id = @tenant_id;
+""",
+                conn,
+                tx
+            )
+
+        deleteJobsCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        deleteJobsCmd.ExecuteNonQuery() |> ignore
+
+        use deleteEventsCmd =
+            new NpgsqlCommand(
+                """
+delete from outbox_events
+where tenant_id = @tenant_id
+  and event_type = 'version.published';
+""",
+                conn,
+                tx
+            )
+
+        deleteEventsCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        deleteEventsCmd.ExecuteNonQuery() |> ignore
+
+        tx.Commit()
 
     member this.IsOutboxDelivered(eventId: Guid) =
         this.RequireAvailable()
@@ -1443,6 +1508,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-04 outbox sweep enqueues search index job and marks event delivered`` () =
         fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateForTenant()
 
         let adminToken, _ = issuePat (makeSubject "p404-admin") [| "repo:*:admin" |] 60
         let repoKey = makeRepoKey "p404-sweep"
@@ -1480,6 +1546,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-04 outbox sweep requeues malformed version published event`` () =
         fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateForTenant()
 
         let baselineJobs = fixture.CountSearchIndexJobsForTenant()
         let malformedEventId = fixture.InsertOutboxEvent("version.published", "package_version", "not-a-guid", "{}")
@@ -1499,6 +1566,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-05 search job sweep completes pending job for published version`` () =
         fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateForTenant()
 
         let adminToken, _ = issuePat (makeSubject "p405-complete-admin") [| "repo:*:admin" |] 60
         let repoKey = makeRepoKey "p405-complete"
@@ -1540,6 +1608,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
     [<Fact>]
     member _.``P4-05 search job sweep fails unpublished version and honors max attempts`` () =
         fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateForTenant()
 
         let adminToken, _ = issuePat (makeSubject "p405-fail-admin") [| "repo:*:admin" |] 60
         let repoKey = makeRepoKey "p405-fail"
@@ -1586,6 +1655,410 @@ type Phase1ApiTests(fixture: ApiFixture) =
             Assert.Equal("failed", status)
             Assert.Equal(2, attempts)
             Assert.Equal(Some "version_not_published", lastError)
+
+    [<Fact>]
+    member _.``P4-06 download blocks quarantined blob and unblocks after release`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p406-release-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p406-release"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p406-release-writer") [| $"repo:{repoKey}:write" |] 60
+        let readToken, _ = issuePat (makeSubject "p406-release-reader") [| $"repo:{repoKey}:read" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p406-release-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"quarantine-release-read-{Guid.NewGuid():N}"
+        let payload = Encoding.UTF8.GetBytes($"p406-release-payload-{Guid.NewGuid():N}")
+        let expectedDigest = tokenHashFor (Encoding.UTF8.GetString(payload))
+        let expectedLength = int64 payload.Length
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use createResponse = createUploadSessionWithToken writeToken repoKey expectedDigest expectedLength
+        let createBody = readResponseBody createResponse
+
+        if createResponse.StatusCode = HttpStatusCode.ServiceUnavailable
+           || createResponse.StatusCode = HttpStatusCode.NotFound then
+            raise (
+                SkipException.ForSkip(
+                    $"Skipping P4-06 release-path test: object storage unavailable. Response: {(int createResponse.StatusCode)} {createBody}"
+                )
+            )
+
+        Assert.True(
+            createResponse.StatusCode = HttpStatusCode.Created,
+            $"Expected HTTP {(int HttpStatusCode.Created)} but got {(int createResponse.StatusCode)}. Body: {createBody}"
+        )
+
+        use createDoc = JsonDocument.Parse(createBody)
+        let uploadId = createDoc.RootElement.GetProperty("uploadId").GetGuid()
+
+        use partResponse = createUploadPartWithToken writeToken repoKey uploadId 1
+        let partBody = ensureStatus HttpStatusCode.OK partResponse
+        use partDoc = JsonDocument.Parse(partBody)
+        let uploadUrl = partDoc.RootElement.GetProperty("uploadUrl").GetString()
+        let etag = uploadPartFromPresignedUrl uploadUrl payload
+
+        use completeResponse =
+            completeUploadWithToken
+                writeToken
+                repoKey
+                uploadId
+                [| { PartNumber = 1
+                     ETag = etag } |]
+
+        ensureStatus HttpStatusCode.OK completeResponse |> ignore
+
+        use commitResponse = commitUploadWithToken writeToken repoKey uploadId
+        ensureStatus HttpStatusCode.OK commitResponse |> ignore
+
+        fixture.InsertArtifactEntryForVersion(versionId, $"package/{Guid.NewGuid():N}.nupkg", expectedDigest, expectedLength)
+
+        use quarantineEvalResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                versionId
+                "quarantine"
+                "read-path quarantine gate"
+                "policy-test-v4"
+
+        let quarantineEvalBody = ensureStatus HttpStatusCode.Created quarantineEvalResponse
+        use quarantineEvalDoc = JsonDocument.Parse(quarantineEvalBody)
+        let quarantineId = quarantineEvalDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use blockedResponse = downloadBlobWithToken readToken repoKey expectedDigest None
+        let blockedBody = ensureStatus HttpStatusCode.Locked blockedResponse
+        use blockedDoc = JsonDocument.Parse(blockedBody)
+        Assert.Equal("quarantined_blob", blockedDoc.RootElement.GetProperty("error").GetString())
+
+        use releaseResponse = releaseQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.OK releaseResponse |> ignore
+
+        use restoredResponse = downloadBlobWithToken readToken repoKey expectedDigest None
+        Assert.True(
+            restoredResponse.StatusCode = HttpStatusCode.OK,
+            $"Expected HTTP {(int HttpStatusCode.OK)} but got {(int restoredResponse.StatusCode)}."
+        )
+
+        let restoredBytes = restoredResponse.Content.ReadAsByteArrayAsync().Result
+        Assert.Equal<byte>(payload, restoredBytes)
+
+    [<Fact>]
+    member _.``P4-06 download blocks rejected quarantine blob`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p406-reject-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p406-reject"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p406-reject-writer") [| $"repo:{repoKey}:write" |] 60
+        let readToken, _ = issuePat (makeSubject "p406-reject-reader") [| $"repo:{repoKey}:read" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p406-reject-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"quarantine-reject-read-{Guid.NewGuid():N}"
+        let payload = Encoding.UTF8.GetBytes($"p406-reject-payload-{Guid.NewGuid():N}")
+        let expectedDigest = tokenHashFor (Encoding.UTF8.GetString(payload))
+        let expectedLength = int64 payload.Length
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use createResponse = createUploadSessionWithToken writeToken repoKey expectedDigest expectedLength
+        let createBody = readResponseBody createResponse
+
+        if createResponse.StatusCode = HttpStatusCode.ServiceUnavailable
+           || createResponse.StatusCode = HttpStatusCode.NotFound then
+            raise (
+                SkipException.ForSkip(
+                    $"Skipping P4-06 reject-path test: object storage unavailable. Response: {(int createResponse.StatusCode)} {createBody}"
+                )
+            )
+
+        Assert.True(
+            createResponse.StatusCode = HttpStatusCode.Created,
+            $"Expected HTTP {(int HttpStatusCode.Created)} but got {(int createResponse.StatusCode)}. Body: {createBody}"
+        )
+
+        use createDoc = JsonDocument.Parse(createBody)
+        let uploadId = createDoc.RootElement.GetProperty("uploadId").GetGuid()
+
+        use partResponse = createUploadPartWithToken writeToken repoKey uploadId 1
+        let partBody = ensureStatus HttpStatusCode.OK partResponse
+        use partDoc = JsonDocument.Parse(partBody)
+        let uploadUrl = partDoc.RootElement.GetProperty("uploadUrl").GetString()
+        let etag = uploadPartFromPresignedUrl uploadUrl payload
+
+        use completeResponse =
+            completeUploadWithToken
+                writeToken
+                repoKey
+                uploadId
+                [| { PartNumber = 1
+                     ETag = etag } |]
+
+        ensureStatus HttpStatusCode.OK completeResponse |> ignore
+
+        use commitResponse = commitUploadWithToken writeToken repoKey uploadId
+        ensureStatus HttpStatusCode.OK commitResponse |> ignore
+
+        fixture.InsertArtifactEntryForVersion(versionId, $"package/{Guid.NewGuid():N}.nupkg", expectedDigest, expectedLength)
+
+        use quarantineEvalResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                versionId
+                "quarantine"
+                "read-path reject gate"
+                "policy-test-v4"
+
+        let quarantineEvalBody = ensureStatus HttpStatusCode.Created quarantineEvalResponse
+        use quarantineEvalDoc = JsonDocument.Parse(quarantineEvalBody)
+        let quarantineId = quarantineEvalDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use rejectResponse = rejectQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.OK rejectResponse |> ignore
+
+        use blockedResponse = downloadBlobWithToken readToken repoKey expectedDigest None
+        let blockedBody = ensureStatus HttpStatusCode.Locked blockedResponse
+        use blockedDoc = JsonDocument.Parse(blockedBody)
+        Assert.Equal("quarantined_blob", blockedDoc.RootElement.GetProperty("error").GetString())
+
+    [<Fact>]
+    member _.``P4-07 quarantine get and reject endpoints enforce unauthorized forbidden and authorized paths`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p407-authz-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p407-authz"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p407-authz-writer") [| $"repo:{repoKey}:write" |] 60
+        let readToken, _ = issuePat (makeSubject "p407-authz-reader") [| $"repo:{repoKey}:read" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p407-authz-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"p407-authz-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use quarantineEvalResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "publish"
+                versionId
+                "quarantine"
+                "p407 authz seed"
+                "policy-test-v4"
+
+        let quarantineEvalBody = ensureStatus HttpStatusCode.Created quarantineEvalResponse
+        use quarantineEvalDoc = JsonDocument.Parse(quarantineEvalBody)
+        let quarantineId = quarantineEvalDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use unauthorizedGetRequest =
+            new HttpRequestMessage(HttpMethod.Get, $"/v1/repos/{repoKey}/quarantine/{quarantineId}")
+
+        use unauthorizedGetResponse = fixture.Client.Send(unauthorizedGetRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedGetResponse |> ignore
+
+        use forbiddenGetResponse = getQuarantineItemWithToken readToken repoKey quarantineId
+        ensureStatus HttpStatusCode.Forbidden forbiddenGetResponse |> ignore
+
+        use authorizedGetResponse = getQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.OK authorizedGetResponse |> ignore
+
+        use unauthorizedRejectRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/quarantine/{quarantineId}/reject")
+
+        use unauthorizedRejectResponse = fixture.Client.Send(unauthorizedRejectRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedRejectResponse |> ignore
+
+        use forbiddenRejectResponse = rejectQuarantineItemWithToken readToken repoKey quarantineId
+        ensureStatus HttpStatusCode.Forbidden forbiddenRejectResponse |> ignore
+
+        use authorizedRejectResponse = rejectQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.OK authorizedRejectResponse |> ignore
+
+    [<Fact>]
+    member _.``P4-07 policy and quarantine mutation audits include deterministic metadata`` () =
+        fixture.RequireAvailable()
+
+        let adminSubject = makeSubject "p407-audit-admin"
+        let adminToken, _ = issuePat adminSubject [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p407-audit"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeSubject = makeSubject "p407-audit-writer"
+        let writeToken, _ = issuePat writeSubject [| $"repo:{repoKey}:write" |] 60
+        let promoteSubject = makeSubject "p407-audit-promote"
+        let promoteToken, _ = issuePat promoteSubject [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"p407-audit-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use quarantineEvalResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                versionId
+                "quarantine"
+                "p407 audit seed"
+                "policy-test-v4"
+
+        let quarantineEvalBody = ensureStatus HttpStatusCode.Created quarantineEvalResponse
+        use quarantineEvalDoc = JsonDocument.Parse(quarantineEvalBody)
+        let evaluationId = quarantineEvalDoc.RootElement.GetProperty("evaluationId").GetInt64()
+        let quarantineId = quarantineEvalDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use releaseResponse = releaseQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.OK releaseResponse |> ignore
+
+        use auditResponse = getAuditWithToken adminToken 500
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let policyAuditEntry =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.find (fun entry ->
+                entry.GetProperty("action").GetString() = "policy.evaluated"
+                && entry.GetProperty("resourceId").GetString() = evaluationId.ToString())
+
+        Assert.Equal("policy_evaluation", policyAuditEntry.GetProperty("resourceType").GetString())
+        Assert.Equal(promoteSubject, policyAuditEntry.GetProperty("actor").GetString())
+
+        let policyDetails = policyAuditEntry.GetProperty("details")
+        Assert.Equal(repoKey, policyDetails.GetProperty("repoKey").GetString())
+        Assert.Equal(versionId.ToString(), policyDetails.GetProperty("versionId").GetString())
+        Assert.Equal("promote", policyDetails.GetProperty("action").GetString())
+        Assert.Equal("quarantine", policyDetails.GetProperty("decision").GetString())
+        Assert.Equal("hint_quarantine", policyDetails.GetProperty("decisionSource").GetString())
+        Assert.Equal(quarantineId.ToString(), policyDetails.GetProperty("quarantineId").GetString())
+
+        let quarantineAuditEntry =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.find (fun entry ->
+                entry.GetProperty("action").GetString() = "quarantine.released"
+                && entry.GetProperty("resourceId").GetString() = quarantineId.ToString())
+
+        Assert.Equal("quarantine_item", quarantineAuditEntry.GetProperty("resourceType").GetString())
+        Assert.Equal(promoteSubject, quarantineAuditEntry.GetProperty("actor").GetString())
+
+        let quarantineDetails = quarantineAuditEntry.GetProperty("details")
+        Assert.Equal(repoKey, quarantineDetails.GetProperty("repoKey").GetString())
+        Assert.Equal(versionId.ToString(), quarantineDetails.GetProperty("versionId").GetString())
+        Assert.Equal("released", quarantineDetails.GetProperty("status").GetString())
+
+    [<Fact>]
+    member _.``P4-08 policy timeout fails closed for publish and promote actions`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p408-timeout-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p408-timeout"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p408-timeout-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p408-timeout-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"p408-timeout-{Guid.NewGuid():N}"
+
+        use publishDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let publishDraftBody = ensureStatus HttpStatusCode.Created publishDraftResponse
+        use publishDraftDoc = JsonDocument.Parse(publishDraftBody)
+        let publishVersionId = publishDraftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use promoteDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.1"
+
+        let promoteDraftBody = ensureStatus HttpStatusCode.Created promoteDraftResponse
+        use promoteDraftDoc = JsonDocument.Parse(promoteDraftBody)
+        let promoteVersionId = promoteDraftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let assertTimeoutResponse (action: string) (versionId: Guid) =
+            use response =
+                evaluatePolicyWithToken
+                    promoteToken
+                    repoKey
+                    action
+                    versionId
+                    "allow"
+                    "p408 timeout test"
+                    "simulate_timeout"
+
+            let body = ensureStatus HttpStatusCode.ServiceUnavailable response
+            use doc = JsonDocument.Parse(body)
+
+            Assert.Equal("policy_timeout", doc.RootElement.GetProperty("error").GetString())
+            Assert.Equal(action, doc.RootElement.GetProperty("action").GetString())
+            Assert.True(doc.RootElement.GetProperty("failClosed").GetBoolean())
+            Assert.True(doc.RootElement.GetProperty("timeoutMs").GetInt32() > 0)
+
+        assertTimeoutResponse "publish" publishVersionId
+        assertTimeoutResponse "promote" promoteVersionId
+
+        Assert.Equal(0L, fixture.CountPolicyEvaluations(publishVersionId))
+        Assert.Equal(0L, fixture.CountPolicyEvaluations(promoteVersionId))
+        Assert.Equal(None, fixture.TryReadLatestPolicyDecision(publishVersionId))
+        Assert.Equal(None, fixture.TryReadLatestPolicyDecision(promoteVersionId))
+        Assert.Equal(None, fixture.TryReadQuarantineStatus(publishVersionId))
+        Assert.Equal(None, fixture.TryReadQuarantineStatus(promoteVersionId))
+
+        use auditResponse = getAuditWithToken adminToken 500
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let timeoutEntries =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.filter (fun entry ->
+                entry.GetProperty("action").GetString() = "policy.timeout"
+                && entry.GetProperty("details").GetProperty("repoKey").GetString() = repoKey)
+            |> Seq.toList
+
+        Assert.True(
+            timeoutEntries.Length >= 2,
+            $"Expected at least two policy.timeout audit entries for repo {repoKey}."
+        )
+
+        let hasPublishEntry =
+            timeoutEntries
+            |> List.exists (fun entry ->
+                let details = entry.GetProperty("details")
+
+                details.GetProperty("versionId").GetString() = publishVersionId.ToString()
+                && details.GetProperty("action").GetString() = "publish"
+                && details.GetProperty("failClosed").GetString() = "true")
+
+        let hasPromoteEntry =
+            timeoutEntries
+            |> List.exists (fun entry ->
+                let details = entry.GetProperty("details")
+
+                details.GetProperty("versionId").GetString() = promoteVersionId.ToString()
+                && details.GetProperty("action").GetString() = "promote"
+                && details.GetProperty("failClosed").GetString() = "true")
+
+        Assert.True(hasPublishEntry, "Expected fail-closed policy.timeout audit entry for publish action.")
+        Assert.True(hasPromoteEntry, "Expected fail-closed policy.timeout audit entry for promote action.")
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =

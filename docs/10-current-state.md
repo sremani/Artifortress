@@ -69,7 +69,6 @@ Demonstration assets:
 Not implemented yet:
 - Atomic draft/publish package version workflow.
 - Transactional outbox worker processing.
-- Quarantine-management APIs and read-path enforcement for quarantined versions.
 - Search indexing pipeline.
 - OIDC/SAML identity provider integration.
 - Throughput baseline/load report publication (`P2-09`).
@@ -117,15 +116,25 @@ Not implemented yet:
     - idempotent enqueue via `(tenant_id, version_id)` upsert for search-index jobs.
     - worker search-index job processor sweep with claim/process/complete/fail transitions.
     - bounded retry semantics for failed search-index jobs (attempt caps + backoff).
-  - expanded integration coverage:
-    - expired-session rejection paths.
-    - dedupe-path second-create behavior.
-    - invalid range (`400`) and unsatisfiable range (`416`) responses.
-    - authz rejection matrix across new upload/download endpoints.
-    - audit action matrix assertions for upload lifecycle operations.
-    - repo-scoped blob visibility regression test.
+    - quarantine-aware blob download enforcement:
+      - `GET /v1/repos/{repoKey}/blobs/{digest}` returns `423` (`quarantined_blob`) when digest is linked to a `quarantined` or `rejected` version.
+      - blob reads resume after quarantine status transitions to `released`.
+    - policy timeout fail-closed semantics:
+      - policy evaluation returns deterministic `503` (`policy_timeout`) on timeout.
+      - timeout path is fail-closed (`failClosed=true`) and does not persist policy/quarantine mutations.
+      - timeout budget configurable via `Policy:EvaluationTimeoutMs` (default `250` ms).
+    - expanded integration coverage:
+      - expired-session rejection paths.
+      - dedupe-path second-create behavior.
+      - invalid range (`400`) and unsatisfiable range (`416`) responses.
+      - authz rejection matrix across new upload/download endpoints.
+      - audit action matrix assertions for upload lifecycle operations.
+      - repo-scoped blob visibility regression test.
+      - policy/quarantine authz matrix assertions on quarantine get/reject endpoints.
+      - policy/quarantine mutation audit metadata assertions (actor/resource/details).
+      - policy timeout fail-closed assertions across both `publish` and `promote` actions.
 - Next implementation targets:
   - add throughput baseline/load report (`P2-09`).
   - add Phase 2 demo script and runbook updates (`P2-10`).
   - implement publish workflow APIs after draft create baseline (`P3-03` onward).
-  - implement quarantine-aware resolve/read behavior (`P4-06` onward).
+  - continue Phase 4 hardening (`P4-09` onward).

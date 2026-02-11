@@ -9,8 +9,8 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 1: complete.
 - Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
 - Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
-- Phase 4: started with P4-01/P4-02/P4-03 completed (schema scaffold + policy evaluation + quarantine APIs).
-- Current build-out focus: P2-09/P2-10 closeout, Phase 3 publish workflow completion, and Phase 4 quarantine-aware read-path follow-on work.
+- Phase 4: implemented through P4-08 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics).
+- Current build-out focus: P2-09/P2-10 closeout, Phase 3 publish workflow completion, and Phase 4 follow-on hardening (`P4-09` onward).
 
 ## Implemented Today
 
@@ -23,7 +23,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Upload session create + multipart lifecycle (`parts`, `complete`, `abort`).
   - Commit-time digest/length verification with deterministic mismatch response.
   - Dedupe-by-digest fast path.
-  - Blob download with range support and repository-scoped visibility enforcement.
+  - Blob download with range support, repository-scoped visibility enforcement, and quarantine/reject blocking (`423 quarantined_blob`).
   - Audit actions for upload lifecycle operations.
 - Hardening updates:
   - Constant-time bootstrap token comparison.

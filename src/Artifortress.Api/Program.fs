@@ -195,6 +195,7 @@ type AppState = {
     TenantName: string
     ObjectStorageClient: IObjectStorageClient
     PresignPartTtlSeconds: int
+    PolicyEvaluationTimeoutMs: int
 }
 
 let nowUtc () = DateTimeOffset.UtcNow
@@ -369,6 +370,30 @@ let parseSingleRangeHeader (rawRangeHeader: string) =
                             | true, endOffset when endOffset < startOffset ->
                                 Error "Range end must be greater than or equal to range start."
                             | true, endOffset -> Ok(Some(startOffset, Some endOffset))
+
+let tryResolvePolicyDecisionWithTimeout
+    (timeoutMs: int)
+    (decision: string)
+    (decisionSource: string)
+    (policyEngineVersion: string option)
+    =
+    let shouldSimulateTimeout =
+        match policyEngineVersion with
+        | Some value when String.Equals(normalizeText value, "simulate_timeout", StringComparison.OrdinalIgnoreCase) -> true
+        | _ -> false
+
+    let operation () =
+        if shouldSimulateTimeout then
+            Threading.Thread.Sleep(timeoutMs + 50)
+
+        decision, decisionSource
+
+    let task = Threading.Tasks.Task.Run(fun () -> operation ())
+
+    if task.Wait(timeoutMs) then
+        Ok task.Result
+    else
+        Error "Policy evaluation timed out."
 
 let buildStagingObjectKey (tenantId: Guid) (repoKey: string) (uploadId: Guid) =
     $"staging/{tenantId:N}/{repoKey}/{uploadId:N}"
@@ -1448,6 +1473,38 @@ select exists(
     | :? bool as existsValue -> Ok existsValue
     | _ -> Error "Could not determine committed blob visibility for repository."
 
+let repoBlobDigestBlockedByQuarantine (tenantId: Guid) (repoKey: string) (digest: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select exists(
+  select 1
+  from artifact_entries ae
+  join package_versions pv on pv.version_id = ae.version_id
+  join repos r on r.repo_id = pv.repo_id and r.tenant_id = pv.tenant_id
+  join quarantine_items qi
+    on qi.tenant_id = pv.tenant_id
+   and qi.repo_id = pv.repo_id
+   and qi.version_id = pv.version_id
+  where pv.tenant_id = @tenant_id
+    and r.repo_key = @repo_key
+    and ae.blob_digest = @digest
+    and qi.status in ('quarantined', 'rejected')
+);
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("digest", digest) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    match scalar with
+    | :? bool as blocked -> Ok blocked
+    | _ -> Error "Could not determine quarantine visibility for repository blob."
+
 let insertUploadSessionForRepo
     (tenantId: Guid)
     (repoKey: string)
@@ -2114,11 +2171,19 @@ let main args =
 
         let objectStorageClient = ObjectStorage.createClient objectStorageConfig
 
+        let policyEvaluationTimeoutMs =
+            let raw = builder.Configuration.["Policy:EvaluationTimeoutMs"]
+
+            match Int32.TryParse raw with
+            | true, value when value > 0 -> value
+            | _ -> 250
+
         { ConnectionString = connectionString
           TenantSlug = "default"
           TenantName = "Default Tenant"
           ObjectStorageClient = objectStorageClient
-          PresignPartTtlSeconds = objectStorageConfig.PresignPartTtlSeconds }
+          PresignPartTtlSeconds = objectStorageConfig.PresignPartTtlSeconds
+          PolicyEvaluationTimeoutMs = policyEvaluationTimeoutMs }
 
     let app = builder.Build()
 
@@ -2565,70 +2630,107 @@ let main args =
                     | Ok request ->
                         match validateEvaluatePolicyRequest request with
                         | Error err -> badRequest err
-                        | Ok(action, versionId, decision, decisionSource, reason, policyEngineVersion) ->
+                        | Ok(action, versionId, validatedDecision, validatedDecisionSource, reason, policyEngineVersion) ->
                             match
-                                withConnection
-                                    state
-                                    (evaluatePolicyForVersion
-                                        principal.TenantId
-                                        repoKey
-                                        versionId
-                                        action
-                                        decision
-                                        decisionSource
-                                        reason
-                                        policyEngineVersion
-                                        principal.Subject)
+                                tryResolvePolicyDecisionWithTimeout
+                                    state.PolicyEvaluationTimeoutMs
+                                    validatedDecision
+                                    validatedDecisionSource
+                                    policyEngineVersion
                             with
-                            | Error err -> serviceUnavailable err
-                            | Ok None ->
-                                Results.NotFound(
-                                    {| error = "not_found"
-                                       message = "Package version was not found in repository." |}
-                                )
-                            | Ok(Some evaluation) ->
-                                let auditDetails =
-                                    [ "repoKey", repoKey
-                                      "versionId", evaluation.VersionId.ToString()
-                                      "action", evaluation.Action
-                                      "decision", evaluation.Decision
-                                      "decisionSource", evaluation.DecisionSource ]
-                                    |> (fun values ->
-                                        match evaluation.PolicyEngineVersion with
-                                        | Some value -> ("policyEngineVersion", value) :: values
-                                        | None -> values)
-                                    |> (fun values ->
-                                        match evaluation.QuarantineId with
-                                        | Some value -> ("quarantineId", value.ToString()) :: values
-                                        | None -> values)
-                                    |> Map.ofList
+                            | Error _ ->
+                                let timeoutAuditDetails =
+                                    Map.ofList
+                                        [ "repoKey", repoKey
+                                          "versionId", versionId.ToString()
+                                          "action", action
+                                          "timeoutMs", state.PolicyEvaluationTimeoutMs.ToString()
+                                          "failClosed", "true" ]
 
                                 match
                                     writeAudit
                                         state
                                         principal.TenantId
                                         principal.Subject
-                                        "policy.evaluated"
+                                        "policy.timeout"
                                         "policy_evaluation"
-                                        (evaluation.EvaluationId.ToString())
-                                        auditDetails
+                                        (versionId.ToString())
+                                        timeoutAuditDetails
                                 with
                                 | Error err -> serviceUnavailable err
                                 | Ok() ->
-                                    Results.Created(
-                                        $"/v1/repos/{repoKey}/policy/evaluations/{evaluation.EvaluationId}",
-                                        {| evaluationId = evaluation.EvaluationId
-                                           repoKey = repoKey
-                                           versionId = evaluation.VersionId
-                                           action = evaluation.Action
-                                           decision = evaluation.Decision
-                                           decisionSource = evaluation.DecisionSource
-                                           reason = evaluation.Reason
-                                           policyEngineVersion = evaluation.PolicyEngineVersion
-                                           evaluatedAtUtc = evaluation.EvaluatedAtUtc
-                                           quarantineId = evaluation.QuarantineId
-                                           quarantined = evaluation.QuarantineId.IsSome |}
+                                    Results.Json(
+                                        {| error = "policy_timeout"
+                                           message = "Policy evaluation timed out; operation failed closed."
+                                           action = action
+                                           failClosed = true
+                                           timeoutMs = state.PolicyEvaluationTimeoutMs |},
+                                        statusCode = StatusCodes.Status503ServiceUnavailable
                                     )
+                            | Ok(decision, decisionSource) ->
+                                match
+                                    withConnection
+                                        state
+                                        (evaluatePolicyForVersion
+                                            principal.TenantId
+                                            repoKey
+                                            versionId
+                                            action
+                                            decision
+                                            decisionSource
+                                            reason
+                                            policyEngineVersion
+                                            principal.Subject)
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok None ->
+                                    Results.NotFound(
+                                        {| error = "not_found"
+                                           message = "Package version was not found in repository." |}
+                                    )
+                                | Ok(Some evaluation) ->
+                                    let auditDetails =
+                                        [ "repoKey", repoKey
+                                          "versionId", evaluation.VersionId.ToString()
+                                          "action", evaluation.Action
+                                          "decision", evaluation.Decision
+                                          "decisionSource", evaluation.DecisionSource ]
+                                        |> (fun values ->
+                                            match evaluation.PolicyEngineVersion with
+                                            | Some value -> ("policyEngineVersion", value) :: values
+                                            | None -> values)
+                                        |> (fun values ->
+                                            match evaluation.QuarantineId with
+                                            | Some value -> ("quarantineId", value.ToString()) :: values
+                                            | None -> values)
+                                        |> Map.ofList
+
+                                    match
+                                        writeAudit
+                                            state
+                                            principal.TenantId
+                                            principal.Subject
+                                            "policy.evaluated"
+                                            "policy_evaluation"
+                                            (evaluation.EvaluationId.ToString())
+                                            auditDetails
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok() ->
+                                        Results.Created(
+                                            $"/v1/repos/{repoKey}/policy/evaluations/{evaluation.EvaluationId}",
+                                            {| evaluationId = evaluation.EvaluationId
+                                               repoKey = repoKey
+                                               versionId = evaluation.VersionId
+                                               action = evaluation.Action
+                                               decision = evaluation.Decision
+                                               decisionSource = evaluation.DecisionSource
+                                               reason = evaluation.Reason
+                                               policyEngineVersion = evaluation.PolicyEngineVersion
+                                               evaluatedAtUtc = evaluation.EvaluatedAtUtc
+                                               quarantineId = evaluation.QuarantineId
+                                               quarantined = evaluation.QuarantineId.IsSome |}
+                                        )
     ))
     |> ignore
 
@@ -3472,40 +3574,49 @@ let main args =
                             | Ok false ->
                                 Results.NotFound({| error = "not_found"; message = "Blob was not found." |})
                             | Ok true ->
-                                match withConnection state (tryReadBlobStorageKeyByDigest digest) with
+                                match withConnection state (repoBlobDigestBlockedByQuarantine principal.TenantId repoKey digest) with
                                 | Error err -> serviceUnavailable err
-                                | Ok None ->
-                                    Results.NotFound({| error = "not_found"; message = "Blob was not found." |})
-                                | Ok(Some storageKey) ->
-                                    match
-                                        state.ObjectStorageClient.DownloadObject(storageKey, parsedRange, ctx.RequestAborted).Result
-                                    with
-                                    | Error storageErr -> mapObjectStorageErrorToResult storageErr
-                                    | Ok downloaded ->
-                                        ctx.Response.Headers.["Accept-Ranges"] <- "bytes"
+                                | Ok true ->
+                                    Results.Json(
+                                        {| error = "quarantined_blob"
+                                           message = "Blob is unavailable because a linked package version is quarantined." |},
+                                        statusCode = StatusCodes.Status423Locked
+                                    )
+                                | Ok false ->
+                                    match withConnection state (tryReadBlobStorageKeyByDigest digest) with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok None ->
+                                        Results.NotFound({| error = "not_found"; message = "Blob was not found." |})
+                                    | Ok(Some storageKey) ->
+                                        match
+                                            state.ObjectStorageClient.DownloadObject(storageKey, parsedRange, ctx.RequestAborted).Result
+                                        with
+                                        | Error storageErr -> mapObjectStorageErrorToResult storageErr
+                                        | Ok downloaded ->
+                                            ctx.Response.Headers.["Accept-Ranges"] <- "bytes"
 
-                                        match downloaded.ETag with
-                                        | Some etagValue -> ctx.Response.Headers.["ETag"] <- etagValue
-                                        | None -> ()
+                                            match downloaded.ETag with
+                                            | Some etagValue -> ctx.Response.Headers.["ETag"] <- etagValue
+                                            | None -> ()
 
-                                        match downloaded.ContentRange with
-                                        | Some contentRangeValue -> ctx.Response.Headers.["Content-Range"] <- contentRangeValue
-                                        | None -> ()
+                                            match downloaded.ContentRange with
+                                            | Some contentRangeValue -> ctx.Response.Headers.["Content-Range"] <- contentRangeValue
+                                            | None -> ()
 
-                                        if downloaded.ContentLength >= 0L then
-                                            ctx.Response.ContentLength <- downloaded.ContentLength
+                                            if downloaded.ContentLength >= 0L then
+                                                ctx.Response.ContentLength <- downloaded.ContentLength
 
-                                        ctx.Response.RegisterForDispose(
-                                            { new IDisposable with
-                                                member _.Dispose() = downloaded.Dispose() }
-                                        )
+                                            ctx.Response.RegisterForDispose(
+                                                { new IDisposable with
+                                                    member _.Dispose() = downloaded.Dispose() }
+                                            )
 
-                                        ctx.Response.StatusCode <- int downloaded.StatusCode
+                                            ctx.Response.StatusCode <- int downloaded.StatusCode
 
-                                        Results.Stream(
-                                            downloaded.Stream,
-                                            contentType = (downloaded.ContentType |> Option.defaultValue "application/octet-stream")
-                                        )
+                                            Results.Stream(
+                                                downloaded.Stream,
+                                                contentType = (downloaded.ContentType |> Option.defaultValue "application/octet-stream")
+                                            )
     ))
     |> ignore
 

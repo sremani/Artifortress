@@ -15,9 +15,9 @@ Status key:
 | P4-03 | Quarantine state API (list/get/release/reject) | P4-01, P4-02 | done |
 | P4-04 | Search index job producer from outbox `version.published` events | P4-01 | done |
 | P4-05 | Worker handler for search index job processing | P4-04 | done |
-| P4-06 | Resolve/read-path behavior when version is quarantined | P4-03 | todo |
-| P4-07 | AuthZ + audit coverage for policy/quarantine APIs | P4-02, P4-03 | todo |
-| P4-08 | Policy timeout/fail-closed semantics with deterministic errors | P4-02 | todo |
+| P4-06 | Resolve/read-path behavior when version is quarantined | P4-03 | done |
+| P4-07 | AuthZ + audit coverage for policy/quarantine APIs | P4-02, P4-03 | done |
+| P4-08 | Policy timeout/fail-closed semantics with deterministic errors | P4-02 | done |
 | P4-09 | Integration tests for deny/quarantine/search fallback behavior | P4-03, P4-05, P4-06, P4-08 | todo |
 | P4-10 | Phase 4 runbook and demo script updates | P4-09 | todo |
 
@@ -82,6 +82,31 @@ Status key:
   - Added integration coverage for:
     - successful completion path for published-version jobs.
     - failure + bounded retry behavior for unpublished-version jobs.
+- P4-06 completed:
+  - Added quarantine-aware blob download guard in API:
+    - `GET /v1/repos/{repoKey}/blobs/{digest}`
+  - Added deterministic blocked-read behavior:
+    - returns `423` with `error=quarantined_blob` when digest is linked to a version with quarantine status `quarantined` or `rejected`.
+    - allows reads after quarantine status transitions to `released`.
+  - Added integration tests for:
+    - blocked blob reads while quarantined.
+    - unblock behavior after release.
+    - continued blocked reads after reject.
+- P4-07 completed:
+  - Added integration authz matrix coverage for quarantine item get/reject paths:
+    - unauthorized (`401`), forbidden (`403`), and authorized success paths.
+  - Added integration audit metadata coverage for policy/quarantine mutations:
+    - verifies `policy.evaluated` audit record actor/resource/details fields.
+    - verifies `quarantine.released` audit record actor/resource/details fields.
+- P4-08 completed:
+  - Added policy-evaluation timeout gate with configurable timeout budget:
+    - `Policy:EvaluationTimeoutMs` (default `250` ms).
+  - Added deterministic fail-closed timeout response for policy evaluation uncertainty:
+    - `503` with `error=policy_timeout`, `failClosed=true`, and `timeoutMs`.
+  - Added timeout audit action:
+    - `policy.timeout` with repo/version/action metadata.
+  - Added integration tests that verify fail-closed behavior for both `publish` and `promote` actions:
+    - no policy/quarantine persistence occurs on timeout paths.
 
 ## Ticket Details
 
