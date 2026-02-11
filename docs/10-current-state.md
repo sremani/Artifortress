@@ -20,6 +20,7 @@ API control-plane features:
 Persistence:
 - Core tables from `0001_init.sql` plus identity/RBAC tables from `0002_phase1_identity_and_rbac.sql`.
 - Upload-session and publish/policy migrations from `0003_phase2_upload_sessions.sql`, `0004_phase3_publish_guardrails.sql`, `0005_phase3_published_immutability_hardening.sql`, and `0006_phase4_policy_search_quarantine_scaffold.sql`.
+- Manifest persistence migration `0007_phase3_manifest_persistence.sql`.
 - Token hash persistence only; plaintext token is response-only at issuance time.
 
 ## 2. API Endpoints (Implemented)
@@ -37,6 +38,10 @@ Persistence:
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/bindings`
 - `POST /v1/repos/{repoKey}/packages/versions/drafts`
+- `POST /v1/repos/{repoKey}/packages/versions/{versionId}/entries`
+- `PUT /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+- `GET /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+- `POST /v1/repos/{repoKey}/packages/versions/{versionId}/publish`
 - `POST /v1/repos/{repoKey}/policy/evaluations`
 - `GET /v1/repos/{repoKey}/quarantine`
 - `GET /v1/repos/{repoKey}/quarantine/{quarantineId}`
@@ -55,8 +60,8 @@ Persistence:
 Automated checks currently passing:
 - `make format`.
 - `make test` (non-integration filter) with `84` passing tests.
-- `make test-integration` with `40` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo` with `124` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` with `47` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` with `131` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `75` FsCheck properties across domain, API, object storage config, and extracted worker internals (three extraction waves).
 - `make phase2-load` baseline run:
@@ -76,13 +81,14 @@ Demonstration assets:
 - `scripts/phase2-load.sh`
 - `docs/17-phase2-runbook.md`
 - `docs/18-phase2-throughput-baseline.md`
+- `scripts/phase3-demo.sh`
+- `docs/19-phase3-runbook.md`
 - `scripts/phase4-demo.sh`
 - `docs/16-phase4-runbook.md`
 
 ## 4. Known Gaps vs Target Architecture
 
 Not implemented yet:
-- Atomic draft/publish package version workflow.
 - Transactional outbox worker processing.
 - Search indexing read-model query-serving integration beyond the current queue/job scaffolding.
 - OIDC/SAML identity provider integration.
@@ -107,13 +113,25 @@ Not implemented yet:
     - best-effort object-store multipart abort on upload-session create race/failure paths.
     - null-safe role and scope parsing in domain layer.
     - migration script SQL quoting hardening for version tracking.
-  - Phase 3 kickoff:
-    - publish guardrail migration `db/migrations/0004_phase3_publish_guardrails.sql`.
-    - published-immutability hardening migration `db/migrations/0005_phase3_published_immutability_hardening.sql`.
-    - published-version immutability trigger for `package_versions`.
-    - additional indexes for publish-state reads and pending outbox scans.
+  - Phase 3 implementation:
+    - publish guardrail migrations:
+      - `db/migrations/0004_phase3_publish_guardrails.sql`
+      - `db/migrations/0005_phase3_published_immutability_hardening.sql`
+      - `db/migrations/0007_phase3_manifest_persistence.sql`
     - draft version create API (`POST /v1/repos/{repoKey}/packages/versions/drafts`) with idempotent draft reuse semantics.
-  - Phase 4 kickoff:
+    - artifact entry persistence API (`POST /v1/repos/{repoKey}/packages/versions/{versionId}/entries`) with draft-state + digest visibility checks.
+    - manifest APIs:
+      - `PUT /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+      - `GET /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+    - package publish API (`POST /v1/repos/{repoKey}/packages/versions/{versionId}/publish`) with:
+      - single-transaction draft->published transition
+      - in-transaction audit write
+      - replay-safe outbox emission (`version.published`) without duplicate event on idempotent retry.
+    - publish-workflow audit actions:
+      - `package.version.entries.upserted`
+      - `package.version.manifest.upserted`
+      - `package.version.published`
+  - Phase 4 implementation:
     - policy/quarantine/search scaffold migration `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`.
     - policy decision history table (`policy_evaluations`).
     - quarantine workflow table (`quarantine_items`).
@@ -153,5 +171,5 @@ Not implemented yet:
       - policy/quarantine mutation audit metadata assertions (actor/resource/details).
       - policy timeout fail-closed assertions across both `publish` and `promote` actions.
 - Next implementation targets:
-  - implement publish workflow APIs after draft create baseline (`P3-03` onward).
-  - continue Phase 3 publish workflow implementation (`P3-03` onward).
+  - continue Phase 5 planning for deletion lifecycle, GC, and repair workflows.
+  - keep expanding property-based and integration stress coverage around publish/policy/search behavior.

@@ -7,7 +7,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo phase2-demo phase2-load phase4-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo
 
 help:
 	@echo "Targets:"
@@ -27,6 +27,7 @@ help:
 	@echo "  phase1-demo        Run Phase 1 auth/repo demo script"
 	@echo "  phase2-demo        Run Phase 2 upload/download demo script"
 	@echo "  phase2-load        Run Phase 2 throughput baseline script"
+	@echo "  phase3-demo        Run Phase 3 draft/manifest/publish demo script"
 	@echo "  phase4-demo        Run Phase 4 policy/quarantine/search demo script"
 
 restore:
@@ -98,6 +99,9 @@ phase2-demo: build
 
 phase2-load: build
 	./scripts/phase2-load.sh
+
+phase3-demo: build
+	./scripts/phase3-demo.sh
 
 phase4-demo: build
 	./scripts/phase4-demo.sh

@@ -9,7 +9,7 @@ This roadmap converts the design into execution phases with exit criteria.
 | Phase 0 | complete | Local stack, migrations, CI checks, smoke flow in place. |
 | Phase 1 | complete | PAT lifecycle, repo CRUD, RBAC, role bindings, audit persistence, integration tests. |
 | Phase 2 | complete | P2-01 through P2-10 complete, including throughput baseline/load report and executable demo/runbook. |
-| Phase 3 | in_progress | Kickoff complete with P3-01/P3-02; next active work is P3-03 draft artifact entry persistence. |
+| Phase 3 | complete | P3-01 through P3-10 complete, including atomic publish + outbox + demo/runbook. |
 | Phase 4 | complete | P4-01 through P4-10 complete, including policy/quarantine/search workflow and demo/runbook. |
 | Phase 5+ | planned | GC/repair, hardening. |
 

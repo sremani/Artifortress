@@ -45,6 +45,26 @@ type CreateDraftVersionRequest = {
 }
 
 [<CLIMutable>]
+type ArtifactEntryRequest = {
+    RelativePath: string
+    BlobDigest: string
+    ChecksumSha1: string
+    ChecksumSha256: string
+    SizeBytes: int64
+}
+
+[<CLIMutable>]
+type UpsertArtifactEntriesRequest = {
+    Entries: ArtifactEntryRequest array
+}
+
+[<CLIMutable>]
+type UpsertManifestRequest = {
+    Manifest: JsonElement
+    ManifestBlobDigest: string
+}
+
+[<CLIMutable>]
 type CreateUploadSessionRequest = {
     ExpectedDigest: string
     ExpectedLength: int64
@@ -124,11 +144,60 @@ type PackageVersionRecord = {
     PublishedAtUtc: DateTimeOffset option
 }
 
+type PackageVersionTargetRecord = {
+    VersionId: Guid
+    TenantId: Guid
+    RepoId: Guid
+    RepoKey: string
+    PackageType: string
+    PackageNamespace: string option
+    PackageName: string
+    Version: string
+    State: string
+    PublishedAtUtc: DateTimeOffset option
+}
+
+type NormalizedArtifactEntry = {
+    RelativePath: string
+    BlobDigest: string
+    ChecksumSha1: string option
+    ChecksumSha256: string option
+    SizeBytes: int64
+}
+
 type DraftVersionUpsertOutcome =
     | DraftCreated of PackageVersionRecord
     | DraftExisting of PackageVersionRecord
     | VersionStateConflict of string
     | RepoMissing
+
+type UpsertArtifactEntriesOutcome =
+    | UpsertEntriesVersionMissing
+    | UpsertEntriesStateConflict of string
+    | UpsertEntriesBlobMissing of string
+    | UpsertEntriesBlobNotCommitted of string
+    | UpsertEntriesSuccess of int
+
+type UpsertManifestOutcome =
+    | UpsertManifestVersionMissing
+    | UpsertManifestStateConflict of string
+    | UpsertManifestBlobMissing of string
+    | UpsertManifestBlobNotCommitted of string
+    | UpsertManifestSuccess of PackageVersionTargetRecord * string option
+
+type ReadManifestOutcome =
+    | ReadManifestVersionMissing
+    | ReadManifestMissing
+    | ReadManifestSuccess of PackageVersionTargetRecord * string option * string
+
+type PublishVersionOutcome =
+    | PublishVersionMissing
+    | PublishVersionStateConflict of string
+    | PublishVersionMissingEntries
+    | PublishVersionMissingManifest
+    | PublishVersionBlobNotCommitted of string
+    | PublishVersionSuccess of PackageVersionTargetRecord * DateTimeOffset * Guid option
+    | PublishVersionAlreadyPublished of PackageVersionTargetRecord
 
 type UploadSessionRecord = {
     UploadId: Guid
@@ -255,6 +324,115 @@ let validateDraftVersionRequest (request: CreateDraftVersionRequest) =
         Error "version is required."
     else
         Ok(packageType, packageNamespace, packageName, version)
+
+let private validateHexValue (fieldName: string) (expectedLength: int) (rawValue: string) =
+    let normalized = normalizeDigest rawValue
+
+    if normalized.Length <> expectedLength || not (normalized |> Seq.forall isHexChar) then
+        Error $"{fieldName} must be a {expectedLength}-character lowercase hex value."
+    else
+        Ok normalized
+
+let private validateOptionalHexValue (fieldName: string) (expectedLength: int) (rawValue: string) =
+    let normalized = normalizeDigest rawValue
+
+    if String.IsNullOrWhiteSpace normalized then
+        Ok None
+    else
+        validateHexValue fieldName expectedLength normalized |> Result.map Some
+
+let validateArtifactEntriesRequest (request: UpsertArtifactEntriesRequest) =
+    let values = if isNull request.Entries then [||] else request.Entries
+
+    if values.Length = 0 then
+        Error "entries must contain at least one item."
+    else
+        let parseResult =
+            values
+            |> Array.toList
+            |> List.fold
+                (fun acc value ->
+                    match acc with
+                    | Error err -> Error err
+                    | Ok (entries: NormalizedArtifactEntry list, seenPaths: Set<string>) ->
+                        let relativePath = normalizeText value.RelativePath
+                        let normalizedPath = relativePath.ToLowerInvariant()
+
+                        if String.IsNullOrWhiteSpace relativePath then
+                            Error "relativePath is required for each artifact entry."
+                        elif Set.contains normalizedPath seenPaths then
+                            Error $"Duplicate relativePath '{relativePath}' is not allowed in a single request."
+                        elif value.SizeBytes <= 0L then
+                            Error $"sizeBytes for '{relativePath}' must be greater than zero."
+                        else
+                            match
+                                validateHexValue "blobDigest" 64 value.BlobDigest
+                                |> Result.bind (fun blobDigest ->
+                                    validateOptionalHexValue "checksumSha1" 40 value.ChecksumSha1
+                                    |> Result.bind (fun checksumSha1 ->
+                                        validateOptionalHexValue "checksumSha256" 64 value.ChecksumSha256
+                                        |> Result.map (fun checksumSha256 -> blobDigest, checksumSha1, checksumSha256)))
+                            with
+                            | Error err -> Error err
+                            | Ok(blobDigest, checksumSha1, checksumSha256) ->
+                                Ok(
+                                    ({ RelativePath = relativePath
+                                       BlobDigest = blobDigest
+                                       ChecksumSha1 = checksumSha1
+                                       ChecksumSha256 = checksumSha256
+                                       SizeBytes = value.SizeBytes }
+                                     :: entries),
+                                    Set.add normalizedPath seenPaths
+                                ))
+                (Ok(([]: NormalizedArtifactEntry list), Set.empty))
+
+        parseResult |> Result.map (fun (entries, _) -> entries |> List.rev)
+
+let private tryReadRequiredManifestProperty (manifest: JsonElement) (propertyName: string) =
+    let mutable prop = Unchecked.defaultof<JsonElement>
+
+    if not (manifest.TryGetProperty(propertyName, &prop)) then
+        Error $"manifest.{propertyName} is required for this package type."
+    elif prop.ValueKind <> JsonValueKind.String then
+        Error $"manifest.{propertyName} must be a string."
+    else
+        let value = normalizeText (prop.GetString())
+        if String.IsNullOrWhiteSpace value then Error $"manifest.{propertyName} cannot be empty." else Ok value
+
+let private validateManifestForPackageType (packageType: string) (manifest: JsonElement) =
+    if manifest.ValueKind <> JsonValueKind.Object then
+        Error "manifest must be a JSON object."
+    else
+        match packageType with
+        | "nuget" ->
+            tryReadRequiredManifestProperty manifest "id"
+            |> Result.bind (fun _ -> tryReadRequiredManifestProperty manifest "version")
+            |> Result.map (fun _ -> ())
+        | "npm" ->
+            tryReadRequiredManifestProperty manifest "name"
+            |> Result.bind (fun _ -> tryReadRequiredManifestProperty manifest "version")
+            |> Result.map (fun _ -> ())
+        | "maven" ->
+            tryReadRequiredManifestProperty manifest "groupId"
+            |> Result.bind (fun _ -> tryReadRequiredManifestProperty manifest "artifactId")
+            |> Result.bind (fun _ -> tryReadRequiredManifestProperty manifest "version")
+            |> Result.map (fun _ -> ())
+        | _ -> Ok ()
+
+let validateManifestRequest (packageType: string) (request: UpsertManifestRequest) =
+    let manifestBlobDigestRaw = normalizeText request.ManifestBlobDigest
+
+    let manifestBlobDigestResult =
+        if String.IsNullOrWhiteSpace manifestBlobDigestRaw then
+            Ok None
+        else
+            validateHexValue "manifestBlobDigest" 64 manifestBlobDigestRaw |> Result.map Some
+
+    validateManifestForPackageType packageType request.Manifest
+    |> Result.bind (fun _ -> manifestBlobDigestResult)
+    |> Result.map (fun manifestBlobDigest ->
+        let manifestJson = request.Manifest.GetRawText()
+        manifestJson, manifestBlobDigest)
 
 let validateEvaluatePolicyRequest (request: EvaluatePolicyRequest) =
     let action = normalizeText request.Action |> fun value -> value.ToLowerInvariant()
@@ -1053,6 +1231,563 @@ let createOrGetDraftVersionForRepo
                                     Ok(DraftExisting record)
                                 else
                                     Ok(VersionStateConflict record.State)))))
+
+let private tryReadPackageVersionTargetForRepoInternal
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (forUpdate: bool)
+    (conn: NpgsqlConnection)
+    (tx: NpgsqlTransaction option)
+    =
+    let baseSql =
+        """
+select pv.version_id,
+       pv.tenant_id,
+       pv.repo_id,
+       r.repo_key,
+       p.package_type,
+       p.namespace,
+       p.name,
+       pv.version,
+       pv.state,
+       pv.published_at
+from package_versions pv
+join repos r on r.repo_id = pv.repo_id and r.tenant_id = pv.tenant_id
+join packages p on p.package_id = pv.package_id
+where pv.tenant_id = @tenant_id
+  and r.repo_key = @repo_key
+  and pv.version_id = @version_id
+"""
+
+    let sql = if forUpdate then $"{baseSql}for update;" else $"{baseSql}limit 1;"
+    use cmd = new NpgsqlCommand(sql, conn)
+
+    match tx with
+    | Some transaction -> cmd.Transaction <- transaction
+    | None -> ()
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let target =
+            { VersionId = reader.GetGuid(0)
+              TenantId = reader.GetGuid(1)
+              RepoId = reader.GetGuid(2)
+              RepoKey = reader.GetString(3)
+              PackageType = reader.GetString(4)
+              PackageNamespace = if reader.IsDBNull(5) then None else Some(reader.GetString(5))
+              PackageName = reader.GetString(6)
+              Version = reader.GetString(7)
+              State = reader.GetString(8)
+              PublishedAtUtc = if reader.IsDBNull(9) then None else Some(reader.GetFieldValue<DateTime>(9) |> toUtcDateTimeOffset) }
+
+        Ok(Some target)
+    else
+        Ok None
+
+let tryReadPackageVersionTargetForRepo (tenantId: Guid) (repoKey: string) (versionId: Guid) (conn: NpgsqlConnection) =
+    tryReadPackageVersionTargetForRepoInternal tenantId repoKey versionId false conn None
+
+let private tryReadLockedPackageVersionTargetForRepo
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (conn: NpgsqlConnection)
+    (tx: NpgsqlTransaction)
+    =
+    tryReadPackageVersionTargetForRepoInternal tenantId repoKey versionId true conn (Some tx)
+
+let private blobExistsByDigestInTransaction (digest: string) (conn: NpgsqlConnection) (tx: NpgsqlTransaction) =
+    use cmd = new NpgsqlCommand("select exists(select 1 from blobs where digest = @digest);", conn, tx)
+    cmd.Parameters.AddWithValue("digest", digest) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    match scalar with
+    | :? bool as existsValue -> Ok existsValue
+    | _ -> Error "Could not determine blob existence."
+
+let private repoHasCommittedDigestInTransaction (tenantId: Guid) (repoId: Guid) (digest: string) (conn: NpgsqlConnection) (tx: NpgsqlTransaction) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select exists(
+  select 1
+  from upload_sessions
+  where tenant_id = @tenant_id
+    and repo_id = @repo_id
+    and state = 'committed'
+    and committed_blob_digest = @digest
+);
+""",
+            conn,
+            tx
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+    cmd.Parameters.AddWithValue("digest", digest) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    match scalar with
+    | :? bool as existsValue -> Ok existsValue
+    | _ -> Error "Could not determine committed blob visibility for repository."
+
+let private upsertArtifactEntryForVersionInTransaction
+    (versionId: Guid)
+    (entry: NormalizedArtifactEntry)
+    (conn: NpgsqlConnection)
+    (tx: NpgsqlTransaction)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into artifact_entries
+  (version_id, relative_path, blob_digest, checksum_sha1, checksum_sha256, size_bytes)
+values
+  (@version_id, @relative_path, @blob_digest, @checksum_sha1, @checksum_sha256, @size_bytes)
+on conflict (version_id, relative_path)
+do update set
+  blob_digest = excluded.blob_digest,
+  checksum_sha1 = excluded.checksum_sha1,
+  checksum_sha256 = excluded.checksum_sha256,
+  size_bytes = excluded.size_bytes;
+""",
+            conn,
+            tx
+        )
+
+    cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+    cmd.Parameters.AddWithValue("relative_path", entry.RelativePath) |> ignore
+    cmd.Parameters.AddWithValue("blob_digest", entry.BlobDigest) |> ignore
+
+    let checksumSha1Param = cmd.Parameters.Add("checksum_sha1", NpgsqlDbType.Char)
+    checksumSha1Param.Value <- (match entry.ChecksumSha1 with | Some value -> box value | None -> box DBNull.Value)
+
+    let checksumSha256Param = cmd.Parameters.Add("checksum_sha256", NpgsqlDbType.Char)
+    checksumSha256Param.Value <- (match entry.ChecksumSha256 with | Some value -> box value | None -> box DBNull.Value)
+
+    cmd.Parameters.AddWithValue("size_bytes", entry.SizeBytes) |> ignore
+    cmd.ExecuteNonQuery() |> ignore
+    Ok()
+
+let upsertArtifactEntriesForDraftVersion
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (entries: NormalizedArtifactEntry list)
+    (conn: NpgsqlConnection)
+    =
+    use tx = conn.BeginTransaction()
+
+    let outcomeResult =
+        tryReadLockedPackageVersionTargetForRepo tenantId repoKey versionId conn tx
+        |> Result.bind (fun targetOption ->
+            match targetOption with
+            | None -> Ok UpsertEntriesVersionMissing
+            | Some target when target.State <> "draft" -> Ok(UpsertEntriesStateConflict target.State)
+            | Some target ->
+                let rec persist remaining count =
+                    match remaining with
+                    | [] -> Ok(UpsertEntriesSuccess count)
+                    | entry :: tail ->
+                        blobExistsByDigestInTransaction entry.BlobDigest conn tx
+                        |> Result.bind (fun blobExists ->
+                            if not blobExists then
+                                Ok(UpsertEntriesBlobMissing entry.BlobDigest)
+                            else
+                                repoHasCommittedDigestInTransaction tenantId target.RepoId entry.BlobDigest conn tx
+                                |> Result.bind (fun committedInRepo ->
+                                    if not committedInRepo then
+                                        Ok(UpsertEntriesBlobNotCommitted entry.BlobDigest)
+                                    else
+                                        upsertArtifactEntryForVersionInTransaction versionId entry conn tx
+                                        |> Result.bind (fun () -> persist tail (count + 1))))
+
+                persist entries 0)
+
+    match outcomeResult with
+    | Error err ->
+        tx.Rollback()
+        Error err
+    | Ok outcome ->
+        match outcome with
+        | UpsertEntriesSuccess _ ->
+            tx.Commit()
+            Ok outcome
+        | _ ->
+            tx.Rollback()
+            Ok outcome
+
+let upsertManifestForDraftVersion
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (manifestJson: string)
+    (manifestBlobDigest: string option)
+    (updatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use tx = conn.BeginTransaction()
+
+    let outcomeResult =
+        tryReadLockedPackageVersionTargetForRepo tenantId repoKey versionId conn tx
+        |> Result.bind (fun targetOption ->
+            match targetOption with
+            | None -> Ok UpsertManifestVersionMissing
+            | Some target when target.State <> "draft" -> Ok(UpsertManifestStateConflict target.State)
+            | Some target ->
+                let digestValidationResult =
+                    match manifestBlobDigest with
+                    | None -> Ok true
+                    | Some digest ->
+                        blobExistsByDigestInTransaction digest conn tx
+                        |> Result.bind (fun blobExists ->
+                            if not blobExists then
+                                Ok false
+                            else
+                                repoHasCommittedDigestInTransaction tenantId target.RepoId digest conn tx)
+
+                digestValidationResult
+                |> Result.bind (fun digestIsValid ->
+                    match manifestBlobDigest, digestIsValid with
+                    | Some digest, false ->
+                        blobExistsByDigestInTransaction digest conn tx
+                        |> Result.map (fun exists ->
+                            if exists then
+                                UpsertManifestBlobNotCommitted digest
+                            else
+                                UpsertManifestBlobMissing digest)
+                    | _ ->
+                        use cmd =
+                            new NpgsqlCommand(
+                                """
+insert into manifests
+  (version_id, tenant_id, repo_id, package_type, manifest_blob_digest, manifest_json, created_by_subject, updated_by_subject)
+values
+  (@version_id, @tenant_id, @repo_id, @package_type, @manifest_blob_digest, @manifest_json, @updated_by_subject, @updated_by_subject)
+on conflict (version_id)
+do update set
+  package_type = excluded.package_type,
+  manifest_blob_digest = excluded.manifest_blob_digest,
+  manifest_json = excluded.manifest_json,
+  updated_by_subject = excluded.updated_by_subject,
+  updated_at = now();
+""",
+                                conn,
+                                tx
+                            )
+
+                        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+                        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                        cmd.Parameters.AddWithValue("repo_id", target.RepoId) |> ignore
+                        cmd.Parameters.AddWithValue("package_type", target.PackageType) |> ignore
+                        cmd.Parameters.AddWithValue("updated_by_subject", updatedBySubject) |> ignore
+
+                        let manifestBlobDigestParam = cmd.Parameters.Add("manifest_blob_digest", NpgsqlDbType.Char)
+                        manifestBlobDigestParam.Value <- (match manifestBlobDigest with | Some value -> box value | None -> box DBNull.Value)
+
+                        let manifestJsonParam = cmd.Parameters.Add("manifest_json", NpgsqlDbType.Jsonb)
+                        manifestJsonParam.Value <- manifestJson
+
+                        cmd.ExecuteNonQuery() |> ignore
+                        Ok(UpsertManifestSuccess(target, manifestBlobDigest))))
+
+    match outcomeResult with
+    | Error err ->
+        tx.Rollback()
+        Error err
+    | Ok outcome ->
+        match outcome with
+        | UpsertManifestSuccess _ ->
+            tx.Commit()
+            Ok outcome
+        | _ ->
+            tx.Rollback()
+            Ok outcome
+
+let readManifestForVersion (tenantId: Guid) (repoKey: string) (versionId: Guid) (conn: NpgsqlConnection) =
+    tryReadPackageVersionTargetForRepo tenantId repoKey versionId conn
+    |> Result.bind (fun versionTargetOption ->
+        match versionTargetOption with
+        | None -> Ok ReadManifestVersionMissing
+        | Some versionTarget ->
+            use cmd =
+                new NpgsqlCommand(
+                    """
+select manifest_blob_digest, manifest_json::text
+from manifests
+where version_id = @version_id
+limit 1;
+""",
+                    conn
+                )
+
+            cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+
+            use reader = cmd.ExecuteReader()
+
+            if reader.Read() then
+                let manifestBlobDigest =
+                    if reader.IsDBNull(0) then None else Some(reader.GetString(0))
+
+                let manifestJson = reader.GetString(1)
+                Ok(ReadManifestSuccess(versionTarget, manifestBlobDigest, manifestJson))
+            else
+                Ok ReadManifestMissing)
+
+let private insertAuditRecordInTransaction
+    (tenantId: Guid)
+    (actor: string)
+    (action: string)
+    (resourceType: string)
+    (resourceId: string)
+    (details: Map<string, string>)
+    (conn: NpgsqlConnection)
+    (tx: NpgsqlTransaction)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into audit_log (tenant_id, actor_subject, action, resource_type, resource_id, details)
+values (@tenant_id, @actor_subject, @action, @resource_type, @resource_id, @details);
+""",
+            conn,
+            tx
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("actor_subject", actor) |> ignore
+    cmd.Parameters.AddWithValue("action", action) |> ignore
+    cmd.Parameters.AddWithValue("resource_type", resourceType) |> ignore
+    cmd.Parameters.AddWithValue("resource_id", resourceId) |> ignore
+
+    let detailsParam = cmd.Parameters.Add("details", NpgsqlDbType.Jsonb)
+    detailsParam.Value <- (details |> Map.toSeq |> dict |> JsonSerializer.Serialize)
+
+    let rows = cmd.ExecuteNonQuery()
+    if rows = 1 then Ok() else Error "Audit insert did not affect expected rows."
+
+let publishDraftVersionForRepo
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (publishedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use tx = conn.BeginTransaction()
+
+    let outcomeResult =
+        tryReadLockedPackageVersionTargetForRepo tenantId repoKey versionId conn tx
+        |> Result.bind (fun targetOption ->
+            match targetOption with
+            | None -> Ok PublishVersionMissing
+            | Some target when target.State = "published" ->
+                Ok(PublishVersionAlreadyPublished target)
+            | Some target when target.State <> "draft" ->
+                Ok(PublishVersionStateConflict target.State)
+            | Some target ->
+                use entryCountCmd =
+                    new NpgsqlCommand(
+                        "select count(*) from artifact_entries where version_id = @version_id;",
+                        conn,
+                        tx
+                    )
+
+                entryCountCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+                let entryCountScalar = entryCountCmd.ExecuteScalar()
+
+                let entryCountResult =
+                    match entryCountScalar with
+                    | :? int64 as value -> Ok value
+                    | :? int32 as value -> Ok(int64 value)
+                    | _ -> Error "Could not determine artifact entry count for publish."
+
+                match entryCountResult with
+                | Error err -> Error err
+                | Ok entryCount when entryCount = 0L -> Ok PublishVersionMissingEntries
+                | Ok _ ->
+                    use missingDigestCmd =
+                        new NpgsqlCommand(
+                            """
+select ae.blob_digest
+from artifact_entries ae
+where ae.version_id = @version_id
+  and not exists (
+    select 1
+    from upload_sessions us
+    where us.tenant_id = @tenant_id
+      and us.repo_id = @repo_id
+      and us.state = 'committed'
+      and us.committed_blob_digest = ae.blob_digest
+  )
+limit 1;
+""",
+                            conn,
+                            tx
+                        )
+
+                    missingDigestCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+                    missingDigestCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                    missingDigestCmd.Parameters.AddWithValue("repo_id", target.RepoId) |> ignore
+
+                    let missingDigestScalar = missingDigestCmd.ExecuteScalar()
+
+                    if not (isNull missingDigestScalar || missingDigestScalar = box DBNull.Value) then
+                        match missingDigestScalar with
+                        | :? string as missingDigest -> Ok(PublishVersionBlobNotCommitted missingDigest)
+                        | _ -> Error "Unexpected missing blob digest type returned for publish."
+                    else
+                        use manifestCountCmd =
+                            new NpgsqlCommand(
+                                "select count(*) from manifests where version_id = @version_id;",
+                                conn,
+                                tx
+                            )
+
+                        manifestCountCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+                        let manifestCountScalar = manifestCountCmd.ExecuteScalar()
+
+                        let manifestCountResult =
+                            match manifestCountScalar with
+                            | :? int64 as value -> Ok value
+                            | :? int32 as value -> Ok(int64 value)
+                            | _ -> Error "Could not determine manifest count for publish."
+
+                        match manifestCountResult with
+                        | Error err -> Error err
+                        | Ok manifestCount when manifestCount = 0L -> Ok PublishVersionMissingManifest
+                        | Ok _ ->
+                            use updateCmd =
+                                new NpgsqlCommand(
+                                    """
+update package_versions
+set state = 'published',
+    published_at = coalesce(published_at, now())
+where tenant_id = @tenant_id
+  and version_id = @version_id
+  and state = 'draft'
+returning published_at;
+""",
+                                    conn,
+                                    tx
+                                )
+
+                            updateCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                            updateCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+
+                            let publishedAtScalar = updateCmd.ExecuteScalar()
+
+                            if isNull publishedAtScalar || publishedAtScalar = box DBNull.Value then
+                                Ok(PublishVersionStateConflict "draft_transition_failed")
+                            else
+                                let publishedAtResult =
+                                    match publishedAtScalar with
+                                    | :? DateTimeOffset as dto -> Ok dto
+                                    | :? DateTime as dt -> Ok(toUtcDateTimeOffset dt)
+                                    | _ -> Error "Unexpected published_at type returned from publish update."
+
+                                match publishedAtResult with
+                                | Error err -> Error err
+                                | Ok publishedAtUtc ->
+                                    let payloadJson =
+                                        JsonSerializer.Serialize(
+                                            {| versionId = versionId
+                                               repoKey = target.RepoKey
+                                               packageType = target.PackageType
+                                               packageNamespace = target.PackageNamespace
+                                               packageName = target.PackageName
+                                               version = target.Version
+                                               publishedAtUtc = publishedAtUtc |}
+                                        )
+
+                                    use outboxCmd =
+                                        new NpgsqlCommand(
+                                            """
+insert into outbox_events
+  (tenant_id, aggregate_type, aggregate_id, event_type, payload, occurred_at, available_at)
+select
+  @tenant_id,
+  'package_version',
+  @aggregate_id,
+  'version.published',
+  @payload,
+  now(),
+  now()
+where not exists (
+  select 1
+  from outbox_events
+  where tenant_id = @tenant_id
+    and aggregate_type = 'package_version'
+    and aggregate_id = @aggregate_id
+    and event_type = 'version.published'
+)
+returning event_id;
+""",
+                                            conn,
+                                            tx
+                                        )
+
+                                    outboxCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                                    outboxCmd.Parameters.AddWithValue("aggregate_id", versionId.ToString()) |> ignore
+
+                                    let payloadParam = outboxCmd.Parameters.Add("payload", NpgsqlDbType.Jsonb)
+                                    payloadParam.Value <- payloadJson
+
+                                    let outboxEventScalar = outboxCmd.ExecuteScalar()
+
+                                    let outboxEventId =
+                                        if isNull outboxEventScalar || outboxEventScalar = box DBNull.Value then
+                                            None
+                                        else
+                                            match outboxEventScalar with
+                                            | :? Guid as eventId -> Some eventId
+                                            | _ -> None
+
+                                    match
+                                        insertAuditRecordInTransaction
+                                            tenantId
+                                            publishedBySubject
+                                            "package.version.published"
+                                            "package_version"
+                                            (versionId.ToString())
+                                            (Map.ofList
+                                                [ "repoKey", target.RepoKey
+                                                  "packageType", target.PackageType
+                                                  "packageName", target.PackageName
+                                                  "version", target.Version
+                                                  "state", "published" ])
+                                            conn
+                                            tx
+                                    with
+                                    | Error err -> Error err
+                                    | Ok () ->
+                                        let publishedTarget =
+                                            { target with
+                                                State = "published"
+                                                PublishedAtUtc = Some publishedAtUtc }
+
+                                        Ok(PublishVersionSuccess(publishedTarget, publishedAtUtc, outboxEventId))
+            )
+
+    match outcomeResult with
+    | Error err ->
+        tx.Rollback()
+        Error err
+    | Ok outcome ->
+        match outcome with
+        | PublishVersionSuccess _ ->
+            tx.Commit()
+            Ok outcome
+        | _ ->
+            tx.Rollback()
+            Ok outcome
 
 let evaluatePolicyForVersion
     (tenantId: Guid)
@@ -2614,6 +3349,267 @@ let main args =
                                            reusedDraft = true |}
                                     )
     ))
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/packages/versions/{versionId}/entries",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let versionIdRaw = normalizeText (ctx.Request.RouteValues["versionId"].ToString())
+
+            let parsedVersionId =
+                match Guid.TryParse(versionIdRaw) with
+                | true, parsed -> Ok parsed
+                | _ -> Error "versionId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedVersionId with
+                | Error err -> badRequest err
+                | Ok versionId ->
+                    match requireRole state ctx repoKey RepoRole.Write with
+                    | Error result -> result
+                    | Ok principal ->
+                        match readJsonBody<UpsertArtifactEntriesRequest> ctx with
+                        | Error err -> badRequest err
+                        | Ok request ->
+                            match validateArtifactEntriesRequest request with
+                            | Error err -> badRequest err
+                            | Ok entries ->
+                                match
+                                    withConnection
+                                        state
+                                        (upsertArtifactEntriesForDraftVersion
+                                            principal.TenantId
+                                            repoKey
+                                            versionId
+                                            entries)
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok UpsertEntriesVersionMissing ->
+                                    Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
+                                | Ok(UpsertEntriesStateConflict stateValue) ->
+                                    conflict $"Package version is in state '{stateValue}' and cannot be modified."
+                                | Ok(UpsertEntriesBlobMissing digest) ->
+                                    conflict $"Blob digest '{digest}' does not exist."
+                                | Ok(UpsertEntriesBlobNotCommitted digest) ->
+                                    conflict $"Blob digest '{digest}' is not committed in this repository."
+                                | Ok(UpsertEntriesSuccess entryCount) ->
+                                    match
+                                        writeAudit
+                                            state
+                                            principal.TenantId
+                                            principal.Subject
+                                            "package.version.entries.upserted"
+                                            "package_version"
+                                            (versionId.ToString())
+                                            (Map.ofList
+                                                [ "repoKey", repoKey
+                                                  "entryCount", entryCount.ToString()
+                                                  "state", "draft" ])
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok() ->
+                                        Results.Ok(
+                                            {| versionId = versionId
+                                               repoKey = repoKey
+                                               state = "draft"
+                                               entryCount = entryCount |}
+                                        ))
+    )
+    |> ignore
+
+    app.MapPut(
+        "/v1/repos/{repoKey}/packages/versions/{versionId}/manifest",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let versionIdRaw = normalizeText (ctx.Request.RouteValues["versionId"].ToString())
+
+            let parsedVersionId =
+                match Guid.TryParse(versionIdRaw) with
+                | true, parsed -> Ok parsed
+                | _ -> Error "versionId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedVersionId with
+                | Error err -> badRequest err
+                | Ok versionId ->
+                    match requireRole state ctx repoKey RepoRole.Write with
+                    | Error result -> result
+                    | Ok principal ->
+                        match withConnection state (tryReadPackageVersionTargetForRepo principal.TenantId repoKey versionId) with
+                        | Error err -> serviceUnavailable err
+                        | Ok None ->
+                            Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
+                        | Ok(Some versionTarget) ->
+                            match readJsonBody<UpsertManifestRequest> ctx with
+                            | Error err -> badRequest err
+                            | Ok request ->
+                                match validateManifestRequest versionTarget.PackageType request with
+                                | Error err -> badRequest err
+                                | Ok(manifestJson, manifestBlobDigest) ->
+                                    match
+                                        withConnection
+                                            state
+                                            (upsertManifestForDraftVersion
+                                                principal.TenantId
+                                                repoKey
+                                                versionId
+                                                manifestJson
+                                                manifestBlobDigest
+                                                principal.Subject)
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok UpsertManifestVersionMissing ->
+                                        Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
+                                    | Ok(UpsertManifestStateConflict stateValue) ->
+                                        conflict $"Package version is in state '{stateValue}' and cannot be modified."
+                                    | Ok(UpsertManifestBlobMissing digest) ->
+                                        conflict $"Manifest blob digest '{digest}' does not exist."
+                                    | Ok(UpsertManifestBlobNotCommitted digest) ->
+                                        conflict $"Manifest blob digest '{digest}' is not committed in this repository."
+                                    | Ok(UpsertManifestSuccess(updatedTarget, storedManifestBlobDigest)) ->
+                                        match
+                                            writeAudit
+                                                state
+                                                principal.TenantId
+                                                principal.Subject
+                                                "package.version.manifest.upserted"
+                                                "package_version"
+                                                (versionId.ToString())
+                                                (Map.ofList
+                                                    [ "repoKey", repoKey
+                                                      "packageType", updatedTarget.PackageType
+                                                      "hasManifestBlobDigest", (storedManifestBlobDigest.IsSome).ToString().ToLowerInvariant()
+                                                      "state", "draft" ])
+                                        with
+                                        | Error err -> serviceUnavailable err
+                                        | Ok() ->
+                                            Results.Ok(
+                                                {| versionId = versionId
+                                                   repoKey = repoKey
+                                                   packageType = updatedTarget.PackageType
+                                                   state = "draft"
+                                                   manifestBlobDigest = storedManifestBlobDigest |}
+                                            ))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/repos/{repoKey}/packages/versions/{versionId}/manifest",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let versionIdRaw = normalizeText (ctx.Request.RouteValues["versionId"].ToString())
+
+            let parsedVersionId =
+                match Guid.TryParse(versionIdRaw) with
+                | true, parsed -> Ok parsed
+                | _ -> Error "versionId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedVersionId with
+                | Error err -> badRequest err
+                | Ok versionId ->
+                    match requireRole state ctx repoKey RepoRole.Read with
+                    | Error result -> result
+                    | Ok principal ->
+                        match withConnection state (readManifestForVersion principal.TenantId repoKey versionId) with
+                        | Error err -> serviceUnavailable err
+                        | Ok ReadManifestVersionMissing ->
+                            Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
+                        | Ok ReadManifestMissing ->
+                            Results.NotFound({| error = "not_found"; message = "Manifest was not found for package version." |})
+                        | Ok(ReadManifestSuccess(versionTarget, manifestBlobDigest, manifestJson)) ->
+                            try
+                                use manifestDoc = JsonDocument.Parse(manifestJson)
+                                let manifestValue = manifestDoc.RootElement.Clone()
+
+                                Results.Ok(
+                                    {| versionId = versionId
+                                       repoKey = repoKey
+                                       packageType = versionTarget.PackageType
+                                       state = versionTarget.State
+                                       manifestBlobDigest = manifestBlobDigest
+                                       manifest = manifestValue |}
+                                )
+                            with ex ->
+                                serviceUnavailable $"Stored manifest could not be parsed: {ex.Message}"
+    ))
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/packages/versions/{versionId}/publish",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let versionIdRaw = normalizeText (ctx.Request.RouteValues["versionId"].ToString())
+
+            let parsedVersionId =
+                match Guid.TryParse(versionIdRaw) with
+                | true, parsed -> Ok parsed
+                | _ -> Error "versionId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedVersionId with
+                | Error err -> badRequest err
+                | Ok versionId ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match
+                            withConnection
+                                state
+                                (publishDraftVersionForRepo
+                                    principal.TenantId
+                                    repoKey
+                                    versionId
+                                    principal.Subject)
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok PublishVersionMissing ->
+                            Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
+                        | Ok(PublishVersionStateConflict stateValue) ->
+                            conflict $"Package version is in state '{stateValue}' and cannot be published."
+                        | Ok PublishVersionMissingEntries ->
+                            conflict "Package version cannot be published without artifact entries."
+                        | Ok PublishVersionMissingManifest ->
+                            conflict "Package version cannot be published without a manifest."
+                        | Ok(PublishVersionBlobNotCommitted digest) ->
+                            conflict $"Package version references blob digest '{digest}' that is not committed in this repository."
+                        | Ok(PublishVersionAlreadyPublished target) ->
+                            Results.Ok(
+                                {| versionId = target.VersionId
+                                   repoKey = target.RepoKey
+                                   packageType = target.PackageType
+                                   packageNamespace = target.PackageNamespace
+                                   packageName = target.PackageName
+                                   version = target.Version
+                                   state = target.State
+                                   publishedAtUtc = target.PublishedAtUtc
+                                   eventEmitted = false
+                                   idempotent = true |}
+                            )
+                        | Ok(PublishVersionSuccess(target, publishedAtUtc, outboxEventId)) ->
+                            Results.Ok(
+                                {| versionId = target.VersionId
+                                   repoKey = target.RepoKey
+                                   packageType = target.PackageType
+                                   packageNamespace = target.PackageNamespace
+                                   packageName = target.PackageName
+                                   version = target.Version
+                                   state = "published"
+                                   publishedAtUtc = publishedAtUtc
+                                   outboxEventId = outboxEventId
+                                   eventEmitted = outboxEventId.IsSome
+                                   idempotent = false |}
+                            ))
+    )
     |> ignore
 
     app.MapPost(

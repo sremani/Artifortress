@@ -53,6 +53,26 @@ type CreateDraftVersionRequest = {
 }
 
 [<CLIMutable>]
+type ArtifactEntryRequest = {
+    RelativePath: string
+    BlobDigest: string
+    ChecksumSha1: string
+    ChecksumSha256: string
+    SizeBytes: int64
+}
+
+[<CLIMutable>]
+type UpsertArtifactEntriesRequest = {
+    Entries: ArtifactEntryRequest array
+}
+
+[<CLIMutable>]
+type UpsertManifestRequest = {
+    Manifest: JsonElement
+    ManifestBlobDigest: string
+}
+
+[<CLIMutable>]
 type EvaluatePolicyRequest = {
     Action: string
     VersionId: Guid
@@ -457,6 +477,174 @@ values
 
         if rows <> 1 then
             failwith $"Could not insert artifact entry for version {versionId}."
+
+    member this.SeedCommittedBlobForRepo(repoKey: string, digest: string, lengthBytes: int64) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let tenantId = ensureTenantId conn
+
+        use repoCmd =
+            new NpgsqlCommand(
+                """
+select repo_id
+from repos
+where tenant_id = @tenant_id
+  and repo_key = @repo_key
+limit 1;
+""",
+                conn
+            )
+
+        repoCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        repoCmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+        let repoScalar = repoCmd.ExecuteScalar()
+
+        let repoId =
+            match repoScalar with
+            | :? Guid as value -> value
+            | _ -> failwith $"Could not resolve repo id for {repoKey}."
+
+        let storageKey = $"integration/{repoKey}/{digest}"
+
+        use upsertBlobCmd =
+            new NpgsqlCommand(
+                """
+insert into blobs (digest, length_bytes, storage_key)
+values (@digest, @length_bytes, @storage_key)
+on conflict (digest)
+do update set storage_key = excluded.storage_key;
+""",
+                conn
+            )
+
+        upsertBlobCmd.Parameters.AddWithValue("digest", digest) |> ignore
+        upsertBlobCmd.Parameters.AddWithValue("length_bytes", lengthBytes) |> ignore
+        upsertBlobCmd.Parameters.AddWithValue("storage_key", storageKey) |> ignore
+        upsertBlobCmd.ExecuteNonQuery() |> ignore
+
+        use uploadCmd =
+            new NpgsqlCommand(
+                """
+insert into upload_sessions
+  (upload_id, tenant_id, repo_id, expected_digest, expected_length, state, committed_blob_digest, created_by_subject, expires_at, committed_at)
+values
+  (gen_random_uuid(), @tenant_id, @repo_id, @digest, @length_bytes, 'committed', @digest, 'integration-tests', now() + interval '1 hour', now());
+""",
+                conn
+            )
+
+        uploadCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        uploadCmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+        uploadCmd.Parameters.AddWithValue("digest", digest) |> ignore
+        uploadCmd.Parameters.AddWithValue("length_bytes", lengthBytes) |> ignore
+        uploadCmd.ExecuteNonQuery() |> ignore
+
+    member this.CountArtifactEntriesForVersion(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from artifact_entries
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected artifact_entries count scalar for version {versionId}."
+
+    member this.HasManifestForVersion(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select exists(
+  select 1
+  from manifests
+  where version_id = @version_id
+);
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? bool as existsValue -> existsValue
+        | _ -> failwith $"Unexpected manifests existence scalar for version {versionId}."
+
+    member this.TryReadVersionState(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select state
+from package_versions
+where version_id = @version_id
+limit 1;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        if isNull scalar || scalar = box DBNull.Value then
+            None
+        else
+            match scalar with
+            | :? string as value -> Some value
+            | _ -> failwith $"Unexpected package_versions.state scalar for version {versionId}."
+
+    member this.CountVersionPublishedEvents(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let tenantId = ensureTenantId conn
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from outbox_events
+where tenant_id = @tenant_id
+  and aggregate_type = 'package_version'
+  and aggregate_id = @aggregate_id
+  and event_type = 'version.published';
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        cmd.Parameters.AddWithValue("aggregate_id", versionId.ToString()) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected outbox event count scalar for version {versionId}."
 
     member this.TryMutatePublishedVersionMetadata(versionId: Guid) =
         this.RequireAvailable()
@@ -917,6 +1105,53 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         fixture.Client.Send(request)
 
+    let upsertArtifactEntriesWithToken
+        (token: string)
+        (repoKey: string)
+        (versionId: Guid)
+        (entries: ArtifactEntryRequest array)
+        =
+        use request =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/entries")
+
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <- JsonContent.Create({ Entries = entries })
+        fixture.Client.Send(request)
+
+    let upsertManifestWithToken
+        (token: string)
+        (repoKey: string)
+        (versionId: Guid)
+        (manifest: JsonElement)
+        (manifestBlobDigest: string)
+        =
+        use request =
+            new HttpRequestMessage(HttpMethod.Put, $"/v1/repos/{repoKey}/packages/versions/{versionId}/manifest")
+
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+
+        request.Content <-
+            JsonContent.Create(
+                { Manifest = manifest
+                  ManifestBlobDigest = manifestBlobDigest }
+            )
+
+        fixture.Client.Send(request)
+
+    let getManifestWithToken (token: string) (repoKey: string) (versionId: Guid) =
+        use request =
+            new HttpRequestMessage(HttpMethod.Get, $"/v1/repos/{repoKey}/packages/versions/{versionId}/manifest")
+
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let publishVersionWithToken (token: string) (repoKey: string) (versionId: Guid) =
+        use request =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/publish")
+
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
     let evaluatePolicyWithToken
         (token: string)
         (repoKey: string)
@@ -1292,6 +1527,382 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         let conflictBody = ensureStatus HttpStatusCode.Conflict conflictResponse
         Assert.Contains("cannot be reused as a draft", conflictBody)
+
+    [<Fact>]
+    member _.``P3-03 artifact entry API validates authz and blob existence`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p303-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p303-entries"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "p303-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "p303-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"entries-{Guid.NewGuid():N}"
+
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let missingDigest = tokenHashFor $"missing-{Guid.NewGuid():N}"
+        let entryMissing =
+            [| { RelativePath = "lib/main.nupkg"
+                 BlobDigest = missingDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = missingDigest
+                 SizeBytes = 128L } |]
+
+        use unauthorizedRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/entries")
+
+        unauthorizedRequest.Content <- JsonContent.Create({ Entries = entryMissing })
+        use unauthorizedResponse = fixture.Client.Send(unauthorizedRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedResponse |> ignore
+
+        use forbiddenResponse = upsertArtifactEntriesWithToken readToken repoKey versionId entryMissing
+        ensureStatus HttpStatusCode.Forbidden forbiddenResponse |> ignore
+
+        use missingBlobResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entryMissing
+        let missingBody = ensureStatus HttpStatusCode.Conflict missingBlobResponse
+        Assert.Contains("does not exist", missingBody)
+
+        let committedDigest = tokenHashFor $"committed-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, committedDigest, 256L)
+
+        let validEntries =
+            [| { RelativePath = "lib/main.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 256L } |]
+
+        use successResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId validEntries
+        ensureStatus HttpStatusCode.OK successResponse |> ignore
+
+        let persistedCount = fixture.CountArtifactEntriesForVersion(versionId)
+        Assert.Equal(1L, persistedCount)
+
+    [<Fact>]
+    member _.``P3-03 duplicate relative paths are rejected deterministically`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p303-dup-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p303-dup"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p303-dup-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"entries-dup-{Guid.NewGuid():N}"
+
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let committedDigest = tokenHashFor $"committed-dup-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, committedDigest, 256L)
+
+        let duplicateEntries =
+            [| { RelativePath = "lib/main.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 256L }
+               { RelativePath = "lib/main.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 256L } |]
+
+        use duplicateResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId duplicateEntries
+        let duplicateBody = ensureStatus HttpStatusCode.BadRequest duplicateResponse
+        Assert.Contains("Duplicate relativePath", duplicateBody)
+
+    [<Fact>]
+    member _.``P3-04 manifest API validates per package type and is queryable`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p304-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p304-manifest"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p304-writer") [| $"repo:{repoKey}:write" |] 60
+        let readToken, _ = issuePat (makeSubject "p304-reader") [| $"repo:{repoKey}:read" |] 60
+        let packageName = $"manifest-{Guid.NewGuid():N}"
+
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use invalidManifestDoc = JsonDocument.Parse("""{"version":"1.0.0"}""")
+        let invalidManifest = invalidManifestDoc.RootElement.Clone()
+
+        use invalidManifestResponse = upsertManifestWithToken writeToken repoKey versionId invalidManifest ""
+        let invalidBody = ensureStatus HttpStatusCode.BadRequest invalidManifestResponse
+        Assert.Contains("manifest.id is required", invalidBody)
+
+        use validManifestDoc = JsonDocument.Parse("""{"id":"demo.package","version":"1.0.0","authors":["integration"]}""")
+        let validManifest = validManifestDoc.RootElement.Clone()
+
+        use putManifestResponse = upsertManifestWithToken writeToken repoKey versionId validManifest ""
+        ensureStatus HttpStatusCode.OK putManifestResponse |> ignore
+
+        use getManifestResponse = getManifestWithToken readToken repoKey versionId
+        let getBody = ensureStatus HttpStatusCode.OK getManifestResponse
+        use getDoc = JsonDocument.Parse(getBody)
+
+        Assert.Equal("nuget", getDoc.RootElement.GetProperty("packageType").GetString())
+        Assert.Equal("draft", getDoc.RootElement.GetProperty("state").GetString())
+        Assert.Equal("demo.package", getDoc.RootElement.GetProperty("manifest").GetProperty("id").GetString())
+
+        let hasManifest = fixture.HasManifestForVersion(versionId)
+        Assert.True(hasManifest, "Expected manifest to be persisted for draft version.")
+
+    [<Fact>]
+    member _.``P3-05 P3-06 publish endpoint is atomic, emits outbox event once, and is idempotent`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p305-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p305-publish"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p305-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p305-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"publish-{Guid.NewGuid():N}"
+
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let committedDigest = tokenHashFor $"publish-digest-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, committedDigest, 512L)
+
+        let entries =
+            [| { RelativePath = "lib/package.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 512L } |]
+
+        use entriesResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entries
+        ensureStatus HttpStatusCode.OK entriesResponse |> ignore
+
+        use manifestDoc = JsonDocument.Parse("""{"id":"demo.publish","version":"1.0.0"}""")
+        let manifest = manifestDoc.RootElement.Clone()
+        use manifestResponse = upsertManifestWithToken writeToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.OK manifestResponse |> ignore
+
+        use publishResponse = publishVersionWithToken promoteToken repoKey versionId
+        let publishBody = ensureStatus HttpStatusCode.OK publishResponse
+        use publishDoc = JsonDocument.Parse(publishBody)
+        Assert.Equal("published", publishDoc.RootElement.GetProperty("state").GetString())
+        Assert.True(publishDoc.RootElement.GetProperty("eventEmitted").GetBoolean())
+        Assert.False(publishDoc.RootElement.GetProperty("idempotent").GetBoolean())
+
+        let publishedState = fixture.TryReadVersionState(versionId)
+        let outboxCountAfterFirst = fixture.CountVersionPublishedEvents(versionId)
+        Assert.Equal(Some "published", publishedState)
+        Assert.Equal(1L, outboxCountAfterFirst)
+
+        use republishResponse = publishVersionWithToken promoteToken repoKey versionId
+        let republishBody = ensureStatus HttpStatusCode.OK republishResponse
+        use republishDoc = JsonDocument.Parse(republishBody)
+        Assert.True(republishDoc.RootElement.GetProperty("idempotent").GetBoolean())
+        Assert.False(republishDoc.RootElement.GetProperty("eventEmitted").GetBoolean())
+
+        let outboxCountAfterSecond = fixture.CountVersionPublishedEvents(versionId)
+        Assert.Equal(1L, outboxCountAfterSecond)
+
+    [<Fact>]
+    member _.``P3-07 publish workflow endpoints enforce authz and emit audit actions`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p307-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p307-authz"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "p307-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "p307-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p307-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"authz-{Guid.NewGuid():N}"
+
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let committedDigest = tokenHashFor $"authz-digest-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, committedDigest, 256L)
+
+        let entries =
+            [| { RelativePath = "lib/authz.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 256L } |]
+
+        use unauthorizedEntriesRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/entries")
+
+        unauthorizedEntriesRequest.Content <- JsonContent.Create({ Entries = entries })
+        use unauthorizedEntriesResponse = fixture.Client.Send(unauthorizedEntriesRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedEntriesResponse |> ignore
+
+        use forbiddenEntriesResponse = upsertArtifactEntriesWithToken readToken repoKey versionId entries
+        ensureStatus HttpStatusCode.Forbidden forbiddenEntriesResponse |> ignore
+
+        use okEntriesResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entries
+        ensureStatus HttpStatusCode.OK okEntriesResponse |> ignore
+
+        use manifestDoc = JsonDocument.Parse("""{"id":"demo.authz","version":"1.0.0"}""")
+        let manifest = manifestDoc.RootElement.Clone()
+
+        use unauthorizedManifestRequest =
+            new HttpRequestMessage(HttpMethod.Put, $"/v1/repos/{repoKey}/packages/versions/{versionId}/manifest")
+
+        unauthorizedManifestRequest.Content <- JsonContent.Create({ Manifest = manifest; ManifestBlobDigest = "" })
+        use unauthorizedManifestResponse = fixture.Client.Send(unauthorizedManifestRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedManifestResponse |> ignore
+
+        use forbiddenManifestResponse = upsertManifestWithToken readToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.Forbidden forbiddenManifestResponse |> ignore
+
+        use okManifestResponse = upsertManifestWithToken writeToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.OK okManifestResponse |> ignore
+
+        use unauthorizedPublishRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/publish")
+
+        use unauthorizedPublishResponse = fixture.Client.Send(unauthorizedPublishRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedPublishResponse |> ignore
+
+        use forbiddenPublishResponse = publishVersionWithToken writeToken repoKey versionId
+        ensureStatus HttpStatusCode.Forbidden forbiddenPublishResponse |> ignore
+
+        use okPublishResponse = publishVersionWithToken promoteToken repoKey versionId
+        ensureStatus HttpStatusCode.OK okPublishResponse |> ignore
+
+        use auditResponse = getAuditWithToken adminToken 200
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let actions =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.map (fun entry -> entry.GetProperty("action").GetString())
+            |> Seq.toList
+
+        Assert.Contains("package.version.entries.upserted", actions)
+        Assert.Contains("package.version.manifest.upserted", actions)
+        Assert.Contains("package.version.published", actions)
+
+    [<Fact>]
+    member _.``P3-08 published versions reject deterministic entry and manifest mutation attempts`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p308-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p308-immut"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p308-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p308-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"immut-{Guid.NewGuid():N}"
+
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let committedDigest = tokenHashFor $"immut-digest-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, committedDigest, 300L)
+
+        let entries =
+            [| { RelativePath = "lib/immut.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 300L } |]
+
+        use entriesResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entries
+        ensureStatus HttpStatusCode.OK entriesResponse |> ignore
+
+        use manifestDoc = JsonDocument.Parse("""{"id":"demo.immut","version":"1.0.0"}""")
+        let manifest = manifestDoc.RootElement.Clone()
+        use manifestResponse = upsertManifestWithToken writeToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.OK manifestResponse |> ignore
+
+        use publishResponse = publishVersionWithToken promoteToken repoKey versionId
+        ensureStatus HttpStatusCode.OK publishResponse |> ignore
+
+        let mutationEntry =
+            [| { RelativePath = "lib/immut.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 301L } |]
+
+        use entryMutationResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId mutationEntry
+        let entryMutationBody = ensureStatus HttpStatusCode.Conflict entryMutationResponse
+        Assert.Contains("cannot be modified", entryMutationBody)
+
+        use manifestMutationDoc = JsonDocument.Parse("""{"id":"demo.immut","version":"1.0.1"}""")
+        let manifestMutation = manifestMutationDoc.RootElement.Clone()
+        use manifestMutationResponse = upsertManifestWithToken writeToken repoKey versionId manifestMutation ""
+        let manifestMutationBody = ensureStatus HttpStatusCode.Conflict manifestMutationResponse
+        Assert.Contains("cannot be modified", manifestMutationBody)
+
+    [<Fact>]
+    member _.``P3-09 publish failure path leaves no partial published state or outbox event`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p309-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p309-atomic"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p309-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p309-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"atomic-{Guid.NewGuid():N}"
+
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let committedDigest = tokenHashFor $"atomic-digest-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, committedDigest, 412L)
+
+        let entries =
+            [| { RelativePath = "lib/atomic.nupkg"
+                 BlobDigest = committedDigest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = committedDigest
+                 SizeBytes = 412L } |]
+
+        use entriesResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entries
+        ensureStatus HttpStatusCode.OK entriesResponse |> ignore
+
+        use firstPublishResponse = publishVersionWithToken promoteToken repoKey versionId
+        let firstPublishBody = ensureStatus HttpStatusCode.Conflict firstPublishResponse
+        Assert.Contains("without a manifest", firstPublishBody)
+
+        let stateAfterFailure = fixture.TryReadVersionState(versionId)
+        let outboxCountAfterFailure = fixture.CountVersionPublishedEvents(versionId)
+        Assert.Equal(Some "draft", stateAfterFailure)
+        Assert.Equal(0L, outboxCountAfterFailure)
+
+        use manifestDoc = JsonDocument.Parse("""{"id":"demo.atomic","version":"1.0.0"}""")
+        let manifest = manifestDoc.RootElement.Clone()
+        use manifestResponse = upsertManifestWithToken writeToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.OK manifestResponse |> ignore
+
+        use secondPublishResponse = publishVersionWithToken promoteToken repoKey versionId
+        ensureStatus HttpStatusCode.OK secondPublishResponse |> ignore
+
+        let finalState = fixture.TryReadVersionState(versionId)
+        let finalOutboxCount = fixture.CountVersionPublishedEvents(versionId)
+        Assert.Equal(Some "published", finalState)
+        Assert.Equal(1L, finalOutboxCount)
 
     [<Fact>]
     member _.``P4-02 policy evaluate endpoint enforces authz and records default allow decision`` () =

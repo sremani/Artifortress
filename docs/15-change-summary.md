@@ -9,6 +9,7 @@ This change set combines:
 - Unit + integration regression coverage for the hardening path.
 - FsCheck property-based testing expansion across domain and API helpers.
 - Three extraction waves in the worker to expose pure internals for deeper property testing.
+- Phase 3 publish-workflow completion (entries, manifests, atomic publish, outbox, and audit coverage).
 - Documentation updates reflecting implementation and verification state.
 
 ## Code Changes
@@ -44,6 +45,30 @@ This change set combines:
 - `src/Artifortress.Worker/Artifortress.Worker.fsproj`
   - Added compile include for `WorkerInternals.fs`.
 
+### 3. Phase 3 publish workflow completion
+
+- `db/migrations/0007_phase3_manifest_persistence.sql` (new)
+  - Added `manifests` persistence table and supporting indexes.
+
+- `src/Artifortress.Api/Program.fs`
+  - Added request models:
+    - `UpsertArtifactEntriesRequest`
+    - `UpsertManifestRequest`
+  - Added validation scaffolding:
+    - artifact entry payload validation (digest/checksum/path/size rules),
+    - package-type manifest validation (`nuget`, `npm`, `maven`, generic object baseline).
+  - Added new API endpoints:
+    - `POST /v1/repos/{repoKey}/packages/versions/{versionId}/entries`
+    - `PUT /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+    - `GET /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+    - `POST /v1/repos/{repoKey}/packages/versions/{versionId}/publish`
+  - Added single-transaction publish flow with:
+    - draft-state guards,
+    - artifact-entry + manifest precondition enforcement,
+    - in-transaction outbox event emission (`version.published`),
+    - in-transaction publish audit write,
+    - idempotent republish response path without duplicate outbox emission.
+
 ## Test Changes
 
 - `tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj`
@@ -55,6 +80,14 @@ This change set combines:
 
 - `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
   - Added integration test for create-repo colon rejection behavior.
+  - Added Phase 3 integration coverage:
+    - artifact entry authz and blob-existence checks,
+    - duplicate artifact path rejection,
+    - manifest validation/query behavior,
+    - atomic publish success + idempotent republish,
+    - publish authz + audit matrix,
+    - deterministic post-publish mutation conflicts,
+    - publish failure rollback safety (no partial state/outbox).
 
 - `tests/Artifortress.Domain.Tests/PropertyTests.fs` (new)
   - Expanded to `75` FsCheck properties covering:
@@ -66,10 +99,22 @@ This change set combines:
 ## Documentation Changes
 
 - `README.md`
-  - Updated status and documentation map for worker extraction + PBT coverage.
+  - Updated status and API surface for completed Phase 3 endpoints.
 
 - `docs/10-current-state.md`
-  - Updated verification counts and extraction-wave notes.
+  - Updated verification counts and implementation inventory including Phase 3 completion.
+
+- `docs/12-phase3-implementation-tickets.md`
+  - Marked P3-03 through P3-10 complete and documented verification evidence.
+
+- `docs/19-phase3-runbook.md` (new)
+  - Added executable Phase 3 draft/manifest/publish runbook.
+
+- `scripts/phase3-demo.sh` (new)
+  - Added script that exercises Phase 3 workflow end-to-end.
+
+- `Makefile`
+  - Added `phase3-demo` target.
 
 - `docs/14-worker-pbt-extraction-tickets.md` (new)
   - Worker extraction ticket board and implementation notes.
@@ -81,4 +126,5 @@ This change set combines:
 
 - `make format` passed.
 - `make test` (non-integration filter) passed: `84` tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo` passed: `122` tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `47` integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `131` total tests.

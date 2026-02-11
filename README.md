@@ -8,10 +8,10 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 0: complete.
 - Phase 1: complete.
 - Phase 2: complete through P2-10 (upload/download APIs + verification + coverage + throughput baseline + demo/runbook).
-- Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
+- Phase 3: complete through P3-10 (artifact entry + manifest APIs, atomic publish, outbox emission, authz/audit coverage, integration tests, demo/runbook).
 - Phase 4: implemented through P4-10 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics + deny/search-fallback integration coverage + demo/runbook).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: Phase 3 publish workflow completion (`P3-03` onward).
+- Current build-out focus: post-Phase-4 hardening and follow-on roadmap items.
 
 ## Implemented Today
 
@@ -75,7 +75,7 @@ Run Phase 4 demo flow:
 make phase4-demo
 ```
 
-## API Surface (Phase 2 Progress)
+## API Surface (Current)
 
 - `GET /health/live`
 - `GET /health/ready`
@@ -90,6 +90,10 @@ make phase4-demo
 - `GET /v1/repos/{repoKey}/bindings`
 - `POST /v1/repos/{repoKey}/uploads`
 - `POST /v1/repos/{repoKey}/packages/versions/drafts`
+- `POST /v1/repos/{repoKey}/packages/versions/{versionId}/entries`
+- `PUT /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+- `GET /v1/repos/{repoKey}/packages/versions/{versionId}/manifest`
+- `POST /v1/repos/{repoKey}/packages/versions/{versionId}/publish`
 - `POST /v1/repos/{repoKey}/policy/evaluations`
 - `GET /v1/repos/{repoKey}/quarantine`
 - `GET /v1/repos/{repoKey}/quarantine/{quarantineId}`
@@ -129,6 +133,7 @@ make phase4-demo
 - `docs/16-phase4-runbook.md`: executable Phase 4 policy/quarantine/search demo runbook.
 - `docs/17-phase2-runbook.md`: executable Phase 2 upload/download demo + load baseline runbook.
 - `docs/18-phase2-throughput-baseline.md`: latest recorded Phase 2 throughput baseline and target outcomes.
+- `docs/19-phase3-runbook.md`: executable Phase 3 draft/manifest/publish demo runbook.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
 
 ## ADRs
