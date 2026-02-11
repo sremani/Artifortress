@@ -1,7 +1,6 @@
 namespace Artifortress.Worker
 
 open System
-open System.Text.Json
 open System.Threading
 open Npgsql
 
@@ -18,41 +17,7 @@ type JobSweepOutcome = {
     FailedCount: int
 }
 
-type private ClaimedOutboxEvent = {
-    EventId: Guid
-    TenantId: Guid
-    AggregateId: string
-    PayloadJson: string
-}
-
-type private ClaimedSearchJob = {
-    JobId: Guid
-    TenantId: Guid
-    VersionId: Guid
-    Attempts: int
-}
-
 module SearchIndexOutboxProducer =
-    let private tryResolveVersionId (aggregateId: string) (payloadJson: string) =
-        match Guid.TryParse(aggregateId) with
-        | true, versionId -> Some versionId
-        | _ ->
-            try
-                use doc = JsonDocument.Parse(payloadJson)
-                let root = doc.RootElement
-                let mutable versionIdProp = Unchecked.defaultof<JsonElement>
-
-                if root.ValueKind = JsonValueKind.Object && root.TryGetProperty("versionId", &versionIdProp) then
-                    let versionIdRaw = versionIdProp.GetString()
-
-                    match Guid.TryParse(versionIdRaw) with
-                    | true, versionId -> Some versionId
-                    | _ -> None
-                else
-                    None
-            with _ ->
-                None
-
     let private claimOutboxEvents (batchSize: int) (conn: NpgsqlConnection) =
         use cmd =
             new NpgsqlCommand(
@@ -81,18 +46,19 @@ from claimed;
                 conn
             )
 
-        cmd.Parameters.AddWithValue("batch_size", max 1 batchSize) |> ignore
+        cmd.Parameters.AddWithValue("batch_size", WorkerDbParameters.normalizeBatchSize batchSize) |> ignore
 
         use reader = cmd.ExecuteReader()
-        let events = ResizeArray<ClaimedOutboxEvent>()
+        let events = ResizeArray<WorkerDataShapes.ClaimedOutboxEvent>()
 
         let rec loop () =
             if reader.Read() then
                 events.Add(
-                    { EventId = reader.GetGuid(0)
-                      TenantId = reader.GetGuid(1)
-                      AggregateId = reader.GetString(2)
-                      PayloadJson = reader.GetString(3) }
+                    WorkerDataShapes.createClaimedOutboxEvent
+                        (reader.GetGuid(0))
+                        (reader.GetGuid(1))
+                        (reader.GetString(2))
+                        (reader.GetString(3))
                 )
 
                 loop ()
@@ -170,29 +136,24 @@ where event_id = @event_id
             conn.Open()
 
             let claimed = claimOutboxEvents batchSize conn
-            let mutable enqueued = 0
-            let mutable delivered = 0
-            let mutable requeued = 0
+            let mutable metrics = WorkerSweepMetrics.zeroOutbox
 
             for outboxEvent in claimed do
-                match tryResolveVersionId outboxEvent.AggregateId outboxEvent.PayloadJson with
-                | None ->
+                match WorkerOutboxFlow.decideRouting outboxEvent.AggregateId outboxEvent.PayloadJson with
+                | WorkerOutboxFlow.Requeue ->
                     requeueEvent outboxEvent.EventId conn
-                    requeued <- requeued + 1
-                | Some versionId ->
+                    metrics <- WorkerSweepMetrics.recordRequeue metrics
+                | WorkerOutboxFlow.EnqueueVersion versionId ->
                     let isDelivered =
                         enqueueSearchJobAndMarkDelivered outboxEvent.EventId outboxEvent.TenantId versionId conn
 
-                    enqueued <- enqueued + 1
-
-                    if isDelivered then
-                        delivered <- delivered + 1
+                    metrics <- WorkerSweepMetrics.recordEnqueue isDelivered metrics
 
             Ok
                 { ClaimedCount = claimed.Length
-                  EnqueuedCount = enqueued
-                  DeliveredCount = delivered
-                  RequeuedCount = requeued }
+                  EnqueuedCount = metrics.EnqueuedCount
+                  DeliveredCount = metrics.DeliveredCount
+                  RequeuedCount = metrics.RequeuedCount }
         with ex ->
             Error $"search_index_outbox_sweep_failed: {ex.Message}"
 
@@ -225,19 +186,20 @@ from claimed;
                 conn
             )
 
-        cmd.Parameters.AddWithValue("batch_size", max 1 batchSize) |> ignore
-        cmd.Parameters.AddWithValue("max_attempts", max 1 maxAttempts) |> ignore
+        cmd.Parameters.AddWithValue("batch_size", WorkerDbParameters.normalizeBatchSize batchSize) |> ignore
+        cmd.Parameters.AddWithValue("max_attempts", WorkerDbParameters.normalizeMaxAttempts maxAttempts) |> ignore
 
         use reader = cmd.ExecuteReader()
-        let jobs = ResizeArray<ClaimedSearchJob>()
+        let jobs = ResizeArray<WorkerDataShapes.ClaimedSearchJob>()
 
         let rec loop () =
             if reader.Read() then
                 jobs.Add(
-                    { JobId = reader.GetGuid(0)
-                      TenantId = reader.GetGuid(1)
-                      VersionId = reader.GetGuid(2)
-                      Attempts = reader.GetInt32(3) }
+                    WorkerDataShapes.createClaimedSearchJob
+                        (reader.GetGuid(0))
+                        (reader.GetGuid(1))
+                        (reader.GetGuid(2))
+                        (reader.GetInt32(3))
                 )
 
                 loop ()
@@ -284,11 +246,13 @@ where job_id = @job_id;
         cmd.Parameters.AddWithValue("job_id", jobId) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
-    let private markFailed (job: ClaimedSearchJob) (errorMessage: string) (conn: NpgsqlConnection) =
-        let newAttempts = job.Attempts + 1
-        let backoffExponent = min (newAttempts - 1) 5
-        let nextAvailableUtc = DateTimeOffset.UtcNow.AddSeconds(float (30 * (pown 2 backoffExponent)))
-
+    let private markFailed
+        (jobId: Guid)
+        (attempts: int)
+        (availableAtUtc: DateTimeOffset)
+        (errorMessage: string)
+        (conn: NpgsqlConnection)
+        =
         use cmd =
             new NpgsqlCommand(
                 """
@@ -303,10 +267,10 @@ where job_id = @job_id;
                 conn
             )
 
-        cmd.Parameters.AddWithValue("job_id", job.JobId) |> ignore
-        cmd.Parameters.AddWithValue("attempts", newAttempts) |> ignore
+        cmd.Parameters.AddWithValue("job_id", jobId) |> ignore
+        cmd.Parameters.AddWithValue("attempts", attempts) |> ignore
         cmd.Parameters.AddWithValue("last_error", errorMessage) |> ignore
-        cmd.Parameters.AddWithValue("available_at", nextAvailableUtc) |> ignore
+        cmd.Parameters.AddWithValue("available_at", availableAtUtc) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
     let runSweep (connectionString: string) (batchSize: int) (maxAttempts: int) =
@@ -315,23 +279,23 @@ where job_id = @job_id;
             conn.Open()
 
             let claimed = claimJobs batchSize maxAttempts conn
-            let mutable completed = 0
-            let mutable failed = 0
+            let mutable metrics = WorkerSweepMetrics.zeroJobs
 
             for job in claimed do
                 let published = canProcessVersion job.TenantId job.VersionId conn
 
-                if published then
+                match WorkerJobFlow.decideProcessing DateTimeOffset.UtcNow job.Attempts published with
+                | WorkerJobFlow.Complete ->
                     markCompleted job.JobId conn
-                    completed <- completed + 1
-                else
-                    markFailed job "version_not_published" conn
-                    failed <- failed + 1
+                    metrics <- WorkerSweepMetrics.recordCompleted metrics
+                | WorkerJobFlow.Fail(attempts, availableAtUtc, errorMessage) ->
+                    markFailed job.JobId attempts availableAtUtc errorMessage conn
+                    metrics <- WorkerSweepMetrics.recordFailed metrics
 
             Ok
                 { ClaimedCount = claimed.Length
-                  CompletedCount = completed
-                  FailedCount = failed }
+                  CompletedCount = metrics.CompletedCount
+                  FailedCount = metrics.FailedCount }
         with ex ->
             Error $"search_index_job_sweep_failed: {ex.Message}"
 
@@ -343,19 +307,16 @@ module WorkerRuntime =
         | value -> value
 
     let pollSecondsFromEnvironment () =
-        match Int32.TryParse(Environment.GetEnvironmentVariable("Worker__PollSeconds")) with
-        | true, value when value >= 1 -> value
-        | _ -> 30
+        Environment.GetEnvironmentVariable("Worker__PollSeconds")
+        |> WorkerEnvParsing.parsePositiveIntOrDefault 30
 
     let batchSizeFromEnvironment () =
-        match Int32.TryParse(Environment.GetEnvironmentVariable("Worker__BatchSize")) with
-        | true, value when value >= 1 -> value
-        | _ -> 100
+        Environment.GetEnvironmentVariable("Worker__BatchSize")
+        |> WorkerEnvParsing.parsePositiveIntOrDefault 100
 
     let maxSearchJobAttemptsFromEnvironment () =
-        match Int32.TryParse(Environment.GetEnvironmentVariable("Worker__SearchJobMaxAttempts")) with
-        | true, value when value >= 1 -> value
-        | _ -> 5
+        Environment.GetEnvironmentVariable("Worker__SearchJobMaxAttempts")
+        |> WorkerEnvParsing.parsePositiveIntOrDefault 5
 
 module Program =
     [<EntryPoint>]

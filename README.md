@@ -10,6 +10,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
 - Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
 - Phase 4: implemented through P4-08 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics).
+- Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
 - Current build-out focus: P2-09/P2-10 closeout, Phase 3 publish workflow completion, and Phase 4 follow-on hardening (`P4-09` onward).
 
 ## Implemented Today
@@ -34,7 +35,8 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Test coverage:
   - Domain unit tests.
   - API integration tests across authz, upload lifecycle, commit verification, dedupe, range behavior, and audit action matrix.
-  - Latest local verification: build + format pass, with integration tests gated on local Postgres/MinIO availability.
+  - Property-based tests via FsCheck (`tests/Artifortress.Domain.Tests/PropertyTests.fs`), including extracted worker internals.
+  - Latest local verification: `make format` and `make test` passing.
 
 ## Quick Start
 
@@ -89,7 +91,7 @@ make phase1-demo
 
 - `src/Artifortress.Domain`: domain primitives and authorization invariants.
 - `src/Artifortress.Api`: HTTP API with Postgres-backed control plane and Phase 2 upload/download data plane.
-- `src/Artifortress.Worker`: worker scaffold for future outbox/event processing.
+- `src/Artifortress.Worker`: worker outbox/job sweep runtime plus extracted pure helper modules for deterministic behavior and PBT.
 - `tests/Artifortress.Domain.Tests`: unit + integration tests.
 - `db/migrations`: SQL schema migrations.
 - `scripts`: migration, smoke, and demo scripts.
@@ -107,6 +109,8 @@ make phase1-demo
 - `docs/11-phase2-implementation-tickets.md`: active Phase 2 ticket board and acceptance criteria.
 - `docs/12-phase3-implementation-tickets.md`: active Phase 3 ticket board and acceptance criteria.
 - `docs/13-phase4-implementation-tickets.md`: active Phase 4 ticket board and acceptance criteria.
+- `docs/14-worker-pbt-extraction-tickets.md`: worker extraction + property-based test ticket board and implementation notes.
+- `docs/15-change-summary.md`: consolidated summary of recent hardening and extraction changes.
 
 ## ADRs
 

@@ -2096,6 +2096,8 @@ let validateRepoRequest (request: CreateRepoRequest) =
 
     if String.IsNullOrWhiteSpace repoKey then
         Error "repoKey is required."
+    elif repoKey.Contains ":" then
+        Error "repoKey cannot contain ':'."
     else
         match repoType with
         | "local" ->

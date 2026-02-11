@@ -1135,6 +1135,20 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.True(foundBinding, $"Expected binding subject {bindingSubject} in role binding list.")
 
     [<Fact>]
+    member _.``P1-11 create repo rejects repo keys containing colon`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p111-colon-admin") [| "repo:*:admin" |] 60
+
+        use response =
+            createRepoWithToken adminToken (makeRepoKey "p111:colon")
+
+        let body = ensureStatus HttpStatusCode.BadRequest response
+        use doc = JsonDocument.Parse(body)
+        Assert.Equal("bad_request", doc.RootElement.GetProperty("error").GetString())
+        Assert.Equal("repoKey cannot contain ':'.", doc.RootElement.GetProperty("message").GetString())
+
+    [<Fact>]
     member _.``P3-02 draft version create API enforces authz and reuses existing draft`` () =
         fixture.RequireAvailable()
 

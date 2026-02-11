@@ -46,6 +46,13 @@ let ``RepoScope parser rejects null input`` () =
     | Error err -> Assert.Contains("Invalid scope", err)
 
 [<Fact>]
+let ``RepoScope create rejects repo keys containing colon`` () =
+    let created = RepoScope.tryCreate "core:libs" RepoRole.Read
+    match created with
+    | Ok _ -> failwith "Expected repo key validation failure"
+    | Error err -> Assert.Equal("Repository key cannot contain ':'.", err)
+
+[<Fact>]
 let ``Authorization allows write token to perform read`` () =
     let writeScope =
         match RepoScope.tryParse "repo:core-libs:write" with

@@ -61,6 +61,8 @@ module RepoScope =
     let private validateRepoKey (repoKey: string) =
         if String.IsNullOrWhiteSpace repoKey then
             Error "Repository key cannot be empty."
+        elif repoKey.Contains ":" then
+            Error "Repository key cannot contain ':'."
         else
             Ok (repoKey.Trim().ToLowerInvariant())
 

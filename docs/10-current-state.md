@@ -54,11 +54,13 @@ Persistence:
 
 Automated checks currently passing:
 - `make format`.
-- targeted domain tests (`8` passing) via:
-  - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "DisplayName~ServiceName|DisplayName~RepoScope|DisplayName~RepoRole|DisplayName~Authorization"`
+- `make test` (non-integration filter) with `84` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo` with `122` passing tests.
+- property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
+  - `75` FsCheck properties across domain, API, object storage config, and extracted worker internals (three extraction waves).
 
 Environment-dependent checks (currently blocked locally):
-- full `make test` integration suite requires Postgres (`localhost:5432`) and MinIO (`localhost:9000`) availability.
+- `make test-integration` requires Postgres (`localhost:5432`) and MinIO (`localhost:9000`) availability.
 
 Demonstration assets:
 - `scripts/phase1-demo.sh`
@@ -69,7 +71,7 @@ Demonstration assets:
 Not implemented yet:
 - Atomic draft/publish package version workflow.
 - Transactional outbox worker processing.
-- Search indexing pipeline.
+- Search indexing read-model integration and degraded-path fallback behavior validation (`P4-09`).
 - OIDC/SAML identity provider integration.
 - Throughput baseline/load report publication (`P2-09`).
 - Phase 2 scripted demo and runbook (`P2-10`).
@@ -116,6 +118,12 @@ Not implemented yet:
     - idempotent enqueue via `(tenant_id, version_id)` upsert for search-index jobs.
     - worker search-index job processor sweep with claim/process/complete/fail transitions.
     - bounded retry semantics for failed search-index jobs (attempt caps + backoff).
+    - worker pure-helper extraction for deeper PBT coverage:
+      - `src/Artifortress.Worker/WorkerInternals.fs` with `WorkerOutboxParsing`, `WorkerRetryPolicy`, and `WorkerEnvParsing`.
+      - second-wave DB-adjacent helper extraction with `WorkerDbParameters`, `WorkerOutboxFlow`, and `WorkerJobFlow`.
+      - third-wave SQL-row and reducer helper extraction with `WorkerDataShapes` and `WorkerSweepMetrics`.
+      - worker runtime wiring updated to consume extracted helpers in sweep and config parsing paths.
+      - worker extraction ticket board and implementation notes in `docs/14-worker-pbt-extraction-tickets.md`.
     - quarantine-aware blob download enforcement:
       - `GET /v1/repos/{repoKey}/blobs/{digest}` returns `423` (`quarantined_blob`) when digest is linked to a `quarantined` or `rejected` version.
       - blob reads resume after quarantine status transitions to `released`.
