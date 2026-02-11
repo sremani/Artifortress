@@ -18,10 +18,10 @@ Status key:
 | P2-06 | Blob download endpoint with HTTP range support | P2-02 | done |
 | P2-07 | AuthZ + audit coverage for all new data-plane endpoints | P2-03, P2-04, P2-05, P2-06 | done |
 | P2-08 | Integration tests for upload/download correctness and failure paths | P2-05, P2-06, P2-07 | done |
-| P2-09 | Phase 2 throughput baseline and load test report | P2-05, P2-06 | todo |
-| P2-10 | Phase 2 demo script and runbook updates | P2-08, P2-09 | todo |
+| P2-09 | Phase 2 throughput baseline and load test report | P2-05, P2-06 | done |
+| P2-10 | Phase 2 demo script and runbook updates | P2-08, P2-09 | done |
 
-## Current Implementation Notes (2026-02-10)
+## Current Implementation Notes (2026-02-11)
 
 - Phase transition note:
   - Phase 3 has been kicked off; active Phase 3 board lives in `docs/12-phase3-implementation-tickets.md`.
@@ -66,6 +66,32 @@ Status key:
   - Added best-effort cleanup of multipart uploads when upload-session create fails after storage init.
   - Bootstrap token comparison uses constant-time equality.
   - Added null-safe parsing guards and regression coverage for scope/role parser edge inputs.
+- P2-09 completed:
+  - Added repeatable throughput baseline script:
+    - `scripts/phase2-load.sh`
+  - Added make target:
+    - `make phase2-load`
+  - Added generated baseline report artifact:
+    - `docs/reports/phase2-load-baseline-latest.md`
+  - Baseline run captured with local dependency stack:
+    - Upload throughput: `1.22 MiB/s` (`4.89 req/s`) over `12` uploads at `262144` bytes/object.
+    - Download throughput: `7.25 MiB/s` (`28.99 req/s`) over `36` downloads.
+    - Target outcomes: upload `WARN` vs `>=4.00 MiB/s`, download `PASS` vs `>=6.00 MiB/s`.
+- P2-10 completed:
+  - Added executable Phase 2 demo script:
+    - `scripts/phase2-demo.sh`
+  - Added make target:
+    - `make phase2-demo`
+  - Added Phase 2 runbook:
+    - `docs/17-phase2-runbook.md`
+  - Added throughput baseline summary doc:
+    - `docs/18-phase2-throughput-baseline.md`
+  - Demo flow validates:
+    - upload lifecycle (`create -> parts -> complete -> commit`)
+    - dedupe second-create behavior
+    - deterministic `upload_verification_failed` mismatch path
+    - full/ranged download correctness
+    - upload audit action presence
 
 ## Ticket Details
 

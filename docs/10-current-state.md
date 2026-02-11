@@ -59,6 +59,12 @@ Automated checks currently passing:
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo` with `124` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `75` FsCheck properties across domain, API, object storage config, and extracted worker internals (three extraction waves).
+- `make phase2-load` baseline run:
+  - upload throughput: `1.22 MiB/s` (`4.89 req/s`) with `12` upload iterations at `262144` bytes/object.
+  - download throughput: `7.25 MiB/s` (`28.99 req/s`) with `36` download iterations.
+  - generated report: `docs/reports/phase2-load-baseline-latest.md`.
+- `make phase2-demo` run:
+  - validated upload lifecycle, dedupe path, deterministic mismatch error, full/ranged download checks, and upload audit action presence.
 
 Environment note:
 - Integration checks require Postgres (`localhost:5432`) and MinIO (`localhost:9000`) availability.
@@ -66,6 +72,10 @@ Environment note:
 Demonstration assets:
 - `scripts/phase1-demo.sh`
 - `docs/09-phase1-runbook.md`
+- `scripts/phase2-demo.sh`
+- `scripts/phase2-load.sh`
+- `docs/17-phase2-runbook.md`
+- `docs/18-phase2-throughput-baseline.md`
 - `scripts/phase4-demo.sh`
 - `docs/16-phase4-runbook.md`
 
@@ -76,8 +86,6 @@ Not implemented yet:
 - Transactional outbox worker processing.
 - Search indexing read-model query-serving integration beyond the current queue/job scaffolding.
 - OIDC/SAML identity provider integration.
-- Throughput baseline/load report publication (`P2-09`).
-- Phase 2 scripted demo and runbook (`P2-10`).
 
 ## 5. Next Delivery Focus
 
@@ -145,7 +153,5 @@ Not implemented yet:
       - policy/quarantine mutation audit metadata assertions (actor/resource/details).
       - policy timeout fail-closed assertions across both `publish` and `promote` actions.
 - Next implementation targets:
-  - add throughput baseline/load report (`P2-09`).
-  - add Phase 2 demo script and runbook updates (`P2-10`).
   - implement publish workflow APIs after draft create baseline (`P3-03` onward).
   - continue Phase 3 publish workflow implementation (`P3-03` onward).

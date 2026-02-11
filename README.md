@@ -7,11 +7,11 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Runtime baseline: `.NET SDK 10.0.102`, F# projects on `net10.0` and `LangVersion=10.0`.
 - Phase 0: complete.
 - Phase 1: complete.
-- Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
+- Phase 2: complete through P2-10 (upload/download APIs + verification + coverage + throughput baseline + demo/runbook).
 - Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
 - Phase 4: implemented through P4-10 (policy/quarantine/search scaffolding + quarantine-aware read-path + authz/audit + fail-closed timeout semantics + deny/search-fallback integration coverage + demo/runbook).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: P2-09/P2-10 closeout and Phase 3 publish workflow completion (`P3-03` onward).
+- Current build-out focus: Phase 3 publish workflow completion (`P3-03` onward).
 
 ## Implemented Today
 
@@ -58,6 +58,16 @@ make format
 Run Phase 1 demo flow:
 ```bash
 make phase1-demo
+```
+
+Run Phase 2 demo flow:
+```bash
+make phase2-demo
+```
+
+Run Phase 2 throughput baseline:
+```bash
+make phase2-load
 ```
 
 Run Phase 4 demo flow:
@@ -117,6 +127,9 @@ make phase4-demo
 - `docs/14-worker-pbt-extraction-tickets.md`: worker extraction + property-based test ticket board and implementation notes.
 - `docs/15-change-summary.md`: consolidated summary of recent hardening and extraction changes.
 - `docs/16-phase4-runbook.md`: executable Phase 4 policy/quarantine/search demo runbook.
+- `docs/17-phase2-runbook.md`: executable Phase 2 upload/download demo + load baseline runbook.
+- `docs/18-phase2-throughput-baseline.md`: latest recorded Phase 2 throughput baseline and target outcomes.
+- `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
 
 ## ADRs
 

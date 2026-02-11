@@ -2,15 +2,15 @@
 
 This roadmap converts the design into execution phases with exit criteria.
 
-## Current Status Snapshot (2026-02-10)
+## Current Status Snapshot (2026-02-11)
 
 | Phase | Status | Notes |
 |---|---|---|
 | Phase 0 | complete | Local stack, migrations, CI checks, smoke flow in place. |
 | Phase 1 | complete | PAT lifecycle, repo CRUD, RBAC, role bindings, audit persistence, integration tests. |
-| Phase 2 | in_progress | P2-01 through P2-08 complete; post-P2-08 hardening landed; P2-09/P2-10 remain. |
+| Phase 2 | complete | P2-01 through P2-10 complete, including throughput baseline/load report and executable demo/runbook. |
 | Phase 3 | in_progress | Kickoff complete with P3-01/P3-02; next active work is P3-03 draft artifact entry persistence. |
-| Phase 4 | in_progress | Kickoff complete with P4-01 schema scaffold; next active work is P4-02 policy hook integration. |
+| Phase 4 | complete | P4-01 through P4-10 complete, including policy/quarantine/search workflow and demo/runbook. |
 | Phase 5+ | planned | GC/repair, hardening. |
 
 ## Phase 0: Foundation (1-2 weeks)

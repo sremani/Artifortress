@@ -7,7 +7,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo phase4-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke smoke phase1-demo phase2-demo phase2-load phase4-demo
 
 help:
 	@echo "Targets:"
@@ -25,6 +25,8 @@ help:
 	@echo "  db-smoke           Verify baseline schema exists"
 	@echo "  smoke              End-to-end phase-0 smoke run"
 	@echo "  phase1-demo        Run Phase 1 auth/repo demo script"
+	@echo "  phase2-demo        Run Phase 2 upload/download demo script"
+	@echo "  phase2-load        Run Phase 2 throughput baseline script"
 	@echo "  phase4-demo        Run Phase 4 policy/quarantine/search demo script"
 
 restore:
@@ -90,6 +92,12 @@ smoke: dev-up wait-db storage-bootstrap db-smoke build test test-integration
 
 phase1-demo: build
 	./scripts/phase1-demo.sh
+
+phase2-demo: build
+	./scripts/phase2-demo.sh
+
+phase2-load: build
+	./scripts/phase2-load.sh
 
 phase4-demo: build
 	./scripts/phase4-demo.sh
