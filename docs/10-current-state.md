@@ -19,6 +19,7 @@ API control-plane features:
 
 Persistence:
 - Core tables from `0001_init.sql` plus identity/RBAC tables from `0002_phase1_identity_and_rbac.sql`.
+- Upload-session and publish-guardrail migrations from `0003_phase2_upload_sessions.sql`, `0004_phase3_publish_guardrails.sql`, and `0005_phase3_published_immutability_hardening.sql`.
 - Token hash persistence only; plaintext token is response-only at issuance time.
 
 ## 2. API Endpoints (Implemented)
@@ -35,6 +36,7 @@ Persistence:
 - `DELETE /v1/repos/{repoKey}`
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/bindings`
+- `POST /v1/repos/{repoKey}/packages/versions/drafts`
 - `POST /v1/repos/{repoKey}/uploads`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
@@ -46,7 +48,7 @@ Persistence:
 ## 3. Verification Status
 
 Automated checks currently passing:
-- `make test` (domain + integration tests, currently `29` tests passing).
+- `make test` (domain + integration tests, currently `30` tests passing).
 - `make format`.
 
 Demonstration assets:
@@ -83,6 +85,12 @@ Not implemented yet:
     - best-effort object-store multipart abort on upload-session create race/failure paths.
     - null-safe role and scope parsing in domain layer.
     - migration script SQL quoting hardening for version tracking.
+  - Phase 3 kickoff:
+    - publish guardrail migration `db/migrations/0004_phase3_publish_guardrails.sql`.
+    - published-immutability hardening migration `db/migrations/0005_phase3_published_immutability_hardening.sql`.
+    - published-version immutability trigger for `package_versions`.
+    - additional indexes for publish-state reads and pending outbox scans.
+    - draft version create API (`POST /v1/repos/{repoKey}/packages/versions/drafts`) with idempotent draft reuse semantics.
   - expanded integration coverage:
     - expired-session rejection paths.
     - dedupe-path second-create behavior.
@@ -93,3 +101,4 @@ Not implemented yet:
 - Next implementation targets:
   - add throughput baseline/load report (`P2-09`).
   - add Phase 2 demo script and runbook updates (`P2-10`).
+  - implement publish workflow APIs after draft create baseline (`P3-03` onward).

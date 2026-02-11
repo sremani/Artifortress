@@ -8,7 +8,8 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 0: complete.
 - Phase 1: complete.
 - Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
-- Current build-out focus: P2-09 throughput baseline and P2-10 demo/runbook updates.
+- Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
+- Current build-out focus: P2-09/P2-10 closeout plus Phase 3 publish workflow implementation.
 
 ## Implemented Today
 
@@ -28,11 +29,11 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Best-effort multipart abort on upload-session create race/failure paths.
   - Null-safe scope/role parsing guards in domain layer.
 - Persistence:
-  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, and `db/migrations/0003_phase2_upload_sessions.sql`.
+  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, `db/migrations/0003_phase2_upload_sessions.sql`, `db/migrations/0004_phase3_publish_guardrails.sql`, and `db/migrations/0005_phase3_published_immutability_hardening.sql`.
 - Test coverage:
   - Domain unit tests.
   - API integration tests across authz, upload lifecycle, commit verification, dedupe, range behavior, and audit action matrix.
-  - Latest local verification: `29` tests passing.
+  - Latest local verification: `32` tests passing.
 
 ## Quick Start
 
@@ -70,6 +71,7 @@ make phase1-demo
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/bindings`
 - `POST /v1/repos/{repoKey}/uploads`
+- `POST /v1/repos/{repoKey}/packages/versions/drafts`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
@@ -97,6 +99,7 @@ make phase1-demo
 - `docs/09-phase1-runbook.md`: executable Phase 1 demonstration runbook.
 - `docs/10-current-state.md`: implementation inventory and known gaps.
 - `docs/11-phase2-implementation-tickets.md`: active Phase 2 ticket board and acceptance criteria.
+- `docs/12-phase3-implementation-tickets.md`: active Phase 3 ticket board and acceptance criteria.
 
 ## ADRs
 

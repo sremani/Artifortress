@@ -23,6 +23,9 @@ Status key:
 
 ## Current Implementation Notes (2026-02-10)
 
+- Phase transition note:
+  - Phase 3 has been kicked off; active Phase 3 board lives in `docs/12-phase3-implementation-tickets.md`.
+
 - P2-01 completed:
   - Added migration `db/migrations/0003_phase2_upload_sessions.sql`.
   - Introduced `upload_sessions` state model aligned to `docs/04-state-machines.md`.

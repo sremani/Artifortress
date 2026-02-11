@@ -44,6 +44,14 @@ type UpsertRoleBindingRequest = {
 }
 
 [<CLIMutable>]
+type CreateDraftVersionRequest = {
+    PackageType: string
+    PackageNamespace: string
+    PackageName: string
+    Version: string
+}
+
+[<CLIMutable>]
 type CreateUploadSessionRequest = {
     ExpectedDigest: string
     ExpectedLength: int64
@@ -388,6 +396,53 @@ where upload_id = @upload_id;
         if rows <> 1 then
             failwith $"Could not expire upload session {uploadId} in test fixture."
 
+    member this.PublishVersionForTest(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update package_versions
+set state = 'published',
+    published_at = now()
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not publish package version {versionId} in test fixture."
+
+    member this.TryMutatePublishedVersionMetadata(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        try
+            use cmd =
+                new NpgsqlCommand(
+                    """
+update package_versions
+set created_by_subject = created_by_subject || '-mutated'
+where version_id = @version_id;
+""",
+                    conn
+                )
+
+            cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+            cmd.ExecuteNonQuery() |> ignore
+            true
+        with :? PostgresException ->
+            false
+
     interface IDisposable with
         member _.Dispose() =
             match client with
@@ -480,6 +535,29 @@ type Phase1ApiTests(fixture: ApiFixture) =
             JsonContent.Create(
                 { ExpectedDigest = expectedDigest
                   ExpectedLength = expectedLength }
+            )
+
+        fixture.Client.Send(request)
+
+    let createDraftVersionWithToken
+        (token: string)
+        (repoKey: string)
+        (packageType: string)
+        (packageNamespace: string)
+        (packageName: string)
+        (version: string)
+        =
+        use request =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/drafts")
+
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+
+        request.Content <-
+            JsonContent.Create(
+                { PackageType = packageType
+                  PackageNamespace = packageNamespace
+                  PackageName = packageName
+                  Version = version }
             )
 
         fixture.Client.Send(request)
@@ -683,6 +761,120 @@ type Phase1ApiTests(fixture: ApiFixture) =
             |> Seq.exists (fun element -> element.GetProperty("subject").GetString() = bindingSubject)
 
         Assert.True(foundBinding, $"Expected binding subject {bindingSubject} in role binding list.")
+
+    [<Fact>]
+    member _.``P3-02 draft version create API enforces authz and reuses existing draft`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p302-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p302-draft"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "p302-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "p302-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageType = "nuget"
+        let packageNamespace = ""
+        let packageName = $"widget-{Guid.NewGuid():N}"
+        let version = "1.0.0"
+
+        use unauthorizedRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/drafts")
+
+        unauthorizedRequest.Content <-
+            JsonContent.Create(
+                { PackageType = packageType
+                  PackageNamespace = packageNamespace
+                  PackageName = packageName
+                  Version = version }
+            )
+
+        use unauthorizedResponse = fixture.Client.Send(unauthorizedRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedResponse |> ignore
+
+        use forbiddenResponse =
+            createDraftVersionWithToken readToken repoKey packageType packageNamespace packageName version
+
+        ensureStatus HttpStatusCode.Forbidden forbiddenResponse |> ignore
+
+        use createResponse =
+            createDraftVersionWithToken writeToken repoKey packageType packageNamespace packageName version
+
+        let createBody = ensureStatus HttpStatusCode.Created createResponse
+        use createDoc = JsonDocument.Parse(createBody)
+        let createdVersionId = createDoc.RootElement.GetProperty("versionId").GetGuid()
+        let createdState = createDoc.RootElement.GetProperty("state").GetString()
+        let createdReusedFlag = createDoc.RootElement.GetProperty("reusedDraft").GetBoolean()
+
+        Assert.Equal("draft", createdState)
+        Assert.False(createdReusedFlag)
+
+        use secondCreateResponse =
+            createDraftVersionWithToken writeToken repoKey packageType packageNamespace packageName version
+
+        let secondCreateBody = ensureStatus HttpStatusCode.OK secondCreateResponse
+        use secondDoc = JsonDocument.Parse(secondCreateBody)
+        let secondVersionId = secondDoc.RootElement.GetProperty("versionId").GetGuid()
+        let secondState = secondDoc.RootElement.GetProperty("state").GetString()
+        let secondReusedFlag = secondDoc.RootElement.GetProperty("reusedDraft").GetBoolean()
+
+        Assert.Equal(createdVersionId, secondVersionId)
+        Assert.Equal("draft", secondState)
+        Assert.True(secondReusedFlag)
+
+    [<Fact>]
+    member _.``P3-01 published-version immutability trigger rejects metadata mutation`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p301-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p301-immutability"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p301-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageType = "nuget"
+        let packageNamespace = ""
+        let packageName = $"immutability-{Guid.NewGuid():N}"
+        let version = "1.0.0"
+
+        use createResponse =
+            createDraftVersionWithToken writeToken repoKey packageType packageNamespace packageName version
+
+        let createBody = ensureStatus HttpStatusCode.Created createResponse
+        use createDoc = JsonDocument.Parse(createBody)
+        let versionId = createDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        fixture.PublishVersionForTest(versionId)
+
+        let mutated = fixture.TryMutatePublishedVersionMetadata(versionId)
+        Assert.False(mutated, "Expected metadata mutation on published version to be rejected by DB trigger.")
+
+    [<Fact>]
+    member _.``P3-02 draft create returns conflict when version is already published`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p302-published-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p302-published"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p302-published-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageType = "nuget"
+        let packageNamespace = ""
+        let packageName = $"published-{Guid.NewGuid():N}"
+        let version = "1.0.0"
+
+        use createResponse =
+            createDraftVersionWithToken writeToken repoKey packageType packageNamespace packageName version
+
+        let createBody = ensureStatus HttpStatusCode.Created createResponse
+        use createDoc = JsonDocument.Parse(createBody)
+        let versionId = createDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        fixture.PublishVersionForTest(versionId)
+
+        use conflictResponse =
+            createDraftVersionWithToken writeToken repoKey packageType packageNamespace packageName version
+
+        let conflictBody = ensureStatus HttpStatusCode.Conflict conflictResponse
+        Assert.Contains("cannot be reused as a draft", conflictBody)
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =

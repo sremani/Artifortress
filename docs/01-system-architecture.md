@@ -18,6 +18,7 @@ Implemented:
 
 In progress next:
 - P2-09 throughput baseline and load-test reporting.
+- Phase 3 kickoff (`P3-01`/`P3-02`) complete: DB publish guardrails plus draft version create API baseline.
 
 Planned later:
 - Atomic publish, outbox-driven integrations, search/policy pipeline, deletion lifecycle and GC hardening.
@@ -46,11 +47,15 @@ This separation is implemented for control-plane metadata plus Phase 2 ingest/do
 - Blob download with single-range support.
 - Remaining in this phase: throughput baseline/reporting (`P2-09`) and demo/runbook completion (`P2-10`).
 
-3. Index plane (planned)
+3. Metadata/publish plane (partially implemented)
+- Draft version create endpoint is live (`POST /v1/repos/{repoKey}/packages/versions/drafts`).
+- Publish transaction and artifact-entry persistence flows remain in progress.
+
+4. Index plane (planned)
 - Search indexing and metadata query acceleration.
 - Rebuildable from PostgreSQL + object metadata.
 
-4. Event plane (planned)
+5. Event plane (planned)
 - Transactional outbox in PostgreSQL.
 - Worker consumers for indexing, notifications, and reconciliation.
 
@@ -60,6 +65,7 @@ Invariants enforced now:
 1. Token secret is never persisted in plaintext (hash-only).
 2. Revoked and expired tokens cannot authenticate.
 3. Privileged mutations are RBAC-gated and audited.
+4. Published package-version identity fields are immutable at the database trigger layer.
 
 Invariants targeted by next phases:
 1. Package/version-level immutability guarantees once publish workflow is implemented.

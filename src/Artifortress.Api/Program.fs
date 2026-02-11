@@ -37,6 +37,14 @@ type UpsertRoleBindingRequest = {
 }
 
 [<CLIMutable>]
+type CreateDraftVersionRequest = {
+    PackageType: string
+    PackageNamespace: string
+    PackageName: string
+    Version: string
+}
+
+[<CLIMutable>]
 type CreateUploadSessionRequest = {
     ExpectedDigest: string
     ExpectedLength: int64
@@ -95,6 +103,24 @@ type RoleBindingRecord = {
     UpdatedAtUtc: DateTimeOffset
 }
 
+type PackageVersionRecord = {
+    VersionId: Guid
+    RepoKey: string
+    PackageType: string
+    PackageNamespace: string option
+    PackageName: string
+    Version: string
+    State: string
+    CreatedAtUtc: DateTimeOffset
+    PublishedAtUtc: DateTimeOffset option
+}
+
+type DraftVersionUpsertOutcome =
+    | DraftCreated of PackageVersionRecord
+    | DraftExisting of PackageVersionRecord
+    | VersionStateConflict of string
+    | RepoMissing
+
 type UploadSessionRecord = {
     UploadId: Guid
     RepoKey: string
@@ -149,6 +175,9 @@ let normalizeText (value: string) =
 
 let normalizeRepoKey (repoKey: string) = normalizeText repoKey |> fun value -> value.ToLowerInvariant()
 let normalizeSubject (subject: string) = normalizeText subject |> fun value -> value.ToLowerInvariant()
+let normalizePackageType (packageType: string) = normalizeText packageType |> fun value -> value.ToLowerInvariant()
+let normalizePackageNamespace (packageNamespace: string) = normalizeText packageNamespace |> fun value -> value.ToLowerInvariant()
+let normalizePackageName (packageName: string) = normalizeText packageName |> fun value -> value.ToLowerInvariant()
 
 let private isHexChar (ch: char) =
     (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')
@@ -170,6 +199,24 @@ let validateUploadPartRequest (request: CreateUploadPartRequest) =
         Error "partNumber must be greater than zero."
     else
         Ok request.PartNumber
+
+let validateDraftVersionRequest (request: CreateDraftVersionRequest) =
+    let packageType = normalizePackageType request.PackageType
+    let packageNamespace =
+        let value = normalizePackageNamespace request.PackageNamespace
+        if String.IsNullOrWhiteSpace value then None else Some value
+
+    let packageName = normalizePackageName request.PackageName
+    let version = normalizeText request.Version
+
+    if String.IsNullOrWhiteSpace packageType then
+        Error "packageType is required."
+    elif String.IsNullOrWhiteSpace packageName then
+        Error "packageName is required."
+    elif String.IsNullOrWhiteSpace version then
+        Error "version is required."
+    else
+        Ok(packageType, packageNamespace, packageName, version)
 
 let private normalizePartEtag (etag: string) =
     normalizeText etag |> fun value -> value.Trim('"')
@@ -720,6 +767,188 @@ select exists(
     match scalar with
     | :? bool as existsValue -> Ok existsValue
     | _ -> Error "Could not determine repository existence."
+
+let tryReadRepoIdForTenant (tenantId: Guid) (repoKey: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select repo_id
+from repos
+where tenant_id = @tenant_id
+  and repo_key = @repo_key
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    if isNull scalar || scalar = box DBNull.Value then
+        Ok None
+    else
+        match scalar with
+        | :? Guid as repoId -> Ok(Some repoId)
+        | _ -> Error "Unexpected repository id type returned from database."
+
+let upsertPackageForRepo
+    (tenantId: Guid)
+    (repoId: Guid)
+    (packageType: string)
+    (packageNamespace: string option)
+    (packageName: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into packages (tenant_id, repo_id, package_type, namespace, name)
+values (@tenant_id, @repo_id, @package_type, @namespace, @name)
+on conflict (repo_id, package_type, coalesce(namespace, ''), name)
+do update set name = excluded.name
+returning package_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+    cmd.Parameters.AddWithValue("package_type", packageType) |> ignore
+
+    let namespaceParam = cmd.Parameters.Add("namespace", NpgsqlDbType.Text)
+    namespaceParam.Value <- (match packageNamespace with | Some value -> box value | None -> box DBNull.Value)
+
+    cmd.Parameters.AddWithValue("name", packageName) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    if isNull scalar || scalar = box DBNull.Value then
+        Error "Package upsert did not return package id."
+    else
+        match scalar with
+        | :? Guid as packageId -> Ok packageId
+        | _ -> Error "Unexpected package id type returned from database."
+
+let tryInsertDraftPackageVersion
+    (tenantId: Guid)
+    (repoId: Guid)
+    (packageId: Guid)
+    (version: string)
+    (createdBy: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into package_versions (tenant_id, repo_id, package_id, version, state, created_by_subject)
+values (@tenant_id, @repo_id, @package_id, @version, 'draft', @created_by_subject)
+on conflict (repo_id, package_id, version) do nothing
+returning version_id, state, created_at, published_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+    cmd.Parameters.AddWithValue("package_id", packageId) |> ignore
+    cmd.Parameters.AddWithValue("version", version) |> ignore
+    cmd.Parameters.AddWithValue("created_by_subject", createdBy) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let versionId = reader.GetGuid(0)
+        let stateValue = reader.GetString(1)
+        let createdAt = reader.GetFieldValue<DateTime>(2) |> toUtcDateTimeOffset
+        let publishedAt =
+            if reader.IsDBNull(3) then None else Some(reader.GetFieldValue<DateTime>(3) |> toUtcDateTimeOffset)
+
+        Ok(Some(versionId, stateValue, createdAt, publishedAt))
+    else
+        Ok None
+
+let tryReadPackageVersionForRepo
+    (repoId: Guid)
+    (packageId: Guid)
+    (version: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select version_id, state, created_at, published_at
+from package_versions
+where repo_id = @repo_id
+  and package_id = @package_id
+  and version = @version
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+    cmd.Parameters.AddWithValue("package_id", packageId) |> ignore
+    cmd.Parameters.AddWithValue("version", version) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let versionId = reader.GetGuid(0)
+        let stateValue = reader.GetString(1)
+        let createdAt = reader.GetFieldValue<DateTime>(2) |> toUtcDateTimeOffset
+        let publishedAt =
+            if reader.IsDBNull(3) then None else Some(reader.GetFieldValue<DateTime>(3) |> toUtcDateTimeOffset)
+
+        Ok(Some(versionId, stateValue, createdAt, publishedAt))
+    else
+        Ok None
+
+let createOrGetDraftVersionForRepo
+    (tenantId: Guid)
+    (repoKey: string)
+    (packageType: string)
+    (packageNamespace: string option)
+    (packageName: string)
+    (version: string)
+    (createdBy: string)
+    (conn: NpgsqlConnection)
+    =
+    let toRecord (versionId, stateValue, createdAtUtc, publishedAtUtc) =
+        { VersionId = versionId
+          RepoKey = repoKey
+          PackageType = packageType
+          PackageNamespace = packageNamespace
+          PackageName = packageName
+          Version = version
+          State = stateValue
+          CreatedAtUtc = createdAtUtc
+          PublishedAtUtc = publishedAtUtc }
+
+    tryReadRepoIdForTenant tenantId repoKey conn
+    |> Result.bind (fun repoIdOption ->
+        match repoIdOption with
+        | None -> Ok RepoMissing
+        | Some repoId ->
+            upsertPackageForRepo tenantId repoId packageType packageNamespace packageName conn
+            |> Result.bind (fun packageId ->
+                tryInsertDraftPackageVersion tenantId repoId packageId version createdBy conn
+                |> Result.bind (fun insertResult ->
+                    match insertResult with
+                    | Some insertedVersion ->
+                        insertedVersion |> toRecord |> DraftCreated |> Ok
+                    | None ->
+                        tryReadPackageVersionForRepo repoId packageId version conn
+                        |> Result.bind (fun existing ->
+                            match existing with
+                            | None -> Error "Could not resolve package version after upsert."
+                            | Some existingVersion ->
+                                let record = toRecord existingVersion
+                                if String.Equals(record.State, "draft", StringComparison.Ordinal) then
+                                    Ok(DraftExisting record)
+                                else
+                                    Ok(VersionStateConflict record.State)))))
 
 let deleteRepoForTenant (tenantId: Guid) (repoKey: string) (conn: NpgsqlConnection) =
     use cmd =
@@ -1817,6 +2046,100 @@ let main args =
 
                             Results.Ok(response))
     )
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/packages/versions/drafts",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match requireRole state ctx repoKey RepoRole.Write with
+                | Error result -> result
+                | Ok principal ->
+                    match readJsonBody<CreateDraftVersionRequest> ctx with
+                    | Error err -> badRequest err
+                    | Ok request ->
+                        match validateDraftVersionRequest request with
+                        | Error err -> badRequest err
+                        | Ok(packageType, packageNamespace, packageName, version) ->
+                            match
+                                withConnection
+                                    state
+                                    (createOrGetDraftVersionForRepo
+                                        principal.TenantId
+                                        repoKey
+                                        packageType
+                                        packageNamespace
+                                        packageName
+                                        version
+                                        principal.Subject)
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok RepoMissing ->
+                                Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                            | Ok(VersionStateConflict stateValue) ->
+                                conflict $"Version already exists in state '{stateValue}' and cannot be reused as a draft."
+                            | Ok(DraftCreated draftVersion) ->
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "package.version.draft.created"
+                                        "package_version"
+                                        (draftVersion.VersionId.ToString())
+                                        (Map.ofList
+                                            [ "repoKey", repoKey
+                                              "packageType", draftVersion.PackageType
+                                              "packageName", draftVersion.PackageName
+                                              "version", draftVersion.Version ])
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok() ->
+                                    Results.Created(
+                                        $"/v1/repos/{repoKey}/packages/versions/{draftVersion.Version}",
+                                        {| versionId = draftVersion.VersionId
+                                           repoKey = draftVersion.RepoKey
+                                           packageType = draftVersion.PackageType
+                                           packageNamespace = draftVersion.PackageNamespace
+                                           packageName = draftVersion.PackageName
+                                           version = draftVersion.Version
+                                           state = draftVersion.State
+                                           createdAtUtc = draftVersion.CreatedAtUtc
+                                           reusedDraft = false |}
+                                    )
+                            | Ok(DraftExisting draftVersion) ->
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "package.version.draft.reused"
+                                        "package_version"
+                                        (draftVersion.VersionId.ToString())
+                                        (Map.ofList
+                                            [ "repoKey", repoKey
+                                              "packageType", draftVersion.PackageType
+                                              "packageName", draftVersion.PackageName
+                                              "version", draftVersion.Version ])
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok() ->
+                                    Results.Ok(
+                                        {| versionId = draftVersion.VersionId
+                                           repoKey = draftVersion.RepoKey
+                                           packageType = draftVersion.PackageType
+                                           packageNamespace = draftVersion.PackageNamespace
+                                           packageName = draftVersion.PackageName
+                                           version = draftVersion.Version
+                                           state = draftVersion.State
+                                           createdAtUtc = draftVersion.CreatedAtUtc
+                                           reusedDraft = true |}
+                                    )
+    ))
     |> ignore
 
     app.MapPost(

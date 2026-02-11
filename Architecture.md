@@ -23,6 +23,8 @@ Current database migrations:
 - `db/migrations/0001_init.sql`
 - `db/migrations/0002_phase1_identity_and_rbac.sql`
 - `db/migrations/0003_phase2_upload_sessions.sql`
+- `db/migrations/0004_phase3_publish_guardrails.sql`
+- `db/migrations/0005_phase3_published_immutability_hardening.sql`
 
 Current data-plane capabilities:
 - Upload session create plus multipart lifecycle (`parts`, `complete`, `abort`).
@@ -38,8 +40,9 @@ Current auth model:
 ## Planned Runtime (Not Yet Implemented)
 
 Metadata/publish plane:
-- Draft/publish state machine for package versions.
-- Atomic publish transaction for version + artifact entries + outbox + audit.
+- Draft version create path is now implemented (`POST /v1/repos/{repoKey}/packages/versions/drafts`).
+- Remaining: publish transaction for version + artifact entries + outbox + audit.
+- Phase 3 kickoff guardrails are now in place at the DB layer for published-row immutability.
 
 Event/index/policy plane:
 - Outbox workers and external side effects.
@@ -54,6 +57,7 @@ Event/index/policy plane:
 - Privileged actions are audited in PostgreSQL.
 - Upload commit validates expected digest and length before session commit.
 - Dedupe path prevents duplicate blob persistence for existing digest/length content.
+- Published package-version identity fields are immutable at the DB trigger layer.
 
 ## Invariants Targeted Next
 
