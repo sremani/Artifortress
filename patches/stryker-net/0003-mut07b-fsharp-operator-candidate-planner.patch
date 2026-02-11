@@ -1,0 +1,181 @@
+diff --git a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutationPlannerTests.cs b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutationPlannerTests.cs
+new file mode 100644
+index 00000000..dff68bdf
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutationPlannerTests.cs
+@@ -0,0 +1,61 @@
++using System;
++using System.IO;
++using System.IO.Abstractions;
++using System.Linq;
++using Microsoft.VisualStudio.TestTools.UnitTesting;
++using Shouldly;
++using Stryker.Core.Mutants;
++
++namespace Stryker.Core.UnitTest.Mutants;
++
++[TestClass]
++public class FsharpOperatorMutationPlannerTests
++{
++    [TestMethod]
++    public void ShouldDiscoverBooleanComparisonAndArithmeticCandidates()
++    {
++        var filePath = WriteTempFsharpFile(
++            """
++            let a = 4 + 2
++            let cmp = a >= 3
++            let flag = cmp && (a <> 0)
++            """);
++
++        var planner = new FsharpOperatorMutationPlanner(new FileSystem());
++        var candidates = planner.DiscoverCandidates(new[] { filePath }).ToList();
++
++        candidates.ShouldContain(c => c.OperatorToken == "+" && c.Family == FsharpOperatorFamily.Arithmetic);
++        candidates.ShouldContain(c => c.OperatorToken == ">=" && c.Family == FsharpOperatorFamily.Comparison);
++        candidates.ShouldContain(c => c.OperatorToken == "&&" && c.Family == FsharpOperatorFamily.Boolean);
++        candidates.ShouldContain(c => c.OperatorToken == "<>" && c.Family == FsharpOperatorFamily.Comparison);
++    }
++
++    [TestMethod]
++    public void ShouldIgnoreNonFsharpFiles()
++    {
++        var filePath = Path.Combine(Path.GetTempPath(), $"mut-plan-{Guid.NewGuid():N}.txt");
++        File.WriteAllText(filePath, "let x = 1 + 2");
++
++        var planner = new FsharpOperatorMutationPlanner(new FileSystem());
++        var candidates = planner.DiscoverCandidates(new[] { filePath });
++
++        candidates.ShouldBeEmpty();
++    }
++
++    [TestMethod]
++    public void ShouldHandleMissingFiles()
++    {
++        var planner = new FsharpOperatorMutationPlanner(new FileSystem());
++        var missingPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.fs");
++        var candidates = planner.DiscoverCandidates(new[] { missingPath });
++
++        candidates.ShouldBeEmpty();
++    }
++
++    private static string WriteTempFsharpFile(string content)
++    {
++        var path = Path.Combine(Path.GetTempPath(), $"mut-plan-{Guid.NewGuid():N}.fs");
++        File.WriteAllText(path, content);
++        return path;
++    }
++}
+diff --git a/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutationPlanner.cs b/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutationPlanner.cs
+new file mode 100644
+index 00000000..158cd287
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutationPlanner.cs
+@@ -0,0 +1,84 @@
++using System;
++using System.Collections.Generic;
++using System.IO.Abstractions;
++using System.Linq;
++using System.Text.RegularExpressions;
++
++namespace Stryker.Core.Mutants;
++
++public enum FsharpOperatorFamily
++{
++    Boolean,
++    Comparison,
++    Arithmetic,
++}
++
++public sealed record FsharpMutationCandidate(
++    string FilePath,
++    int Line,
++    int Column,
++    string OperatorToken,
++    FsharpOperatorFamily Family);
++
++/// <summary>
++/// Discovers candidate F# operators for future mutation rewrites.
++/// This planner is intentionally lexical-only for the initial Track B bootstrap.
++/// </summary>
++public sealed class FsharpOperatorMutationPlanner
++{
++    private static readonly Regex OperatorRegex = new(
++        @"(<=|>=|<>|&&|\|\||=|<|>|\+|-|\*|/)",
++        RegexOptions.Compiled);
++
++    private readonly IFileSystem _fileSystem;
++
++    public FsharpOperatorMutationPlanner(IFileSystem fileSystem) =>
++        _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
++
++    public IReadOnlyList<FsharpMutationCandidate> DiscoverCandidates(IEnumerable<string> sourceFiles)
++    {
++        var candidates = new List<FsharpMutationCandidate>();
++        if (sourceFiles is null)
++        {
++            return candidates;
++        }
++
++        foreach (var sourceFile in sourceFiles.Where(IsFsharpSource))
++        {
++            if (!_fileSystem.File.Exists(sourceFile))
++            {
++                continue;
++            }
++
++            var lines = _fileSystem.File.ReadAllLines(sourceFile);
++            for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
++            {
++                var line = lines[lineIndex];
++                foreach (Match match in OperatorRegex.Matches(line))
++                {
++                    candidates.Add(new FsharpMutationCandidate(
++                        sourceFile,
++                        lineIndex + 1,
++                        match.Index + 1,
++                        match.Value,
++                        Classify(match.Value)));
++                }
++            }
++        }
++
++        return candidates;
++    }
++
++    private static bool IsFsharpSource(string path) =>
++        !string.IsNullOrWhiteSpace(path) &&
++        path.EndsWith(".fs", StringComparison.OrdinalIgnoreCase);
++
++    private static FsharpOperatorFamily Classify(string token) =>
++        token switch
++        {
++            "&&" or "||" => FsharpOperatorFamily.Boolean,
++            "=" or "<>" or "<" or ">" or "<=" or ">=" => FsharpOperatorFamily.Comparison,
++            "+" or "-" or "*" or "/" => FsharpOperatorFamily.Arithmetic,
++            _ => FsharpOperatorFamily.Comparison,
++        };
++}
+diff --git a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+index 39621c2b..f95aa51b 100644
+--- a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
++++ b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+@@ -39,9 +39,17 @@ public class CsharpMutationProcess : IMutationProcess
+ 
+         if (sourceLanguage == Language.Fsharp)
+         {
++            var planner = new FsharpOperatorMutationPlanner(_fileSystem);
++            var fsharpSources = input.SourceProjectInfo.AnalyzerResult.SourceFiles
++                .Where(path => path.EndsWith(".fs", StringComparison.OrdinalIgnoreCase))
++                .ToList();
++            var candidates = planner.DiscoverCandidates(fsharpSources);
++
+             _logger.LogInformation(
+-                "Using experimental F# mutator registration profile ({MutatorCount} mutators).",
+-                registeredMutators.Count);
++                "Using experimental F# mutator registration profile ({MutatorCount} mutators) with {CandidateCount} operator candidates across {FileCount} files.",
++                registeredMutators.Count,
++                candidates.Count,
++                fsharpSources.Count);
+         }
+ 
+         _logger.LogDebug(

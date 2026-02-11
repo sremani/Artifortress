@@ -1,0 +1,56 @@
+name: mutation-track
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 4 * * *"
+
+jobs:
+  mutation-trackb:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore local tools
+        run: dotnet tool restore
+
+      - name: Run Track B mutation spike
+        run: make mutation-trackb-spike
+
+      - name: Assert Track B emitted mutant invariants
+        if: always()
+        run: RUN_SPIKE=false make mutation-trackb-assert
+
+      - name: Compile-validate sampled Track B mutants
+        if: always()
+        run: RUN_SPIKE=false make mutation-trackb-compile-validate
+
+      - name: Capture mutation logs
+        if: always()
+        run: |
+          mkdir -p artifacts/ci
+          cp /tmp/artifortress-mutation-trackb-mut06.log artifacts/ci/mutation-trackb.log || true
+
+      - name: Upload mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-trackb-artifacts
+          path: |
+            docs/reports/mutation-trackb-mut06-latest.md
+            artifacts/mutation/mut06-trackb-latest.json
+            artifacts/mutation/mut06-trackb/reports/mutation-report.json
+            docs/reports/mutation-trackb-mut07c-compile-validation.md
+            artifacts/mutation/mut07c-compile-validation.json
+            artifacts/ci/mutation-trackb.log
+            artifacts/ci/mutation-trackb-assert-summary.txt
+            artifacts/ci/mutation-trackb-assert-metrics.json
+            artifacts/ci/mutation-trackb-compile-validate-summary.txt
+            artifacts/ci/mutation-trackb-compile-validate-metrics.json

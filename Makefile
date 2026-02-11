@@ -7,7 +7,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill mutation-spike mutation-track mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo
 
 help:
 	@echo "Targets:"
@@ -26,6 +26,13 @@ help:
 	@echo "  db-backup          Create Postgres backup file (set BACKUP_PATH to override)"
 	@echo "  db-restore         Restore Postgres backup file (requires RESTORE_PATH)"
 	@echo "  phase6-drill       Run Phase 6 RPO/RTO backup-restore drill"
+	@echo "  mutation-spike     Run F# mutation feasibility spike (wrapper CLI) and generate report"
+	@echo "  mutation-track     Run mutation wrapper default flow and generate report"
+	@echo "  mutation-trackb-bootstrap  Prepare patched Stryker.NET workspace for MUT-06"
+	@echo "  mutation-trackb-build      Build patched Stryker.NET CLI in local workspace"
+	@echo "  mutation-trackb-spike      Run wrapper flow against patched Stryker.NET CLI"
+	@echo "  mutation-trackb-assert     Assert Track B emitted-mutant invariants from latest artifacts"
+	@echo "  mutation-trackb-compile-validate  Compile-validate sampled F# mutants for MUT-07c"
 	@echo "  smoke              End-to-end phase-0 smoke run"
 	@echo "  phase1-demo        Run Phase 1 auth/repo demo script"
 	@echo "  phase2-demo        Run Phase 2 upload/download demo script"
@@ -101,6 +108,27 @@ db-restore:
 
 phase6-drill:
 	./scripts/phase6-drill.sh
+
+mutation-spike:
+	dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- spike
+
+mutation-track:
+	dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- run
+
+mutation-trackb-bootstrap:
+	./scripts/mutation-trackb-bootstrap.sh
+
+mutation-trackb-build:
+	./scripts/mutation-trackb-build.sh
+
+mutation-trackb-spike:
+	./scripts/mutation-trackb-spike.sh
+
+mutation-trackb-assert:
+	./scripts/mutation-trackb-assert.sh
+
+mutation-trackb-compile-validate:
+	./scripts/mutation-trackb-compile-validate.sh
 
 smoke: dev-up wait-db storage-bootstrap db-smoke build test test-integration
 	./scripts/smoke-api.sh

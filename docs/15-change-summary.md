@@ -182,6 +182,142 @@ This change set combines:
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
 - `make format` passed.
 
+## Track B F# Mutation Spike Addendum (2026-02-11)
+
+### Code and tooling changes
+
+- `dotnet-tools.json` (new)
+  - Added local tool manifest with `dotnet-stryker` 4.12.0.
+- `tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj` (new)
+  - Added mutation-only test project including unit and property tests (integration tests excluded by project composition).
+- `scripts/mutation-fsharp-spike.sh` (new)
+  - Added reproducible F# mutation feasibility spike command and report writer.
+- `Makefile`
+  - Added `mutation-spike` target.
+
+### Documentation changes
+
+- `docs/32-fsharp-mutation-track-tickets.md` (new)
+  - Added Track B ticket board with MUT-01 through MUT-10 and current status.
+- `docs/33-fsharp-mutation-trackb-plan.md` (new)
+  - Added upstream/fork engineering strategy and milestone plan for F# mutation support.
+- `docs/reports/mutation-spike-fsharp-latest.md` (new)
+  - Added latest spike execution report artifact.
+- Updated:
+  - `README.md`
+  - `docs/05-implementation-plan.md`
+  - `docs/10-current-state.md`
+
+### MUT-01 finding
+
+- Running Stryker against the F# domain project currently fails with:
+  - `System.NotSupportedException: Language not supported: Fsharp`
+- Result: Track B requires engine-level upstream/fork work; wrapper-only integration is insufficient.
+
+## Track B MUT-05 through MUT-10 Progress Addendum (2026-02-11)
+
+### Code and tooling changes
+
+- `tools/Artifortress.MutationTrack/Program.fs`
+  - Expanded wrapper behavior:
+    - added optional `--stryker-cli` path override to execute patched fork binaries.
+    - added `no_mutants_generated` failure class.
+    - added machine-readable JSON output (`--result-json`) alongside markdown report output.
+- `patches/stryker-net/0001-mut06-fsharp-analyzer-pipeline.patch` (new)
+  - Added reproducible MUT-06 patch artifact for F# analyzer-path compatibility experiment.
+- `patches/stryker-net/0002-mut07a-fsharp-mutator-registration.patch` (new)
+  - Added language-aware F# mutator registration entrypoint (operator-family profile).
+- `patches/stryker-net/0003-mut07b-fsharp-operator-candidate-planner.patch` (new)
+  - Added lexical F# operator candidate planner scaffold + associated fork unit tests.
+- `patches/stryker-net/0004-mut08a-fsharp-source-span-mapper.patch` (new)
+  - Added F# source span-mapping scaffold + associated fork unit tests.
+- `scripts/mutation-trackb-bootstrap.sh` (new)
+  - Added deterministic Stryker fork bootstrap + ordered multi-patch apply workflow + workspace cleaning.
+- `scripts/mutation-trackb-build.sh` (new)
+  - Added patched Stryker CLI build workflow.
+- `scripts/mutation-trackb-spike.sh` (new)
+  - Added one-command MUT-06 fork run through wrapper/reporting path.
+- `Makefile`
+  - Added targets:
+    - `mutation-trackb-bootstrap`
+    - `mutation-trackb-build`
+    - `mutation-trackb-spike`
+- `.github/workflows/mutation-track.yml` (new)
+  - Added nightly/manual non-blocking mutation lane with artifact upload.
+
+### Documentation changes
+
+- `docs/32-fsharp-mutation-track-tickets.md`
+  - Updated ticket statuses:
+    - MUT-05: done
+    - MUT-06: done
+    - MUT-07: in_progress
+    - MUT-08: in_progress
+    - MUT-09: in_progress
+    - MUT-10: in_progress
+  - Added MUT-07/MUT-08 extracted subtasks and next execution order.
+- `docs/33-fsharp-mutation-trackb-plan.md`
+  - Updated milestone status:
+    - B2 complete
+    - B3 complete
+    - B4 blocked
+    - B5 in_progress
+- Updated:
+  - `README.md`
+  - `docs/05-implementation-plan.md`
+  - `docs/10-current-state.md`
+
+### MUT-06 execution outcome
+
+- Patched fork run reaches:
+  - F# project identification,
+  - build and initial test phases.
+- Hard blocker removed:
+  - no `Language not supported: Fsharp` exception in patched path.
+- Remaining blocker:
+  - `0 mutants created` (`no_mutants_generated`) pending MUT-07/MUT-08 engine work.
+
+### MUT-07a / MUT-07b scaffold outcome
+
+- Patched Track B run now logs:
+  - experimental F# mutator profile registration (`3` mutators),
+  - F# operator candidate discovery metrics in the mutation path.
+- Remaining blocker:
+  - no concrete F# source rewrite/mutant emission yet (MUT-07b and MUT-08 work remains).
+
+### MUT-08a scaffold outcome
+
+- Patched Track B run now logs:
+  - mapped F# source span metrics for discovered operator candidates.
+- Remaining blocker:
+  - MUT-08b rewrite safety guards and invalid-rewrite handling are still pending.
+
+## Track B MUT-07b/MUT-08 Progress Addendum (2026-02-11, later)
+
+### Code and tooling changes
+
+- `patches/stryker-net/0006-mut07b-fsharp-mutant-emission-quarantine.patch` (new)
+  - Added F# operator mutant emission planning path (`FsharpOperatorMutantEmitter`).
+  - Added compile-error quarantine status for emitted F# mutants pending runtime activation support.
+- `patches/stryker-net/0007-mut07b-fsharp-path-selection.patch` (new)
+  - Added mutate-glob matching against run-root relative paths for F# source selection.
+- `tools/Artifortress.MutationTrack/Program.fs`
+  - Updated default mutate scope to `src/Artifortress.Domain/Library.fs`.
+  - Added `quarantined_compile_errors` failure class and next-action guidance.
+
+### Latest Track B execution outcome
+
+- `make mutation-trackb-spike` now reports:
+  - `71` operator candidates,
+  - `71` mapped spans,
+  - `71` planned mutants,
+  - `71 mutants created`.
+- Current mutant lifecycle state:
+  - all emitted mutants are quarantined as `CompileError` with reason:
+    - `F# mutant is quarantined pending runtime activation support.`
+- Wrapper classification now returns:
+  - `quarantined_compile_errors` (instead of `no_mutants_generated`).
+
 ## Phase 6 Completion Addendum (2026-02-11)
 
 ### Code changes
@@ -247,3 +383,57 @@ This change set combines:
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
 - `make format` passed.
+
+## Track B MUT-07c / MUT-09 / MUT-10 Completion Addendum (2026-02-11, latest)
+
+### Code and tooling changes
+
+- `tools/Artifortress.MutationTrack/Program.fs`
+  - Added `validate-fsharp-mutants` command for MUT-07c compile-validation.
+  - Added safety guards to prevent destructive scratch-root deletion outside `artifacts/` and to enforce source-file containment under the target project directory.
+  - Added lexical compile-validation candidate filtering to avoid non-expression F# tokens (for example type-definition `=` and generic-angle-bracket markers).
+  - Added compile-validation markdown/json artifact writers.
+  - Added parsed run metrics to mutation report output:
+    - `candidateCount`
+    - `mappedSpanCount`
+    - `plannedMutantCount`
+    - `createdMutantCount`
+    - `quarantinedCompileErrorCount`
+- `scripts/mutation-trackb-compile-validate.sh` (new)
+  - Added one-command compile-validation gate for sampled `Library.fs` operator mutants.
+  - Emits CI summary and metrics artifacts under `artifacts/ci/`.
+- `scripts/mutation-trackb-assert.sh`
+  - Added explicit invariant checks for candidate/mapped/planned/created/quarantine counts.
+- `Makefile`
+  - Added `mutation-trackb-compile-validate` target.
+- `.github/workflows/mutation-track.yml`
+  - Added compile-validation execution step.
+  - Added upload of compile-validation report/json + CI summary/metrics artifacts.
+
+### Latest Track B verification outcome
+
+- `make mutation-trackb-spike` passed.
+- `RUN_SPIKE=false make mutation-trackb-assert` passed with:
+  - candidates: `71`
+  - mapped spans: `71`
+  - planned mutants: `71`
+  - created mutants: `71`
+  - quarantined compile errors: `71`
+  - classification: `quarantined_compile_errors`
+- `RUN_SPIKE=false make mutation-trackb-compile-validate` passed with:
+  - discovered compile-validation candidates: `5`
+  - selected mutants: `5`
+  - compile successes: `5`
+  - compile failures: `0`
+
+### Documentation updates
+
+- Updated:
+  - `docs/32-fsharp-mutation-track-tickets.md`
+  - `docs/33-fsharp-mutation-trackb-plan.md`
+  - `docs/10-current-state.md`
+  - `docs/05-implementation-plan.md`
+  - `README.md`
+- Added/updated reports:
+  - `docs/reports/mutation-trackb-mut06-latest.md`
+  - `docs/reports/mutation-trackb-mut07c-compile-validation.md`

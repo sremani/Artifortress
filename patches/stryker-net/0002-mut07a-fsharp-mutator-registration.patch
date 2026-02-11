@@ -1,0 +1,200 @@
+diff --git a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/MutatorSetRegistryTests.cs b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/MutatorSetRegistryTests.cs
+new file mode 100644
+index 00000000..d2123c2d
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/MutatorSetRegistryTests.cs
+@@ -0,0 +1,32 @@
++using System.Linq;
++using Microsoft.VisualStudio.TestTools.UnitTesting;
++using Shouldly;
++using Stryker.Abstractions;
++using Stryker.Core.Mutants;
++using Stryker.Core.Mutators;
++
++namespace Stryker.Core.UnitTest.Mutants;
++
++[TestClass]
++public class MutatorSetRegistryTests
++{
++    [TestMethod]
++    public void ShouldRegisterFsharpOperatorMutatorProfile()
++    {
++        var mutators = MutatorSetRegistry.Resolve(Language.Fsharp).ToList();
++
++        mutators.Count.ShouldBe(3);
++        mutators.ShouldContain(m => m is BinaryExpressionMutator);
++        mutators.ShouldContain(m => m is BooleanMutator);
++        mutators.ShouldContain(m => m is NegateConditionMutator);
++    }
++
++    [TestMethod]
++    public void ShouldKeepCsharpProfileRicherThanFsharpProfile()
++    {
++        var csharpCount = MutatorSetRegistry.Resolve(Language.Csharp).Count;
++        var fsharpCount = MutatorSetRegistry.Resolve(Language.Fsharp).Count;
++
++        csharpCount.ShouldBeGreaterThan(fsharpCount);
++    }
++}
+diff --git a/src/Stryker.Core/Stryker.Core/Mutants/CsharpMutantOrchestrator.cs b/src/Stryker.Core/Stryker.Core/Mutants/CsharpMutantOrchestrator.cs
+index 8db0d6bc..57b43512 100644
+--- a/src/Stryker.Core/Stryker.Core/Mutants/CsharpMutantOrchestrator.cs
++++ b/src/Stryker.Core/Stryker.Core/Mutants/CsharpMutantOrchestrator.cs
+@@ -8,7 +8,6 @@ using Microsoft.Extensions.Logging;
+ using Stryker.Abstractions;
+ using Stryker.Abstractions.Options;
+ using Stryker.Core.Mutants.CsharpNodeOrchestrators;
+-using Stryker.Core.Mutators;
+ using Stryker.Utilities.Helpers;
+ using Stryker.Utilities.Logging;
+ 
+@@ -29,10 +28,14 @@ public class CsharpMutantOrchestrator : BaseMutantOrchestrator<SyntaxTree, Seman
+     /// <summary>
+     /// <param name="mutators">The mutators that should be active during the mutation process</param>
+     /// </summary>
+-    public CsharpMutantOrchestrator(MutantPlacer placer, IEnumerable<IMutator> mutators = null, IStrykerOptions options = null) : base(options)
++    public CsharpMutantOrchestrator(
++        MutantPlacer placer,
++        IEnumerable<IMutator> mutators = null,
++        IStrykerOptions options = null,
++        Language language = Language.Csharp) : base(options)
+     {
+         Placer = placer;
+-        Mutators = mutators ?? DefaultMutatorList();
++        Mutators = mutators ?? MutatorSetRegistry.Resolve(language);
+         Mutants = new Collection<IMutant>();
+         Logger = ApplicationLogging.LoggerFactory.CreateLogger<CsharpMutantOrchestrator>();
+     }
+@@ -90,36 +93,6 @@ public class CsharpMutantOrchestrator : BaseMutantOrchestrator<SyntaxTree, Seman
+         new SyntaxNodeOrchestrator()
+     ];
+ 
+-    private static List<IMutator> DefaultMutatorList() =>
+-    [
+-        new BinaryExpressionMutator(),
+-        new RelationalPatternMutator(),
+-        new BinaryPatternMutator(),
+-        new StringMethodMutator(),
+-        new StringMethodToConstantMutator(),
+-        new BlockMutator(),
+-        new BooleanMutator(),
+-        new ConditionalExpressionMutator(),
+-        new AssignmentExpressionMutator(),
+-        new PrefixUnaryMutator(),
+-        new PostfixUnaryMutator(),
+-        new CheckedMutator(),
+-        new LinqMutator(),
+-        new StringMutator(),
+-        new StringEmptyMutator(),
+-        new InterpolatedStringMutator(),
+-        new NegateConditionMutator(),
+-        new InitializerMutator(),
+-        new ObjectCreationMutator(),
+-        new ArrayCreationMutator(),
+-        new StatementMutator(),
+-        new RegexMutator(),
+-        new NullCoalescingExpressionMutator(),
+-        new MathMutator(),
+-        new IsPatternExpressionMutator(),
+-        new CollectionExpressionMutator(),
+-    ];
+-
+     private IEnumerable<IMutator> Mutators { get; }
+ 
+     public MutantPlacer Placer { get; }
+diff --git a/src/Stryker.Core/Stryker.Core/Mutants/MutatorSetRegistry.cs b/src/Stryker.Core/Stryker.Core/Mutants/MutatorSetRegistry.cs
+new file mode 100644
+index 00000000..1910378c
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core/Mutants/MutatorSetRegistry.cs
+@@ -0,0 +1,57 @@
++using System.Collections.Generic;
++using Stryker.Abstractions;
++using Stryker.Core.Mutators;
++
++namespace Stryker.Core.Mutants;
++
++/// <summary>
++/// Registers default mutator profiles per source language.
++/// </summary>
++public static class MutatorSetRegistry
++{
++    public static IReadOnlyList<IMutator> Resolve(Language language) =>
++        language switch
++        {
++            Language.Fsharp => BuildFsharpV1OperatorMutatorList(),
++            _ => BuildCsharpMutatorList(),
++        };
++
++    private static IReadOnlyList<IMutator> BuildFsharpV1OperatorMutatorList() =>
++    [
++        // MUT-07a registration entrypoint for planned F# mutator work.
++        // This profile intentionally targets boolean/comparison/arithmetic families first.
++        new BinaryExpressionMutator(),
++        new BooleanMutator(),
++        new NegateConditionMutator(),
++    ];
++
++    private static IReadOnlyList<IMutator> BuildCsharpMutatorList() =>
++    [
++        new BinaryExpressionMutator(),
++        new RelationalPatternMutator(),
++        new BinaryPatternMutator(),
++        new StringMethodMutator(),
++        new StringMethodToConstantMutator(),
++        new BlockMutator(),
++        new BooleanMutator(),
++        new ConditionalExpressionMutator(),
++        new AssignmentExpressionMutator(),
++        new PrefixUnaryMutator(),
++        new PostfixUnaryMutator(),
++        new CheckedMutator(),
++        new LinqMutator(),
++        new StringMutator(),
++        new StringEmptyMutator(),
++        new InterpolatedStringMutator(),
++        new NegateConditionMutator(),
++        new InitializerMutator(),
++        new ObjectCreationMutator(),
++        new ArrayCreationMutator(),
++        new StatementMutator(),
++        new RegexMutator(),
++        new NullCoalescingExpressionMutator(),
++        new MathMutator(),
++        new IsPatternExpressionMutator(),
++        new CollectionExpressionMutator(),
++    ];
++}
+diff --git a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+index f9185827..39621c2b 100644
+--- a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
++++ b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+@@ -34,8 +34,27 @@ public class CsharpMutationProcess : IMutationProcess
+     public void Mutate(MutationTestInput input, IStrykerOptions options)
+     {
+         _options = options;
++        var sourceLanguage = input.SourceProjectInfo.AnalyzerResult.GetLanguage();
++        var registeredMutators = MutatorSetRegistry.Resolve(sourceLanguage);
++
++        if (sourceLanguage == Language.Fsharp)
++        {
++            _logger.LogInformation(
++                "Using experimental F# mutator registration profile ({MutatorCount} mutators).",
++                registeredMutators.Count);
++        }
++
++        _logger.LogDebug(
++            "Using {MutatorCount} mutators for language {Language}.",
++            registeredMutators.Count,
++            sourceLanguage);
++
+         var projectInfo = input.SourceProjectInfo.ProjectContents;
+-        var orchestrator = new CsharpMutantOrchestrator(new MutantPlacer(input.SourceProjectInfo.CodeInjector), options: _options);
++        var orchestrator = new CsharpMutantOrchestrator(
++            new MutantPlacer(input.SourceProjectInfo.CodeInjector),
++            mutators: registeredMutators,
++            options: _options,
++            language: sourceLanguage);
+         var compilingProcess = new CsharpCompilingProcess(input, options: _options);
+         var semanticModels = compilingProcess.GetSemanticModels(projectInfo.GetAllFiles().Cast<CsharpFileLeaf>().Select(x => x.SyntaxTree));
+ 

@@ -1,0 +1,66 @@
+diff --git a/src/Stryker.Core/Stryker.Core/Initialisation/CsharpProjectComponentsBuilder.cs b/src/Stryker.Core/Stryker.Core/Initialisation/CsharpProjectComponentsBuilder.cs
+index 12ecae0e..69e7798e 100644
+--- a/src/Stryker.Core/Stryker.Core/Initialisation/CsharpProjectComponentsBuilder.cs
++++ b/src/Stryker.Core/Stryker.Core/Initialisation/CsharpProjectComponentsBuilder.cs
+@@ -83,6 +83,11 @@ public class CsharpProjectComponentsBuilder : ProjectComponentsBuilder
+ 
+         foreach (var sourceFile in analyzerResult.SourceFiles)
+         {
++            if (!sourceFile.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
++            {
++                continue;
++            }
++
+             var relativePath = Path.GetRelativePath(Path.GetDirectoryName(analyzerResult.ProjectFilePath), sourceFile);
+             var folderComposite = GetOrBuildFolderComposite(cache, Path.GetDirectoryName(relativePath), Path.GetDirectoryName(analyzerResult.ProjectFilePath), projectUnderTestFolderComposite);
+ 
+diff --git a/src/Stryker.Core/Stryker.Core/Initialisation/InputFileResolver.cs b/src/Stryker.Core/Stryker.Core/Initialisation/InputFileResolver.cs
+index 0c74441c..5d31517f 100644
+--- a/src/Stryker.Core/Stryker.Core/Initialisation/InputFileResolver.cs
++++ b/src/Stryker.Core/Stryker.Core/Initialisation/InputFileResolver.cs
+@@ -704,9 +704,9 @@ public class InputFileResolver : IInputFileResolver
+         var language = targetProjectInfo.AnalyzerResult.GetLanguage();
+         if (language == Language.Fsharp)
+         {
+-            _logger.LogError(
++            _logger.LogWarning(
+                 targetProjectInfo.LogError(
+-                    "Mutation testing of F# projects is not ready yet. No mutants will be generated."));
++                    "F# support is experimental in this build. Continuing analysis with C# project component pipeline."));
+         }
+ 
+         var builder = (ProjectComponentsBuilder)(language switch
+@@ -717,6 +717,12 @@ public class InputFileResolver : IInputFileResolver
+                 _foldersToExclude,
+                 _logger,
+                 FileSystem),
++            Language.Fsharp => new CsharpProjectComponentsBuilder(
++                targetProjectInfo,
++                options,
++                _foldersToExclude,
++                _logger,
++                FileSystem),
+ 
+             _ => throw new NotSupportedException($"Language not supported: {language}")
+         });
+diff --git a/src/Stryker.Core/Stryker.Core/ProjectComponents/TestProjects/TestProject.cs b/src/Stryker.Core/Stryker.Core/ProjectComponents/TestProjects/TestProject.cs
+index b88a18ba..60199c71 100644
+--- a/src/Stryker.Core/Stryker.Core/ProjectComponents/TestProjects/TestProject.cs
++++ b/src/Stryker.Core/Stryker.Core/ProjectComponents/TestProjects/TestProject.cs
+@@ -30,6 +30,16 @@ public sealed class TestProject : IEquatable<ITestProject>, ITestProject
+         var testFiles = new List<TestFile>();
+         foreach (var file in testProjectAnalyzerResult.SourceFiles)
+         {
++            if (!file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
++            {
++                continue;
++            }
++
++            if (!fileSystem.File.Exists(file))
++            {
++                continue;
++            }
++
+             var sourceCode = fileSystem.File.ReadAllText(file);
+             var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode,
+                 path: file,

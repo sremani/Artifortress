@@ -97,6 +97,36 @@ Demonstration assets:
 - `docs/23-phase6-runbook.md`
 - `docs/24-security-review-closure.md`
 - `docs/25-upgrade-rollback-runbook.md`
+- deployment docs:
+  - `docs/26-deployment-plan.md`
+  - `docs/27-deployment-architecture.md`
+  - `docs/28-deployment-howto-staging.md`
+  - `docs/29-deployment-howto-production.md`
+  - `docs/30-deployment-config-reference.md`
+  - `docs/31-operations-howto.md`
+- mutation track assets:
+  - `tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj`
+  - `tools/Artifortress.MutationTrack/Program.fs`
+  - `patches/stryker-net/0001-mut06-fsharp-analyzer-pipeline.patch`
+  - `patches/stryker-net/0002-mut07a-fsharp-mutator-registration.patch`
+  - `patches/stryker-net/0003-mut07b-fsharp-operator-candidate-planner.patch`
+  - `patches/stryker-net/0004-mut08a-fsharp-source-span-mapper.patch`
+  - `patches/stryker-net/0005-mut08b-lexical-safety-guards.patch`
+  - `patches/stryker-net/0006-mut07b-fsharp-mutant-emission-quarantine.patch`
+  - `patches/stryker-net/0007-mut07b-fsharp-path-selection.patch`
+  - `scripts/mutation-fsharp-spike.sh`
+  - `scripts/mutation-trackb-bootstrap.sh`
+  - `scripts/mutation-trackb-build.sh`
+  - `scripts/mutation-trackb-spike.sh`
+  - `scripts/mutation-trackb-assert.sh`
+  - `scripts/mutation-trackb-compile-validate.sh`
+  - `.github/workflows/mutation-track.yml`
+  - `docs/32-fsharp-mutation-track-tickets.md`
+  - `docs/33-fsharp-mutation-trackb-plan.md`
+  - `docs/reports/mutation-spike-fsharp-latest.md`
+  - `docs/reports/mutation-track-latest.md`
+  - `docs/reports/mutation-trackb-mut06-latest.md`
+  - `docs/reports/mutation-trackb-mut07c-compile-validation.md`
 
 ## 4. Known Gaps vs Target Architecture
 
@@ -125,4 +155,5 @@ Not implemented yet:
 - Next implementation targets:
   - post-GA identity integration (OIDC/SAML).
   - search read-model query-serving and rebuild/recovery maturity.
+  - Track B F# mutation capability hardening beyond current ticket plan (runtime activation path to move quarantined mutants into executable tested statuses and score computation).
   - continue expanding property-based and integration stress coverage around lifecycle and policy/search paths.

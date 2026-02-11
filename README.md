@@ -13,7 +13,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 5: complete through P5-08 (tombstone lifecycle + GC dry-run/execute + reconcile summary + admin authz/audit + demo/runbook).
 - Phase 6: complete through P6-10 (dependency-backed readiness, ops summary, backup/restore + DR drill, security closure, upgrade/rollback runbooks, GA demo/report).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: post-GA roadmap items (OIDC/SAML, search read-model serving maturity).
+- Current build-out focus: post-GA roadmap items (OIDC/SAML, search read-model serving maturity) plus post-plan Track B mutation runtime activation work (MUT-01 through MUT-10 implementation complete; mutants currently quarantined pending executable runtime activation path).
 
 ## Implemented Today
 
@@ -95,6 +95,15 @@ Run Phase 6 readiness demo:
 make phase6-demo
 ```
 
+Run mutation track workflows:
+```bash
+make mutation-spike
+make mutation-track
+make mutation-trackb-spike
+make mutation-trackb-assert
+make mutation-trackb-compile-validate
+```
+
 ## API Surface (Current)
 
 - `GET /health/live`
@@ -139,7 +148,9 @@ make phase6-demo
 - `db/migrations`: SQL schema migrations.
 - `scripts`: migration, smoke, and demo scripts.
 - `.github/workflows/ci.yml`: restore/build/test/format CI workflow.
+- `.github/workflows/mutation-track.yml`: non-blocking nightly/manual mutation lane for Track B artifacts.
 - `deploy/phase6-alert-thresholds.yaml`: Phase 6 SLO/alert threshold reference for operations.
+- `deploy/*.env.example`: staging/production API and worker environment templates.
 
 ## Documentation Map
 
@@ -165,7 +176,19 @@ make phase6-demo
 - `docs/23-phase6-runbook.md`: executable Phase 6 hardening/GA demo runbook.
 - `docs/24-security-review-closure.md`: Phase 6 security closure and launch blocker status.
 - `docs/25-upgrade-rollback-runbook.md`: deterministic production upgrade and rollback procedure.
+- `docs/26-deployment-plan.md`: phased deployment strategy and ownership model.
+- `docs/27-deployment-architecture.md`: deployment topology, health model, scaling, and failure domains.
+- `docs/28-deployment-howto-staging.md`: staging deployment runbook with step-by-step commands.
+- `docs/29-deployment-howto-production.md`: production rollout/rollback execution runbook.
+- `docs/30-deployment-config-reference.md`: API/worker/script environment variable reference.
+- `docs/31-operations-howto.md`: day-2 operations, incident handling, and drill cadence guide.
+- `docs/32-fsharp-mutation-track-tickets.md`: Track B mutation ticket board and current status.
+- `docs/33-fsharp-mutation-trackb-plan.md`: Track B strategy for F# mutation support via upstream/fork work.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
+- `docs/reports/mutation-spike-fsharp-latest.md`: latest F# mutation feasibility report artifact.
+- `docs/reports/mutation-track-latest.md`: latest wrapper default mutation run report artifact.
+- `docs/reports/mutation-trackb-mut06-latest.md`: latest patched-fork Track B mutation run report artifact (currently shows quarantined emitted F# mutants).
+- `docs/reports/mutation-trackb-mut07c-compile-validation.md`: latest compile-validation artifact for sampled F# mutant rewrites.
 
 ## ADRs
 

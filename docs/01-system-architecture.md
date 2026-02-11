@@ -113,6 +113,10 @@ Planned:
 - Worker pool for outbox handlers.
 - S3-compatible object storage as authoritative blob backend.
 
+Detailed deployment docs:
+- `docs/26-deployment-plan.md`
+- `docs/27-deployment-architecture.md`
+
 ## 9. Security Baseline
 
 Current:

@@ -1,0 +1,180 @@
+diff --git a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutationPlannerTests.cs b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutationPlannerTests.cs
+index dff68bdf..87372f90 100644
+--- a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutationPlannerTests.cs
++++ b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutationPlannerTests.cs
+@@ -52,6 +52,28 @@ public class FsharpOperatorMutationPlannerTests
+         candidates.ShouldBeEmpty();
+     }
+ 
++    [TestMethod]
++    public void ShouldIgnoreOperatorsInsideCommentsAndStrings()
++    {
++        var filePath = WriteTempFsharpFile(
++            """
++            let text = "1 + 2 >= 3"
++            // let ignored = 5 - 4
++            let value = 1 + 2
++            (* block <= comment *)
++            let cmp = value >= 2
++            """);
++
++        var planner = new FsharpOperatorMutationPlanner(new FileSystem());
++        var candidates = planner.DiscoverCandidates(new[] { filePath }).ToList();
++
++        candidates.Count(c => c.OperatorToken == "+").ShouldBe(1);
++        candidates.Count(c => c.OperatorToken == ">=").ShouldBe(1);
++        candidates.ShouldNotContain(c => c.Line == 1);
++        candidates.ShouldNotContain(c => c.Line == 2);
++        candidates.ShouldNotContain(c => c.Line == 4);
++    }
++
+     private static string WriteTempFsharpFile(string content)
+     {
+         var path = Path.Combine(Path.GetTempPath(), $"mut-plan-{Guid.NewGuid():N}.fs");
+diff --git a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpSourceSpanMapperTests.cs b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpSourceSpanMapperTests.cs
+index 228855ad..b4b17d04 100644
+--- a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpSourceSpanMapperTests.cs
++++ b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpSourceSpanMapperTests.cs
+@@ -50,6 +50,16 @@ public class FsharpSourceSpanMapperTests
+         mapper.TryMap(missingPath, line: 1, column: 1, length: 1, out _).ShouldBeFalse();
+     }
+ 
++    [TestMethod]
++    public void ShouldRejectCandidateWhenMappedTokenDoesNotMatch()
++    {
++        var filePath = WriteTempFsharpFile("let a = 1 + 2");
++        var mapper = new FsharpSourceSpanMapper(new FileSystem());
++        var wrongCandidate = new FsharpMutationCandidate(filePath, 1, 11, "-", FsharpOperatorFamily.Arithmetic);
++
++        mapper.TryMap(wrongCandidate, out _).ShouldBeFalse();
++    }
++
+     private static string WriteTempFsharpFile(string content)
+     {
+         var path = Path.Combine(Path.GetTempPath(), $"span-map-{Guid.NewGuid():N}.fs");
+diff --git a/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutationPlanner.cs b/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutationPlanner.cs
+index 158cd287..1cac2dc5 100644
+--- a/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutationPlanner.cs
++++ b/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutationPlanner.cs
+@@ -43,6 +43,7 @@ public sealed class FsharpOperatorMutationPlanner
+             return candidates;
+         }
+ 
++        var blockCommentDepth = 0;
+         foreach (var sourceFile in sourceFiles.Where(IsFsharpSource))
+         {
+             if (!_fileSystem.File.Exists(sourceFile))
+@@ -54,7 +55,8 @@ public sealed class FsharpOperatorMutationPlanner
+             for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+             {
+                 var line = lines[lineIndex];
+-                foreach (Match match in OperatorRegex.Matches(line))
++                var sanitized = SanitizeLineForOperatorScan(line, ref blockCommentDepth);
++                foreach (Match match in OperatorRegex.Matches(sanitized))
+                 {
+                     candidates.Add(new FsharpMutationCandidate(
+                         sourceFile,
+@@ -69,6 +71,73 @@ public sealed class FsharpOperatorMutationPlanner
+         return candidates;
+     }
+ 
++    private static string SanitizeLineForOperatorScan(string line, ref int blockCommentDepth)
++    {
++        var chars = line.ToCharArray();
++        var inString = false;
++        var escaping = false;
++
++        for (var i = 0; i < chars.Length; i++)
++        {
++            var current = chars[i];
++            var next = i + 1 < chars.Length ? chars[i + 1] : '\0';
++
++            if (blockCommentDepth > 0)
++            {
++                chars[i] = ' ';
++                if (current == '(' && next == '*')
++                {
++                    chars[i + 1] = ' ';
++                    blockCommentDepth++;
++                    i++;
++                }
++                else if (current == '*' && next == ')')
++                {
++                    chars[i + 1] = ' ';
++                    blockCommentDepth--;
++                    i++;
++                }
++                continue;
++            }
++
++            if (!inString && current == '/' && next == '/')
++            {
++                for (var j = i; j < chars.Length; j++)
++                {
++                    chars[j] = ' ';
++                }
++                break;
++            }
++
++            if (!inString && current == '(' && next == '*')
++            {
++                chars[i] = ' ';
++                chars[i + 1] = ' ';
++                blockCommentDepth++;
++                i++;
++                continue;
++            }
++
++            if (current == '"' && !escaping)
++            {
++                inString = !inString;
++                chars[i] = ' ';
++                continue;
++            }
++
++            if (inString)
++            {
++                escaping = current == '\\' && !escaping;
++                chars[i] = ' ';
++                continue;
++            }
++
++            escaping = false;
++        }
++
++        return new string(chars);
++    }
++
+     private static bool IsFsharpSource(string path) =>
+         !string.IsNullOrWhiteSpace(path) &&
+         path.EndsWith(".fs", StringComparison.OrdinalIgnoreCase);
+diff --git a/src/Stryker.Core/Stryker.Core/Mutants/FsharpSourceSpanMapper.cs b/src/Stryker.Core/Stryker.Core/Mutants/FsharpSourceSpanMapper.cs
+index 60adaa77..0b955c71 100644
+--- a/src/Stryker.Core/Stryker.Core/Mutants/FsharpSourceSpanMapper.cs
++++ b/src/Stryker.Core/Stryker.Core/Mutants/FsharpSourceSpanMapper.cs
+@@ -20,8 +20,23 @@ public sealed class FsharpSourceSpanMapper
+     public FsharpSourceSpanMapper(IFileSystem fileSystem) =>
+         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
+ 
+-    public bool TryMap(FsharpMutationCandidate candidate, out FsharpMutationSpan span) =>
+-        TryMap(candidate.FilePath, candidate.Line, candidate.Column, candidate.OperatorToken.Length, out span);
++    public bool TryMap(FsharpMutationCandidate candidate, out FsharpMutationSpan span)
++    {
++        if (!TryMap(candidate.FilePath, candidate.Line, candidate.Column, candidate.OperatorToken.Length, out span))
++        {
++            return false;
++        }
++
++        var content = _fileSystem.File.ReadAllText(candidate.FilePath);
++        var mappedToken = content.Substring(span.Start, span.Length);
++        if (!string.Equals(mappedToken, candidate.OperatorToken, StringComparison.Ordinal))
++        {
++            span = default;
++            return false;
++        }
++
++        return true;
++    }
+ 
+     public bool TryMap(string filePath, int line, int column, int length, out FsharpMutationSpan span)
+     {

@@ -1,0 +1,173 @@
+diff --git a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpSourceSpanMapperTests.cs b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpSourceSpanMapperTests.cs
+new file mode 100644
+index 00000000..228855ad
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpSourceSpanMapperTests.cs
+@@ -0,0 +1,59 @@
++using System;
++using System.IO;
++using System.IO.Abstractions;
++using Microsoft.VisualStudio.TestTools.UnitTesting;
++using Shouldly;
++using Stryker.Core.Mutants;
++
++namespace Stryker.Core.UnitTest.Mutants;
++
++[TestClass]
++public class FsharpSourceSpanMapperTests
++{
++    [TestMethod]
++    public void ShouldMapCandidateToAbsoluteSpan()
++    {
++        const string source =
++            """
++            let a = 4 + 2
++            let cmp = a >= 3
++            """;
++        var filePath = WriteTempFsharpFile(source);
++        var mapper = new FsharpSourceSpanMapper(new FileSystem());
++        var candidate = new FsharpMutationCandidate(filePath, 2, 13, ">=", FsharpOperatorFamily.Comparison);
++
++        var mapped = mapper.TryMap(candidate, out var span);
++
++        mapped.ShouldBeTrue();
++        span.FilePath.ShouldBe(filePath);
++        span.Length.ShouldBe(2);
++        source.Substring(span.Start, span.Length).ShouldBe(">=");
++    }
++
++    [TestMethod]
++    public void ShouldRejectOutOfBoundsMapping()
++    {
++        var filePath = WriteTempFsharpFile("let a = 1 + 2");
++        var mapper = new FsharpSourceSpanMapper(new FileSystem());
++
++        var mapped = mapper.TryMap(filePath, line: 5, column: 1, length: 1, out _);
++
++        mapped.ShouldBeFalse();
++    }
++
++    [TestMethod]
++    public void ShouldRejectMissingSourceFile()
++    {
++        var mapper = new FsharpSourceSpanMapper(new FileSystem());
++        var missingPath = Path.Combine(Path.GetTempPath(), $"missing-span-{Guid.NewGuid():N}.fs");
++
++        mapper.TryMap(missingPath, line: 1, column: 1, length: 1, out _).ShouldBeFalse();
++    }
++
++    private static string WriteTempFsharpFile(string content)
++    {
++        var path = Path.Combine(Path.GetTempPath(), $"span-map-{Guid.NewGuid():N}.fs");
++        File.WriteAllText(path, content);
++        return path;
++    }
++}
+diff --git a/src/Stryker.Core/Stryker.Core/Mutants/FsharpSourceSpanMapper.cs b/src/Stryker.Core/Stryker.Core/Mutants/FsharpSourceSpanMapper.cs
+new file mode 100644
+index 00000000..60adaa77
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core/Mutants/FsharpSourceSpanMapper.cs
+@@ -0,0 +1,78 @@
++using System;
++using System.IO.Abstractions;
++
++namespace Stryker.Core.Mutants;
++
++public sealed record FsharpMutationSpan(
++    string FilePath,
++    int Start,
++    int Length,
++    int Line,
++    int Column);
++
++/// <summary>
++/// Maps lexical F# candidate coordinates to absolute text spans for rewrite operations.
++/// </summary>
++public sealed class FsharpSourceSpanMapper
++{
++    private readonly IFileSystem _fileSystem;
++
++    public FsharpSourceSpanMapper(IFileSystem fileSystem) =>
++        _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
++
++    public bool TryMap(FsharpMutationCandidate candidate, out FsharpMutationSpan span) =>
++        TryMap(candidate.FilePath, candidate.Line, candidate.Column, candidate.OperatorToken.Length, out span);
++
++    public bool TryMap(string filePath, int line, int column, int length, out FsharpMutationSpan span)
++    {
++        span = default;
++        if (!_fileSystem.File.Exists(filePath))
++        {
++            return false;
++        }
++
++        if (line < 1 || column < 1 || length < 1)
++        {
++            return false;
++        }
++
++        var content = _fileSystem.File.ReadAllText(filePath);
++        var lineStart = ResolveLineStart(content, line);
++        if (lineStart < 0)
++        {
++            return false;
++        }
++
++        var start = lineStart + (column - 1);
++        if (start < 0 || start + length > content.Length)
++        {
++            return false;
++        }
++
++        span = new FsharpMutationSpan(filePath, start, length, line, column);
++        return true;
++    }
++
++    private static int ResolveLineStart(string content, int line)
++    {
++        if (line == 1)
++        {
++            return 0;
++        }
++
++        var currentLine = 1;
++        for (var i = 0; i < content.Length; i++)
++        {
++            if (content[i] == '\n')
++            {
++                currentLine++;
++                if (currentLine == line)
++                {
++                    return i + 1;
++                }
++            }
++        }
++
++        return -1;
++    }
++}
+diff --git a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+index f95aa51b..ff4b5792 100644
+--- a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
++++ b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+@@ -40,15 +40,18 @@ public class CsharpMutationProcess : IMutationProcess
+         if (sourceLanguage == Language.Fsharp)
+         {
+             var planner = new FsharpOperatorMutationPlanner(_fileSystem);
++            var spanMapper = new FsharpSourceSpanMapper(_fileSystem);
+             var fsharpSources = input.SourceProjectInfo.AnalyzerResult.SourceFiles
+                 .Where(path => path.EndsWith(".fs", StringComparison.OrdinalIgnoreCase))
+                 .ToList();
+             var candidates = planner.DiscoverCandidates(fsharpSources);
++            var mappedSpanCount = candidates.Count(candidate => spanMapper.TryMap(candidate, out _));
+ 
+             _logger.LogInformation(
+-                "Using experimental F# mutator registration profile ({MutatorCount} mutators) with {CandidateCount} operator candidates across {FileCount} files.",
++                "Using experimental F# mutator registration profile ({MutatorCount} mutators) with {CandidateCount} operator candidates and {MappedSpanCount} mapped spans across {FileCount} files.",
+                 registeredMutators.Count,
+                 candidates.Count,
++                mappedSpanCount,
+                 fsharpSources.Count);
+         }
+ 

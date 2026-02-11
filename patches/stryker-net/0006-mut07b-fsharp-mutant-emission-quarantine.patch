@@ -1,0 +1,391 @@
+From b8ba738a539ad0d547cc23fe068b306dccf445b7 Mon Sep 17 00:00:00 2001
+From: Srikanth Remani <sremani@Manyu.local>
+Date: Wed, 11 Feb 2026 11:44:40 -0600
+Subject: [PATCH] mut07b: emit experimental fsharp operator mutants
+
+---
+ .../FsharpOperatorMutantEmitterTests.cs       |  43 ++++
+ .../Mutants/FsharpOperatorMutantEmitter.cs    |  64 ++++++
+ .../MutationTest/CsharpMutationProcess.cs     | 212 ++++++++++++++++--
+ 3 files changed, 305 insertions(+), 14 deletions(-)
+ create mode 100644 src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutantEmitterTests.cs
+ create mode 100644 src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutantEmitter.cs
+
+diff --git a/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutantEmitterTests.cs b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutantEmitterTests.cs
+new file mode 100644
+index 00000000..429f0d40
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core.UnitTest/Mutants/FsharpOperatorMutantEmitterTests.cs
+@@ -0,0 +1,43 @@
++using Microsoft.VisualStudio.TestTools.UnitTesting;
++using Shouldly;
++using Stryker.Abstractions;
++using Stryker.Core.Mutants;
++
++namespace Stryker.Core.UnitTest.Mutants;
++
++[TestClass]
++public class FsharpOperatorMutantEmitterTests
++{
++    [DataTestMethod]
++    [DataRow("&&", "||", FsharpOperatorFamily.Boolean, Mutator.Logical)]
++    [DataRow(">=", "<", FsharpOperatorFamily.Comparison, Mutator.Equality)]
++    [DataRow("+", "-", FsharpOperatorFamily.Arithmetic, Mutator.Arithmetic)]
++    public void ShouldPlanReplacementForSupportedOperatorFamilies(
++        string operatorToken,
++        string expectedReplacement,
++        FsharpOperatorFamily family,
++        Mutator expectedMutator)
++    {
++        var emitter = new FsharpOperatorMutantEmitter();
++        var candidate = new FsharpMutationCandidate("Library.fs", 10, 5, operatorToken, family);
++        var span = new FsharpMutationSpan("Library.fs", 42, operatorToken.Length, 10, 5);
++
++        var canPlan = emitter.TryPlan(candidate, span, out var planned);
++
++        canPlan.ShouldBeTrue();
++        planned.ReplacementToken.ShouldBe(expectedReplacement);
++        planned.Family.ShouldBe(family);
++        planned.MutatorType.ShouldBe(expectedMutator);
++        planned.Span.ShouldBe(span);
++    }
++
++    [TestMethod]
++    public void ShouldRejectUnsupportedOperatorToken()
++    {
++        var emitter = new FsharpOperatorMutantEmitter();
++        var candidate = new FsharpMutationCandidate("Library.fs", 1, 1, "%", FsharpOperatorFamily.Arithmetic);
++        var span = new FsharpMutationSpan("Library.fs", 0, 1, 1, 1);
++
++        emitter.TryPlan(candidate, span, out _).ShouldBeFalse();
++    }
++}
+diff --git a/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutantEmitter.cs b/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutantEmitter.cs
+new file mode 100644
+index 00000000..72cadafa
+--- /dev/null
++++ b/src/Stryker.Core/Stryker.Core/Mutants/FsharpOperatorMutantEmitter.cs
+@@ -0,0 +1,64 @@
++using System;
++using Stryker.Abstractions;
++
++namespace Stryker.Core.Mutants;
++
++public sealed record FsharpPlannedMutation(
++    FsharpMutationCandidate Candidate,
++    FsharpMutationSpan Span,
++    FsharpOperatorFamily Family,
++    string ReplacementToken,
++    Mutator MutatorType);
++
++/// <summary>
++/// Converts lexical F# operator candidates into deterministic mutant plans.
++/// </summary>
++public sealed class FsharpOperatorMutantEmitter
++{
++    public bool TryPlan(FsharpMutationCandidate candidate, FsharpMutationSpan span, out FsharpPlannedMutation plannedMutation)
++    {
++        if (!TryResolveReplacement(candidate.OperatorToken, out var replacementToken))
++        {
++            plannedMutation = default;
++            return false;
++        }
++
++        plannedMutation = new FsharpPlannedMutation(
++            candidate,
++            span,
++            candidate.Family,
++            replacementToken,
++            ResolveMutatorType(candidate.Family));
++        return true;
++    }
++
++    private static Mutator ResolveMutatorType(FsharpOperatorFamily family) =>
++        family switch
++        {
++            FsharpOperatorFamily.Boolean => Mutator.Logical,
++            FsharpOperatorFamily.Comparison => Mutator.Equality,
++            _ => Mutator.Arithmetic,
++        };
++
++    private static bool TryResolveReplacement(string operatorToken, out string replacementToken)
++    {
++        replacementToken = operatorToken switch
++        {
++            "&&" => "||",
++            "||" => "&&",
++            "=" => "<>",
++            "<>" => "=",
++            "<" => ">=",
++            "<=" => ">",
++            ">" => "<=",
++            ">=" => "<",
++            "+" => "-",
++            "-" => "+",
++            "*" => "/",
++            "/" => "*",
++            _ => string.Empty
++        };
++
++        return !string.IsNullOrWhiteSpace(replacementToken);
++    }
++}
+diff --git a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+index ff4b5792..0c091ad3 100644
+--- a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
++++ b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+@@ -1,11 +1,16 @@
+ using System;
++using System.Collections.Generic;
+ using System.IO;
+ using System.IO.Abstractions;
+ using System.Linq;
++using System.Text;
+ using Microsoft.CodeAnalysis;
++using Microsoft.CodeAnalysis.CSharp;
++using Microsoft.CodeAnalysis.Text;
+ using Microsoft.Extensions.Logging;
+ using Stryker.Abstractions;
+ using Stryker.Abstractions.Options;
++using Stryker.Abstractions.ProjectComponents;
+ using Stryker.Core.Compiling;
+ using Stryker.Core.MutantFilters;
+ using Stryker.Core.Mutants;
+@@ -18,6 +23,8 @@ namespace Stryker.Core.MutationTest;
+ 
+ public class CsharpMutationProcess : IMutationProcess
+ {
++    private const string FsharpQuarantineReason = "F# mutant is quarantined pending runtime activation support.";
++
+     private IStrykerOptions _options;
+     private IMutantFilter _mutantFilter;
+     private readonly ILogger _logger;
+@@ -39,20 +46,8 @@ public class CsharpMutationProcess : IMutationProcess
+ 
+         if (sourceLanguage == Language.Fsharp)
+         {
+-            var planner = new FsharpOperatorMutationPlanner(_fileSystem);
+-            var spanMapper = new FsharpSourceSpanMapper(_fileSystem);
+-            var fsharpSources = input.SourceProjectInfo.AnalyzerResult.SourceFiles
+-                .Where(path => path.EndsWith(".fs", StringComparison.OrdinalIgnoreCase))
+-                .ToList();
+-            var candidates = planner.DiscoverCandidates(fsharpSources);
+-            var mappedSpanCount = candidates.Count(candidate => spanMapper.TryMap(candidate, out _));
+-
+-            _logger.LogInformation(
+-                "Using experimental F# mutator registration profile ({MutatorCount} mutators) with {CandidateCount} operator candidates and {MappedSpanCount} mapped spans across {FileCount} files.",
+-                registeredMutators.Count,
+-                candidates.Count,
+-                mappedSpanCount,
+-                fsharpSources.Count);
++            MutateFsharp(input, registeredMutators.Count);
++            return;
+         }
+ 
+         _logger.LogDebug(
+@@ -91,6 +86,189 @@ public class CsharpMutationProcess : IMutationProcess
+         CompileMutations(input, compilingProcess);
+     }
+ 
++    private void MutateFsharp(MutationTestInput input, int mutatorCount)
++    {
++        var planner = new FsharpOperatorMutationPlanner(_fileSystem);
++        var spanMapper = new FsharpSourceSpanMapper(_fileSystem);
++        var emitter = new FsharpOperatorMutantEmitter();
++        var analyzerResult = input.SourceProjectInfo.AnalyzerResult;
++        var projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
++        var fsharpSources = analyzerResult.SourceFiles
++            .Where(path => path.EndsWith(".fs", StringComparison.OrdinalIgnoreCase))
++            .Where(path => _fileSystem.File.Exists(path))
++            .ToList();
++
++        if (!fsharpSources.Any())
++        {
++            fsharpSources = DiscoverFsharpSourcesFromProjectFolder(projectDirectory).ToList();
++            _logger.LogInformation(
++                "Buildalyzer did not expose F# source files; fallback scan discovered {FileCount} .fs files under {ProjectDirectory}.",
++                fsharpSources.Count,
++                projectDirectory);
++        }
++
++        var candidates = planner.DiscoverCandidates(fsharpSources);
++        var mappedSpanCount = 0;
++        var plannedMutations = new List<FsharpPlannedMutation>();
++        foreach (var candidate in candidates)
++        {
++            if (!spanMapper.TryMap(candidate, out var span))
++            {
++                continue;
++            }
++
++            mappedSpanCount++;
++            var relativePath = Path.GetRelativePath(projectDirectory, candidate.FilePath);
++            if (!CandidateIsSelected(candidate.FilePath, relativePath, span))
++            {
++                continue;
++            }
++
++            if (emitter.TryPlan(candidate, span, out var plannedMutation))
++            {
++                plannedMutations.Add(plannedMutation);
++            }
++        }
++
++        var filesByPath = EnsureFsharpFileNodes(input.SourceProjectInfo.ProjectContents, projectDirectory, plannedMutations);
++        var nextMutantId = 1;
++        foreach (var groupedByFile in plannedMutations.GroupBy(m => m.Candidate.FilePath))
++        {
++            if (!filesByPath.TryGetValue(groupedByFile.Key, out var file))
++            {
++                continue;
++            }
++
++            var fileMutants = new List<IMutant>();
++            foreach (var planned in groupedByFile)
++            {
++                var originalNode = ResolveOriginalNode(file.SyntaxTree, planned.Span);
++                var replacementNode = ResolveReplacementNode(planned.Family);
++
++                fileMutants.Add(new Mutant
++                {
++                    Id = nextMutantId++,
++                    Mutation = new Mutation
++                    {
++                        OriginalNode = originalNode,
++                        ReplacementNode = replacementNode,
++                        DisplayName = $"{planned.Candidate.OperatorToken} -> {planned.ReplacementToken}",
++                        Description = $"Experimental F# {planned.Family} operator mutation at line {planned.Candidate.Line}, column {planned.Candidate.Column}.",
++                        Type = planned.MutatorType
++                    },
++                    ResultStatus = MutantStatus.CompileError,
++                    ResultStatusReason = FsharpQuarantineReason
++                });
++            }
++
++            file.Mutants = fileMutants;
++        }
++
++        _logger.LogInformation(
++            "Using experimental F# mutator registration profile ({MutatorCount} mutators) with {CandidateCount} operator candidates, {MappedSpanCount} mapped spans, and {PlannedMutationCount} planned mutants across {FileCount} files.",
++            mutatorCount,
++            candidates.Count,
++            mappedSpanCount,
++            plannedMutations.Count,
++            filesByPath.Count);
++
++        _logger.LogDebug("{MutantsCount} mutants created", input.SourceProjectInfo.ProjectContents.Mutants.Count());
++    }
++
++    private IEnumerable<string> DiscoverFsharpSourcesFromProjectFolder(string projectDirectory)
++    {
++        if (!_fileSystem.Directory.Exists(projectDirectory))
++        {
++            return Array.Empty<string>();
++        }
++
++        return _fileSystem.Directory
++            .EnumerateFiles(projectDirectory, "*.fs", SearchOption.AllDirectories)
++            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
++            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase));
++    }
++
++    private Dictionary<string, CsharpFileLeaf> EnsureFsharpFileNodes(
++        IReadOnlyProjectComponent projectContents,
++        string projectDirectory,
++        IEnumerable<FsharpPlannedMutation> plannedMutations)
++    {
++        if (projectContents is not IFolderComposite rootFolder)
++        {
++            throw new InvalidOperationException("F# mutation path expects a folder-based project component.");
++        }
++
++        var filesByPath = projectContents.GetAllFiles()
++            .OfType<CsharpFileLeaf>()
++            .ToDictionary(file => file.FullPath, file => file, StringComparer.OrdinalIgnoreCase);
++
++        foreach (var filePath in plannedMutations.Select(m => m.Candidate.FilePath).Distinct(StringComparer.OrdinalIgnoreCase))
++        {
++            if (filesByPath.ContainsKey(filePath))
++            {
++                continue;
++            }
++
++            var sourceCode = _fileSystem.File.ReadAllText(filePath);
++            var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, path: filePath, encoding: Encoding.UTF8);
++            var relativePath = Path.GetRelativePath(projectDirectory, filePath);
++
++            var fileLeaf = new CsharpFileLeaf
++            {
++                FullPath = filePath,
++                RelativePath = relativePath,
++                SourceCode = sourceCode,
++                SyntaxTree = syntaxTree,
++                MutatedSyntaxTree = syntaxTree,
++                Mutants = Array.Empty<IMutant>()
++            };
++
++            rootFolder.Add(fileLeaf);
++            filesByPath[filePath] = fileLeaf;
++        }
++
++        return filesByPath;
++    }
++
++    private bool CandidateIsSelected(string fullPath, string relativePath, FsharpMutationSpan span)
++    {
++        var candidateSpan = new TextSpan(span.Start, span.Length);
++        var includePattern = _options.Mutate.Where(x => !x.IsExclude).ToList();
++        var excludePattern = _options.Mutate.Where(x => x.IsExclude).ToList();
++
++        var isIncluded = includePattern.Any(pattern =>
++            pattern.IsMatch(fullPath, candidateSpan) ||
++            pattern.IsMatch(relativePath, candidateSpan));
++        if (!isIncluded)
++        {
++            return false;
++        }
++
++        return !excludePattern.Any(pattern =>
++            pattern.IsMatch(fullPath, candidateSpan) ||
++            pattern.IsMatch(relativePath, candidateSpan));
++    }
++
++    private static SyntaxNode ResolveOriginalNode(SyntaxTree syntaxTree, FsharpMutationSpan span)
++    {
++        var root = syntaxTree.GetRoot();
++        var token = root.FindToken(span.Start);
++        if (token.Parent is not null)
++        {
++            return token.Parent;
++        }
++
++        return root;
++    }
++
++    private static SyntaxNode ResolveReplacementNode(FsharpOperatorFamily family) =>
++        family switch
++        {
++            FsharpOperatorFamily.Boolean => SyntaxFactory.ParseExpression("true"),
++            FsharpOperatorFamily.Comparison => SyntaxFactory.ParseExpression("1 == 1"),
++            _ => SyntaxFactory.ParseExpression("0"),
++        };
++
+     private void CompileMutations(MutationTestInput input, CsharpCompilingProcess compilingProcess)
+     {
+         var info = input.SourceProjectInfo;
+@@ -144,6 +322,12 @@ public class CsharpMutationProcess : IMutationProcess
+ 
+     public void FilterMutants(MutationTestInput input)
+     {
++        if (input.SourceProjectInfo.AnalyzerResult.GetLanguage() == Language.Fsharp)
++        {
++            _logger.LogInformation("Skipping default mutant filters for experimental F# mutant path.");
++            return;
++        }
++
+         _mutantFilter ??= MutantFilterFactory.Create(_options, input);
+         foreach (var file in input.SourceProjectInfo.ProjectContents.GetAllFiles())
+         {
+-- 
+2.51.0
+

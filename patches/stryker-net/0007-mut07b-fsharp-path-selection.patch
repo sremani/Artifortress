@@ -1,0 +1,71 @@
+From 844b8ad863907889cf32bc1f46f64f40d85ed3b5 Mon Sep 17 00:00:00 2001
+From: Srikanth Remani <sremani@Manyu.local>
+Date: Wed, 11 Feb 2026 11:48:15 -0600
+Subject: [PATCH] mut07b: match mutate globs against run-root relative fsharp
+ paths
+
+---
+ .../MutationTest/CsharpMutationProcess.cs     | 19 +++++++++++++------
+ 1 file changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+index 0c091ad3..bbcb59d8 100644
+--- a/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
++++ b/src/Stryker.Core/Stryker.Core/MutationTest/CsharpMutationProcess.cs
+@@ -118,8 +118,9 @@ public class CsharpMutationProcess : IMutationProcess
+             }
+ 
+             mappedSpanCount++;
+-            var relativePath = Path.GetRelativePath(projectDirectory, candidate.FilePath);
+-            if (!CandidateIsSelected(candidate.FilePath, relativePath, span))
++            var projectRelativePath = Path.GetRelativePath(projectDirectory, candidate.FilePath);
++            var runRelativePath = Path.GetRelativePath(Environment.CurrentDirectory, candidate.FilePath);
++            if (!CandidateIsSelected(candidate.FilePath, projectRelativePath, runRelativePath, span))
+             {
+                 continue;
+             }
+@@ -211,7 +212,7 @@ public class CsharpMutationProcess : IMutationProcess
+ 
+             var sourceCode = _fileSystem.File.ReadAllText(filePath);
+             var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, path: filePath, encoding: Encoding.UTF8);
+-            var relativePath = Path.GetRelativePath(projectDirectory, filePath);
++            var relativePath = Path.GetRelativePath(Environment.CurrentDirectory, filePath);
+ 
+             var fileLeaf = new CsharpFileLeaf
+             {
+@@ -230,7 +231,11 @@ public class CsharpMutationProcess : IMutationProcess
+         return filesByPath;
+     }
+ 
+-    private bool CandidateIsSelected(string fullPath, string relativePath, FsharpMutationSpan span)
++    private bool CandidateIsSelected(
++        string fullPath,
++        string projectRelativePath,
++        string runRelativePath,
++        FsharpMutationSpan span)
+     {
+         var candidateSpan = new TextSpan(span.Start, span.Length);
+         var includePattern = _options.Mutate.Where(x => !x.IsExclude).ToList();
+@@ -238,7 +243,8 @@ public class CsharpMutationProcess : IMutationProcess
+ 
+         var isIncluded = includePattern.Any(pattern =>
+             pattern.IsMatch(fullPath, candidateSpan) ||
+-            pattern.IsMatch(relativePath, candidateSpan));
++            pattern.IsMatch(projectRelativePath, candidateSpan) ||
++            pattern.IsMatch(runRelativePath, candidateSpan));
+         if (!isIncluded)
+         {
+             return false;
+@@ -246,7 +252,8 @@ public class CsharpMutationProcess : IMutationProcess
+ 
+         return !excludePattern.Any(pattern =>
+             pattern.IsMatch(fullPath, candidateSpan) ||
+-            pattern.IsMatch(relativePath, candidateSpan));
++            pattern.IsMatch(projectRelativePath, candidateSpan) ||
++            pattern.IsMatch(runRelativePath, candidateSpan));
+     }
+ 
+     private static SyntaxNode ResolveOriginalNode(SyntaxTree syntaxTree, FsharpMutationSpan span)
+-- 
+2.51.0
+
