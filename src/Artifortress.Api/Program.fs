@@ -166,6 +166,22 @@ type PolicyEvaluationResult = {
     QuarantineId: Guid option
 }
 
+type QuarantineItemRecord = {
+    QuarantineId: Guid
+    RepoKey: string
+    VersionId: Guid
+    Status: string
+    Reason: string
+    CreatedAtUtc: DateTimeOffset
+    ResolvedAtUtc: DateTimeOffset option
+    ResolvedBySubject: string option
+}
+
+type QuarantineResolveOutcome =
+    | QuarantineResolved of QuarantineItemRecord
+    | QuarantineAlreadyResolved of string
+    | QuarantineMissing
+
 type Principal = {
     TenantId: Guid
     TokenId: Guid
@@ -268,6 +284,18 @@ let validateEvaluatePolicyRequest (request: EvaluatePolicyRequest) =
         resolvedDecisionResult
         |> Result.map (fun (decision, decisionSource) ->
             action, versionId, decision, decisionSource, reason, policyEngineVersion)
+
+let validateQuarantineStatusFilter (statusValue: string) =
+    let normalized = normalizeText statusValue |> fun value -> value.ToLowerInvariant()
+
+    if String.IsNullOrWhiteSpace normalized then
+        Ok None
+    else
+        match normalized with
+        | "quarantined"
+        | "released"
+        | "rejected" -> Ok(Some normalized)
+        | _ -> Error "status must be one of: quarantined, released, rejected."
 
 let private normalizePartEtag (etag: string) =
     normalizeText etag |> fun value -> value.Trim('"')
@@ -1158,6 +1186,176 @@ returning quarantine_id;
                           EvaluatedAtUtc = evaluatedAtUtc
                           QuarantineId = quarantineId }
                 )
+
+let readQuarantineItemsForRepo
+    (tenantId: Guid)
+    (repoKey: string)
+    (statusFilter: string option)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select qi.quarantine_id, qi.version_id, qi.status, qi.reason, qi.created_at, qi.resolved_at, qi.resolved_by_subject
+from quarantine_items qi
+join repos r on r.repo_id = qi.repo_id
+where qi.tenant_id = @tenant_id
+  and r.repo_key = @repo_key
+  and (@status_filter is null or qi.status = @status_filter)
+order by qi.created_at desc;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+
+    let statusParam = cmd.Parameters.Add("status_filter", NpgsqlDbType.Text)
+    statusParam.Value <- (match statusFilter with | Some value -> box value | None -> box DBNull.Value)
+
+    use reader = cmd.ExecuteReader()
+    let entries = ResizeArray<QuarantineItemRecord>()
+
+    let rec loop () =
+        if reader.Read() then
+            let quarantineId = reader.GetGuid(0)
+            let versionId = reader.GetGuid(1)
+            let status = reader.GetString(2)
+            let reason = reader.GetString(3)
+            let createdAtUtc = reader.GetFieldValue<DateTime>(4) |> toUtcDateTimeOffset
+            let resolvedAtUtc =
+                if reader.IsDBNull(5) then None else Some(reader.GetFieldValue<DateTime>(5) |> toUtcDateTimeOffset)
+
+            let resolvedBySubject =
+                if reader.IsDBNull(6) then None else Some(reader.GetString(6))
+
+            entries.Add(
+                { QuarantineId = quarantineId
+                  RepoKey = repoKey
+                  VersionId = versionId
+                  Status = status
+                  Reason = reason
+                  CreatedAtUtc = createdAtUtc
+                  ResolvedAtUtc = resolvedAtUtc
+                  ResolvedBySubject = resolvedBySubject }
+            )
+
+            loop ()
+        else
+            Ok(entries |> Seq.toList)
+
+    loop ()
+
+let tryReadQuarantineItemForRepo (tenantId: Guid) (repoKey: string) (quarantineId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select qi.quarantine_id, qi.version_id, qi.status, qi.reason, qi.created_at, qi.resolved_at, qi.resolved_by_subject
+from quarantine_items qi
+join repos r on r.repo_id = qi.repo_id
+where qi.tenant_id = @tenant_id
+  and r.repo_key = @repo_key
+  and qi.quarantine_id = @quarantine_id
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("quarantine_id", quarantineId) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let versionId = reader.GetGuid(1)
+        let status = reader.GetString(2)
+        let reason = reader.GetString(3)
+        let createdAtUtc = reader.GetFieldValue<DateTime>(4) |> toUtcDateTimeOffset
+        let resolvedAtUtc =
+            if reader.IsDBNull(5) then None else Some(reader.GetFieldValue<DateTime>(5) |> toUtcDateTimeOffset)
+
+        let resolvedBySubject =
+            if reader.IsDBNull(6) then None else Some(reader.GetString(6))
+
+        Ok(
+            Some
+                { QuarantineId = quarantineId
+                  RepoKey = repoKey
+                  VersionId = versionId
+                  Status = status
+                  Reason = reason
+                  CreatedAtUtc = createdAtUtc
+                  ResolvedAtUtc = resolvedAtUtc
+                  ResolvedBySubject = resolvedBySubject }
+        )
+    else
+        Ok None
+
+let resolveQuarantineItemForRepo
+    (tenantId: Guid)
+    (repoKey: string)
+    (quarantineId: Guid)
+    (targetStatus: string)
+    (resolvedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use updateCmd =
+        new NpgsqlCommand(
+            """
+update quarantine_items qi
+set status = @target_status,
+    resolved_at = now(),
+    resolved_by_subject = @resolved_by_subject
+from repos r
+where qi.tenant_id = @tenant_id
+  and r.tenant_id = qi.tenant_id
+  and r.repo_id = qi.repo_id
+  and r.repo_key = @repo_key
+  and qi.quarantine_id = @quarantine_id
+  and qi.status = 'quarantined'
+returning qi.version_id, qi.status, qi.reason, qi.created_at, qi.resolved_at, qi.resolved_by_subject;
+""",
+            conn
+        )
+
+    updateCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    updateCmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    updateCmd.Parameters.AddWithValue("quarantine_id", quarantineId) |> ignore
+    updateCmd.Parameters.AddWithValue("target_status", targetStatus) |> ignore
+    updateCmd.Parameters.AddWithValue("resolved_by_subject", resolvedBySubject) |> ignore
+
+    use updateReader = updateCmd.ExecuteReader()
+
+    if updateReader.Read() then
+        let versionId = updateReader.GetGuid(0)
+        let status = updateReader.GetString(1)
+        let reason = updateReader.GetString(2)
+        let createdAtUtc = updateReader.GetFieldValue<DateTime>(3) |> toUtcDateTimeOffset
+        let resolvedAtUtc =
+            if updateReader.IsDBNull(4) then None else Some(updateReader.GetFieldValue<DateTime>(4) |> toUtcDateTimeOffset)
+
+        let resolvedByValue =
+            if updateReader.IsDBNull(5) then None else Some(updateReader.GetString(5))
+
+        Ok(
+            QuarantineResolved
+                { QuarantineId = quarantineId
+                  RepoKey = repoKey
+                  VersionId = versionId
+                  Status = status
+                  Reason = reason
+                  CreatedAtUtc = createdAtUtc
+                  ResolvedAtUtc = resolvedAtUtc
+                  ResolvedBySubject = resolvedByValue }
+        )
+    else
+        updateReader.Close()
+
+        tryReadQuarantineItemForRepo tenantId repoKey quarantineId conn
+        |> Result.map (function
+            | Some item -> QuarantineAlreadyResolved item.Status
+            | None -> QuarantineMissing)
 
 let deleteRepoForTenant (tenantId: Guid) (repoKey: string) (conn: NpgsqlConnection) =
     use cmd =
@@ -2432,6 +2630,237 @@ let main args =
                                            quarantined = evaluation.QuarantineId.IsSome |}
                                     )
     ))
+    |> ignore
+
+    app.MapGet(
+        "/v1/repos/{repoKey}/quarantine",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let statusFilterRaw = ctx.Request.Query["status"].ToString()
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match validateQuarantineStatusFilter statusFilterRaw with
+                | Error err -> badRequest err
+                | Ok statusFilter ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                        | Error err -> serviceUnavailable err
+                        | Ok false ->
+                            Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                        | Ok true ->
+                            match withConnection state (readQuarantineItemsForRepo principal.TenantId repoKey statusFilter) with
+                            | Error err -> serviceUnavailable err
+                            | Ok items ->
+                                let response =
+                                    items
+                                    |> List.map (fun item ->
+                                        {| quarantineId = item.QuarantineId
+                                           repoKey = item.RepoKey
+                                           versionId = item.VersionId
+                                           status = item.Status
+                                           reason = item.Reason
+                                           createdAtUtc = item.CreatedAtUtc
+                                           resolvedAtUtc = item.ResolvedAtUtc
+                                           resolvedBySubject = item.ResolvedBySubject |})
+                                    |> List.toArray
+
+                                Results.Ok(response))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/repos/{repoKey}/quarantine/{quarantineId}",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let quarantineIdRaw = normalizeText (ctx.Request.RouteValues["quarantineId"].ToString())
+
+            let parsedQuarantineId =
+                match Guid.TryParse(quarantineIdRaw) with
+                | true, quarantineId -> Ok quarantineId
+                | _ -> Error "quarantineId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedQuarantineId with
+                | Error err -> badRequest err
+                | Ok quarantineId ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                        | Error err -> serviceUnavailable err
+                        | Ok false ->
+                            Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                        | Ok true ->
+                            match
+                                withConnection
+                                    state
+                                    (tryReadQuarantineItemForRepo principal.TenantId repoKey quarantineId)
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok None ->
+                                Results.NotFound({| error = "not_found"; message = "Quarantine item was not found." |})
+                            | Ok(Some item) ->
+                                Results.Ok(
+                                    {| quarantineId = item.QuarantineId
+                                       repoKey = item.RepoKey
+                                       versionId = item.VersionId
+                                       status = item.Status
+                                       reason = item.Reason
+                                       createdAtUtc = item.CreatedAtUtc
+                                       resolvedAtUtc = item.ResolvedAtUtc
+                                       resolvedBySubject = item.ResolvedBySubject |}
+                                ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/quarantine/{quarantineId}/release",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let quarantineIdRaw = normalizeText (ctx.Request.RouteValues["quarantineId"].ToString())
+
+            let parsedQuarantineId =
+                match Guid.TryParse(quarantineIdRaw) with
+                | true, quarantineId -> Ok quarantineId
+                | _ -> Error "quarantineId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedQuarantineId with
+                | Error err -> badRequest err
+                | Ok quarantineId ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                        | Error err -> serviceUnavailable err
+                        | Ok false ->
+                            Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                        | Ok true ->
+                            match
+                                withConnection
+                                    state
+                                    (resolveQuarantineItemForRepo
+                                        principal.TenantId
+                                        repoKey
+                                        quarantineId
+                                        "released"
+                                        principal.Subject)
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok QuarantineMissing ->
+                                Results.NotFound({| error = "not_found"; message = "Quarantine item was not found." |})
+                            | Ok(QuarantineAlreadyResolved statusValue) ->
+                                conflict $"Quarantine item is already in status '{statusValue}'."
+                            | Ok(QuarantineResolved item) ->
+                                let auditDetails =
+                                    Map.ofList
+                                        [ "repoKey", repoKey
+                                          "versionId", item.VersionId.ToString()
+                                          "status", item.Status ]
+
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "quarantine.released"
+                                        "quarantine_item"
+                                        (item.QuarantineId.ToString())
+                                        auditDetails
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok() ->
+                                    Results.Ok(
+                                        {| quarantineId = item.QuarantineId
+                                           repoKey = item.RepoKey
+                                           versionId = item.VersionId
+                                           status = item.Status
+                                           reason = item.Reason
+                                           createdAtUtc = item.CreatedAtUtc
+                                           resolvedAtUtc = item.ResolvedAtUtc
+                                           resolvedBySubject = item.ResolvedBySubject |}
+                                    ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/quarantine/{quarantineId}/reject",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let quarantineIdRaw = normalizeText (ctx.Request.RouteValues["quarantineId"].ToString())
+
+            let parsedQuarantineId =
+                match Guid.TryParse(quarantineIdRaw) with
+                | true, quarantineId -> Ok quarantineId
+                | _ -> Error "quarantineId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedQuarantineId with
+                | Error err -> badRequest err
+                | Ok quarantineId ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                        | Error err -> serviceUnavailable err
+                        | Ok false ->
+                            Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                        | Ok true ->
+                            match
+                                withConnection
+                                    state
+                                    (resolveQuarantineItemForRepo
+                                        principal.TenantId
+                                        repoKey
+                                        quarantineId
+                                        "rejected"
+                                        principal.Subject)
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok QuarantineMissing ->
+                                Results.NotFound({| error = "not_found"; message = "Quarantine item was not found." |})
+                            | Ok(QuarantineAlreadyResolved statusValue) ->
+                                conflict $"Quarantine item is already in status '{statusValue}'."
+                            | Ok(QuarantineResolved item) ->
+                                let auditDetails =
+                                    Map.ofList
+                                        [ "repoKey", repoKey
+                                          "versionId", item.VersionId.ToString()
+                                          "status", item.Status ]
+
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "quarantine.rejected"
+                                        "quarantine_item"
+                                        (item.QuarantineId.ToString())
+                                        auditDetails
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok() ->
+                                    Results.Ok(
+                                        {| quarantineId = item.QuarantineId
+                                           repoKey = item.RepoKey
+                                           versionId = item.VersionId
+                                           status = item.Status
+                                           reason = item.Reason
+                                           createdAtUtc = item.CreatedAtUtc
+                                           resolvedAtUtc = item.ResolvedAtUtc
+                                           resolvedBySubject = item.ResolvedBySubject |}
+                                    ))
+    )
     |> ignore
 
     app.MapPost(

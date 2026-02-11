@@ -38,6 +38,10 @@ Persistence:
 - `GET /v1/repos/{repoKey}/bindings`
 - `POST /v1/repos/{repoKey}/packages/versions/drafts`
 - `POST /v1/repos/{repoKey}/policy/evaluations`
+- `GET /v1/repos/{repoKey}/quarantine`
+- `GET /v1/repos/{repoKey}/quarantine/{quarantineId}`
+- `POST /v1/repos/{repoKey}/quarantine/{quarantineId}/release`
+- `POST /v1/repos/{repoKey}/quarantine/{quarantineId}/reject`
 - `POST /v1/repos/{repoKey}/uploads`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
@@ -105,6 +109,14 @@ Not implemented yet:
     - policy evaluation API (`POST /v1/repos/{repoKey}/policy/evaluations`) with deterministic `allow|deny|quarantine` outcomes.
     - quarantine-item upsert side effect for `quarantine` decisions.
     - policy evaluation audit action: `policy.evaluated`.
+    - quarantine state APIs for list/get/release/reject.
+    - quarantine resolution audit actions:
+      - `quarantine.released`
+      - `quarantine.rejected`
+    - worker outbox producer for `version.published` events to enqueue `search_index_jobs`.
+    - idempotent enqueue via `(tenant_id, version_id)` upsert for search-index jobs.
+    - worker search-index job processor sweep with claim/process/complete/fail transitions.
+    - bounded retry semantics for failed search-index jobs (attempt caps + backoff).
   - expanded integration coverage:
     - expired-session rejection paths.
     - dedupe-path second-create behavior.
@@ -116,4 +128,4 @@ Not implemented yet:
   - add throughput baseline/load report (`P2-09`).
   - add Phase 2 demo script and runbook updates (`P2-10`).
   - implement publish workflow APIs after draft create baseline (`P3-03` onward).
-  - implement quarantine state APIs (`P4-03` onward).
+  - implement quarantine-aware resolve/read behavior (`P4-06` onward).

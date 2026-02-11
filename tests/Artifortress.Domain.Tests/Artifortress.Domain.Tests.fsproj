@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Artifortress.Api\Artifortress.Api.fsproj" />
     <ProjectReference Include="..\..\src\Artifortress.Domain\Artifortress.Domain.fsproj" />
+    <ProjectReference Include="..\..\src\Artifortress.Worker\Artifortress.Worker.fsproj" />
   </ItemGroup>
 
 </Project>

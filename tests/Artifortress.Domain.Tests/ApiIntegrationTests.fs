@@ -13,6 +13,7 @@ open System.Security.Cryptography
 open System.Text
 open System.Text.Json
 open System.Threading
+open Artifortress.Worker
 open Npgsql
 open NpgsqlTypes
 open Xunit
@@ -531,6 +532,175 @@ limit 1;
             | :? string as status -> Some status
             | _ -> failwith $"Unexpected quarantine status scalar value for version {versionId}."
 
+    member this.InsertOutboxEvent(eventType: string, aggregateType: string, aggregateId: string, payloadJson: string) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let tenantId = ensureTenantId conn
+        let eventId = Guid.NewGuid()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+insert into outbox_events
+  (event_id, tenant_id, aggregate_type, aggregate_id, event_type, payload, available_at, occurred_at)
+values
+  (@event_id, @tenant_id, @aggregate_type, @aggregate_id, @event_type, @payload, now(), now());
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("event_id", eventId) |> ignore
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        cmd.Parameters.AddWithValue("aggregate_type", aggregateType) |> ignore
+        cmd.Parameters.AddWithValue("aggregate_id", aggregateId) |> ignore
+        cmd.Parameters.AddWithValue("event_type", eventType) |> ignore
+
+        let payloadParam = cmd.Parameters.Add("payload", NpgsqlDbType.Jsonb)
+        payloadParam.Value <- payloadJson
+
+        cmd.ExecuteNonQuery() |> ignore
+        eventId
+
+    member this.CountSearchIndexJobsForVersion(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from search_index_jobs
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected search_index_jobs count scalar value for version {versionId}."
+
+    member this.CountSearchIndexJobsForTenant() =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let tenantId = ensureTenantId conn
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from search_index_jobs
+where tenant_id = @tenant_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith "Unexpected tenant search_index_jobs count scalar value."
+
+    member this.IsOutboxDelivered(eventId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select delivered_at is not null
+from outbox_events
+where event_id = @event_id
+limit 1;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("event_id", eventId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? bool as delivered -> delivered
+        | _ -> failwith $"Unexpected outbox delivered scalar value for event {eventId}."
+
+    member this.RunSearchIndexOutboxSweep(batchSize: int) =
+        this.RequireAvailable()
+
+        match SearchIndexOutboxProducer.runSweep connectionString batchSize with
+        | Ok outcome -> outcome
+        | Error err -> failwith $"Search outbox sweep failed in test fixture: {err}"
+
+    member this.RunSearchIndexJobSweep(batchSize: int, maxAttempts: int) =
+        this.RequireAvailable()
+
+        match SearchIndexJobProcessor.runSweep connectionString batchSize maxAttempts with
+        | Ok outcome -> outcome
+        | Error err -> failwith $"Search job sweep failed in test fixture: {err}"
+
+    member this.TryReadSearchIndexJobForVersion(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select status, attempts, last_error
+from search_index_jobs
+where version_id = @version_id
+limit 1;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then
+            let status = reader.GetString(0)
+            let attempts = reader.GetInt32(1)
+            let lastError = if reader.IsDBNull(2) then None else Some(reader.GetString(2))
+            Some(status, attempts, lastError)
+        else
+            None
+
+    member this.MakeSearchIndexJobAvailableNow(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update search_index_jobs
+set available_at = now() - interval '1 second',
+    updated_at = now()
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not make search_index_job available for version {versionId}."
+
     interface IDisposable with
         member _.Dispose() =
             match client with
@@ -672,6 +842,31 @@ type Phase1ApiTests(fixture: ApiFixture) =
                   PolicyEngineVersion = policyEngineVersion }
             )
 
+        fixture.Client.Send(request)
+
+    let listQuarantineWithToken (token: string) (repoKey: string) (statusFilter: string option) =
+        let path =
+            match statusFilter with
+            | Some statusValue -> $"/v1/repos/{repoKey}/quarantine?status={Uri.EscapeDataString(statusValue)}"
+            | None -> $"/v1/repos/{repoKey}/quarantine"
+
+        use request = new HttpRequestMessage(HttpMethod.Get, path)
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let getQuarantineItemWithToken (token: string) (repoKey: string) (quarantineId: Guid) =
+        use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/repos/{repoKey}/quarantine/{quarantineId}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let releaseQuarantineItemWithToken (token: string) (repoKey: string) (quarantineId: Guid) =
+        use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/quarantine/{quarantineId}/release")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let rejectQuarantineItemWithToken (token: string) (repoKey: string) (quarantineId: Guid) =
+        use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/quarantine/{quarantineId}/reject")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
         fixture.Client.Send(request)
 
     let createUploadPartWithToken (token: string) (repoKey: string) (uploadId: Guid) (partNumber: int) =
@@ -1101,6 +1296,296 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.Equal(1L, persistedCount)
         Assert.Equal(Some "quarantine", persistedDecision)
         Assert.Equal(Some "quarantined", quarantineStatus)
+
+    [<Fact>]
+    member _.``P4-03 quarantine APIs enforce authz and support list/get/release`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p403-authz-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p403-authz"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p403-authz-writer") [| $"repo:{repoKey}:write" |] 60
+        let readToken, _ = issuePat (makeSubject "p403-authz-reader") [| $"repo:{repoKey}:read" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p403-authz-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"quarantine-release-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use quarantineEvalResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "publish"
+                versionId
+                "quarantine"
+                "release-flow seed"
+                "policy-test-v3"
+
+        let quarantineEvalBody = ensureStatus HttpStatusCode.Created quarantineEvalResponse
+        use quarantineEvalDoc = JsonDocument.Parse(quarantineEvalBody)
+        let quarantineId = quarantineEvalDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use unauthorizedListRequest = new HttpRequestMessage(HttpMethod.Get, $"/v1/repos/{repoKey}/quarantine")
+        use unauthorizedListResponse = fixture.Client.Send(unauthorizedListRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedListResponse |> ignore
+
+        use forbiddenListResponse = listQuarantineWithToken readToken repoKey None
+        ensureStatus HttpStatusCode.Forbidden forbiddenListResponse |> ignore
+
+        use listResponse = listQuarantineWithToken promoteToken repoKey (Some "quarantined")
+        let listBody = ensureStatus HttpStatusCode.OK listResponse
+        use listDoc = JsonDocument.Parse(listBody)
+
+        let listed =
+            listDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun item -> item.GetProperty("quarantineId").GetGuid() = quarantineId)
+
+        Assert.True(listed, "Expected quarantine item in quarantined list response.")
+
+        use getResponse = getQuarantineItemWithToken promoteToken repoKey quarantineId
+        let getBody = ensureStatus HttpStatusCode.OK getResponse
+        use getDoc = JsonDocument.Parse(getBody)
+        Assert.Equal("quarantined", getDoc.RootElement.GetProperty("status").GetString())
+
+        use unauthorizedReleaseRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/quarantine/{quarantineId}/release")
+
+        use unauthorizedReleaseResponse = fixture.Client.Send(unauthorizedReleaseRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedReleaseResponse |> ignore
+
+        use forbiddenReleaseResponse = releaseQuarantineItemWithToken readToken repoKey quarantineId
+        ensureStatus HttpStatusCode.Forbidden forbiddenReleaseResponse |> ignore
+
+        use releaseResponse = releaseQuarantineItemWithToken promoteToken repoKey quarantineId
+        let releaseBody = ensureStatus HttpStatusCode.OK releaseResponse
+        use releaseDoc = JsonDocument.Parse(releaseBody)
+        Assert.Equal("released", releaseDoc.RootElement.GetProperty("status").GetString())
+
+        use repeatReleaseResponse = releaseQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.Conflict repeatReleaseResponse |> ignore
+
+        use auditResponse = getAuditWithToken adminToken 300
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let releasedAuditLogged =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun entry -> entry.GetProperty("action").GetString() = "quarantine.released")
+
+        Assert.True(releasedAuditLogged, "Expected quarantine.released action in audit log.")
+
+    [<Fact>]
+    member _.``P4-03 reject transitions quarantined item and supports status filter`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p403-reject-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p403-reject"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p403-reject-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p403-reject-promote") [| $"repo:{repoKey}:promote" |] 60
+        let packageName = $"quarantine-reject-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use quarantineEvalResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                versionId
+                "quarantine"
+                "reject-flow seed"
+                "policy-test-v3"
+
+        let quarantineEvalBody = ensureStatus HttpStatusCode.Created quarantineEvalResponse
+        use quarantineEvalDoc = JsonDocument.Parse(quarantineEvalBody)
+        let quarantineId = quarantineEvalDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use rejectResponse = rejectQuarantineItemWithToken promoteToken repoKey quarantineId
+        let rejectBody = ensureStatus HttpStatusCode.OK rejectResponse
+        use rejectDoc = JsonDocument.Parse(rejectBody)
+        Assert.Equal("rejected", rejectDoc.RootElement.GetProperty("status").GetString())
+
+        use rejectedListResponse = listQuarantineWithToken promoteToken repoKey (Some "rejected")
+        let rejectedListBody = ensureStatus HttpStatusCode.OK rejectedListResponse
+        use rejectedListDoc = JsonDocument.Parse(rejectedListBody)
+
+        let listedAsRejected =
+            rejectedListDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun item ->
+                item.GetProperty("quarantineId").GetGuid() = quarantineId
+                && item.GetProperty("status").GetString() = "rejected")
+
+        Assert.True(listedAsRejected, "Expected quarantine item in rejected list response.")
+
+        use auditResponse = getAuditWithToken adminToken 300
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let rejectedAuditLogged =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun entry -> entry.GetProperty("action").GetString() = "quarantine.rejected")
+
+        Assert.True(rejectedAuditLogged, "Expected quarantine.rejected action in audit log.")
+
+    [<Fact>]
+    member _.``P4-04 outbox sweep enqueues search index job and marks event delivered`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p404-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p404-sweep"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p404-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"search-job-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let payloadJson = JsonSerializer.Serialize({| versionId = versionId |})
+
+        let eventId =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+
+        let outcome = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(1, outcome.ClaimedCount)
+        Assert.Equal(1, outcome.EnqueuedCount)
+        Assert.Equal(1, outcome.DeliveredCount)
+        Assert.Equal(0, outcome.RequeuedCount)
+
+        let searchJobCount = fixture.CountSearchIndexJobsForVersion(versionId)
+        let delivered = fixture.IsOutboxDelivered(eventId)
+        Assert.Equal(1L, searchJobCount)
+        Assert.True(delivered, "Expected version.published outbox event to be marked delivered.")
+
+        let replayOutcome = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(0, replayOutcome.ClaimedCount)
+
+    [<Fact>]
+    member _.``P4-04 outbox sweep requeues malformed version published event`` () =
+        fixture.RequireAvailable()
+
+        let baselineJobs = fixture.CountSearchIndexJobsForTenant()
+        let malformedEventId = fixture.InsertOutboxEvent("version.published", "package_version", "not-a-guid", "{}")
+
+        let outcome = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(1, outcome.ClaimedCount)
+        Assert.Equal(0, outcome.EnqueuedCount)
+        Assert.Equal(0, outcome.DeliveredCount)
+        Assert.Equal(1, outcome.RequeuedCount)
+
+        let delivered = fixture.IsOutboxDelivered(malformedEventId)
+        Assert.False(delivered, "Expected malformed version.published event to remain undelivered.")
+
+        let jobsAfterSweep = fixture.CountSearchIndexJobsForTenant()
+        Assert.Equal(baselineJobs, jobsAfterSweep)
+
+    [<Fact>]
+    member _.``P4-05 search job sweep completes pending job for published version`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p405-complete-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p405-complete"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p405-complete-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"search-complete-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        fixture.PublishVersionForTest(versionId)
+
+        let payloadJson = JsonSerializer.Serialize({| versionId = versionId |})
+
+        fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+        |> ignore
+
+        fixture.RunSearchIndexOutboxSweep(50) |> ignore
+
+        let outcome = fixture.RunSearchIndexJobSweep(50, 5)
+        Assert.Equal(1, outcome.ClaimedCount)
+        Assert.Equal(1, outcome.CompletedCount)
+        Assert.Equal(0, outcome.FailedCount)
+
+        let jobState = fixture.TryReadSearchIndexJobForVersion(versionId)
+
+        match jobState with
+        | None -> failwith "Expected search_index_jobs row for published version."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("completed", status)
+            Assert.Equal(0, attempts)
+            Assert.Equal(None, lastError)
+
+    [<Fact>]
+    member _.``P4-05 search job sweep fails unpublished version and honors max attempts`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p405-fail-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p405-fail"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p405-fail-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"search-fail-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let payloadJson = JsonSerializer.Serialize({| versionId = versionId |})
+        fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+        |> ignore
+
+        fixture.RunSearchIndexOutboxSweep(50) |> ignore
+
+        let firstOutcome = fixture.RunSearchIndexJobSweep(50, 2)
+        Assert.Equal(1, firstOutcome.ClaimedCount)
+        Assert.Equal(0, firstOutcome.CompletedCount)
+        Assert.Equal(1, firstOutcome.FailedCount)
+
+        fixture.MakeSearchIndexJobAvailableNow(versionId)
+
+        let secondOutcome = fixture.RunSearchIndexJobSweep(50, 2)
+        Assert.Equal(1, secondOutcome.ClaimedCount)
+        Assert.Equal(0, secondOutcome.CompletedCount)
+        Assert.Equal(1, secondOutcome.FailedCount)
+
+        fixture.MakeSearchIndexJobAvailableNow(versionId)
+
+        let thirdOutcome = fixture.RunSearchIndexJobSweep(50, 2)
+        Assert.Equal(0, thirdOutcome.ClaimedCount)
+
+        let jobState = fixture.TryReadSearchIndexJobForVersion(versionId)
+
+        match jobState with
+        | None -> failwith "Expected search_index_jobs row for unpublished version."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("failed", status)
+            Assert.Equal(2, attempts)
+            Assert.Equal(Some "version_not_published", lastError)
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =

@@ -9,8 +9,8 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 1: complete.
 - Phase 2: implemented through P2-08 (upload/download APIs + verification + coverage).
 - Phase 3: started with P3-01/P3-02 completed (publish guardrails + draft version create API).
-- Phase 4: started with P4-01/P4-02 completed (schema scaffold + policy evaluation API baseline).
-- Current build-out focus: P2-09/P2-10 closeout, Phase 3 publish workflow completion, and Phase 4 quarantine/search follow-on work.
+- Phase 4: started with P4-01/P4-02/P4-03 completed (schema scaffold + policy evaluation + quarantine APIs).
+- Current build-out focus: P2-09/P2-10 closeout, Phase 3 publish workflow completion, and Phase 4 quarantine-aware read-path follow-on work.
 
 ## Implemented Today
 
@@ -74,6 +74,10 @@ make phase1-demo
 - `POST /v1/repos/{repoKey}/uploads`
 - `POST /v1/repos/{repoKey}/packages/versions/drafts`
 - `POST /v1/repos/{repoKey}/policy/evaluations`
+- `GET /v1/repos/{repoKey}/quarantine`
+- `GET /v1/repos/{repoKey}/quarantine/{quarantineId}`
+- `POST /v1/repos/{repoKey}/quarantine/{quarantineId}/release`
+- `POST /v1/repos/{repoKey}/quarantine/{quarantineId}/reject`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`

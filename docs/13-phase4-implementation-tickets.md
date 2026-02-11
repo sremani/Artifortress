@@ -12,9 +12,9 @@ Status key:
 |---|---|---|---|
 | P4-01 | DB migration scaffold for policy evaluation, quarantine, and search indexing queues | Phase 3 baseline | done |
 | P4-02 | Policy evaluation API hook for publish/promotion decisions | P4-01 | done |
-| P4-03 | Quarantine state API (list/get/release/reject) | P4-01, P4-02 | todo |
-| P4-04 | Search index job producer from outbox `version.published` events | P4-01 | todo |
-| P4-05 | Worker handler for search index job processing | P4-04 | todo |
+| P4-03 | Quarantine state API (list/get/release/reject) | P4-01, P4-02 | done |
+| P4-04 | Search index job producer from outbox `version.published` events | P4-01 | done |
+| P4-05 | Worker handler for search index job processing | P4-04 | done |
 | P4-06 | Resolve/read-path behavior when version is quarantined | P4-03 | todo |
 | P4-07 | AuthZ + audit coverage for policy/quarantine APIs | P4-02, P4-03 | todo |
 | P4-08 | Policy timeout/fail-closed semantics with deterministic errors | P4-02 | todo |
@@ -41,6 +41,47 @@ Status key:
     - unauthorized/forbidden/authorized policy evaluation paths
     - default-allow decision behavior
     - quarantine decision persistence and quarantine-item creation
+- P4-03 completed:
+  - Added quarantine APIs:
+    - `GET /v1/repos/{repoKey}/quarantine`
+    - `GET /v1/repos/{repoKey}/quarantine/{quarantineId}`
+    - `POST /v1/repos/{repoKey}/quarantine/{quarantineId}/release`
+    - `POST /v1/repos/{repoKey}/quarantine/{quarantineId}/reject`
+  - Added deterministic quarantine status filter validation (`quarantined|released|rejected`).
+  - Added explicit transition rules:
+    - only `quarantined -> released|rejected` is allowed
+    - repeated resolution attempts return deterministic conflict
+  - Added audit actions for resolution:
+    - `quarantine.released`
+    - `quarantine.rejected`
+  - Added integration tests for authz, list/get, release/reject transitions, and audit assertions.
+- P4-04 completed:
+  - Added search-index outbox producer in worker module:
+    - `Artifortress.Worker.SearchIndexOutboxProducer.runSweep`
+  - Added outbox claim logic for pending `version.published` events using `FOR UPDATE SKIP LOCKED`.
+  - Added idempotent search-job enqueue semantics:
+    - `search_index_jobs` upsert by `(tenant_id, version_id)` to keep one pending job per version.
+  - Added outbox delivery semantics:
+    - successful enqueue marks source outbox event as delivered.
+    - malformed events are requeued with delayed availability.
+  - Added integration coverage for:
+    - successful outbox->search-job enqueue + delivered mark.
+    - malformed event requeue without job creation.
+- P4-05 completed:
+  - Added search-index job processor in worker module:
+    - `Artifortress.Worker.SearchIndexJobProcessor.runSweep`
+  - Added job claim/processing loop:
+    - claim pending/failed jobs due for processing via `FOR UPDATE SKIP LOCKED`.
+    - mark claimed jobs as `processing`.
+    - complete jobs when target version is publish-ready.
+    - fail/requeue jobs when target version is not publish-ready.
+  - Added bounded retry semantics:
+    - attempts increment on failures.
+    - claim query enforces `attempts < maxAttempts`.
+    - exponential backoff scheduling on failure.
+  - Added integration coverage for:
+    - successful completion path for published-version jobs.
+    - failure + bounded retry behavior for unpublished-version jobs.
 
 ## Ticket Details
 

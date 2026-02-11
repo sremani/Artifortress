@@ -1,20 +1,416 @@
+namespace Artifortress.Worker
+
 open System
+open System.Text.Json
 open System.Threading
+open Npgsql
 
-[<EntryPoint>]
-let main _ =
-    use stopToken = new CancellationTokenSource()
+type SweepOutcome = {
+    ClaimedCount: int
+    EnqueuedCount: int
+    DeliveredCount: int
+    RequeuedCount: int
+}
 
-    Console.CancelKeyPress.Add(fun args ->
-        args.Cancel <- true
-        stopToken.Cancel()
-    )
+type JobSweepOutcome = {
+    ClaimedCount: int
+    CompletedCount: int
+    FailedCount: int
+}
 
-    printfn "Artifortress worker started. Press Ctrl+C to stop."
+type private ClaimedOutboxEvent = {
+    EventId: Guid
+    TenantId: Guid
+    AggregateId: string
+    PayloadJson: string
+}
 
-    while not stopToken.IsCancellationRequested do
-        printfn "worker_heartbeat_utc=%O" DateTimeOffset.UtcNow
-        Thread.Sleep(TimeSpan.FromSeconds(30.0))
+type private ClaimedSearchJob = {
+    JobId: Guid
+    TenantId: Guid
+    VersionId: Guid
+    Attempts: int
+}
 
-    printfn "Artifortress worker stopped."
-    0
+module SearchIndexOutboxProducer =
+    let private tryResolveVersionId (aggregateId: string) (payloadJson: string) =
+        match Guid.TryParse(aggregateId) with
+        | true, versionId -> Some versionId
+        | _ ->
+            try
+                use doc = JsonDocument.Parse(payloadJson)
+                let root = doc.RootElement
+                let mutable versionIdProp = Unchecked.defaultof<JsonElement>
+
+                if root.ValueKind = JsonValueKind.Object && root.TryGetProperty("versionId", &versionIdProp) then
+                    let versionIdRaw = versionIdProp.GetString()
+
+                    match Guid.TryParse(versionIdRaw) with
+                    | true, versionId -> Some versionId
+                    | _ -> None
+                else
+                    None
+            with _ ->
+                None
+
+    let private claimOutboxEvents (batchSize: int) (conn: NpgsqlConnection) =
+        use cmd =
+            new NpgsqlCommand(
+                """
+with picked as (
+  select event_id, tenant_id, aggregate_id, payload::text as payload_json
+  from outbox_events
+  where delivered_at is null
+    and event_type = 'version.published'
+    and available_at <= now()
+  order by occurred_at
+  limit @batch_size
+  for update skip locked
+),
+claimed as (
+  update outbox_events e
+  set delivery_attempts = e.delivery_attempts + 1,
+      available_at = now() + interval '30 seconds'
+  from picked p
+  where e.event_id = p.event_id
+  returning p.event_id, p.tenant_id, p.aggregate_id, p.payload_json
+)
+select event_id, tenant_id, aggregate_id, payload_json
+from claimed;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("batch_size", max 1 batchSize) |> ignore
+
+        use reader = cmd.ExecuteReader()
+        let events = ResizeArray<ClaimedOutboxEvent>()
+
+        let rec loop () =
+            if reader.Read() then
+                events.Add(
+                    { EventId = reader.GetGuid(0)
+                      TenantId = reader.GetGuid(1)
+                      AggregateId = reader.GetString(2)
+                      PayloadJson = reader.GetString(3) }
+                )
+
+                loop ()
+            else
+                events |> Seq.toList
+
+        loop ()
+
+    let private requeueEvent (eventId: Guid) (conn: NpgsqlConnection) =
+        use cmd =
+            new NpgsqlCommand(
+                """
+update outbox_events
+set available_at = now() + interval '5 minutes'
+where event_id = @event_id
+  and delivered_at is null;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("event_id", eventId) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
+
+    let private enqueueSearchJobAndMarkDelivered
+        (eventId: Guid)
+        (tenantId: Guid)
+        (versionId: Guid)
+        (conn: NpgsqlConnection)
+        =
+        use tx = conn.BeginTransaction()
+
+        use jobCmd =
+            new NpgsqlCommand(
+                """
+insert into search_index_jobs
+  (tenant_id, version_id, status, available_at, attempts, last_error, created_at, updated_at)
+values
+  (@tenant_id, @version_id, 'pending', now(), 0, null, now(), now())
+on conflict (tenant_id, version_id)
+do update set
+  status = 'pending',
+  available_at = excluded.available_at,
+  updated_at = now(),
+  last_error = null;
+""",
+                conn,
+                tx
+            )
+
+        jobCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        jobCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        jobCmd.ExecuteNonQuery() |> ignore
+
+        use deliveredCmd =
+            new NpgsqlCommand(
+                """
+update outbox_events
+set delivered_at = now()
+where event_id = @event_id
+  and delivered_at is null;
+""",
+                conn,
+                tx
+            )
+
+        deliveredCmd.Parameters.AddWithValue("event_id", eventId) |> ignore
+        let deliveredRows = deliveredCmd.ExecuteNonQuery()
+
+        tx.Commit()
+        deliveredRows > 0
+
+    let runSweep (connectionString: string) (batchSize: int) =
+        try
+            use conn = new NpgsqlConnection(connectionString)
+            conn.Open()
+
+            let claimed = claimOutboxEvents batchSize conn
+            let mutable enqueued = 0
+            let mutable delivered = 0
+            let mutable requeued = 0
+
+            for outboxEvent in claimed do
+                match tryResolveVersionId outboxEvent.AggregateId outboxEvent.PayloadJson with
+                | None ->
+                    requeueEvent outboxEvent.EventId conn
+                    requeued <- requeued + 1
+                | Some versionId ->
+                    let isDelivered =
+                        enqueueSearchJobAndMarkDelivered outboxEvent.EventId outboxEvent.TenantId versionId conn
+
+                    enqueued <- enqueued + 1
+
+                    if isDelivered then
+                        delivered <- delivered + 1
+
+            Ok
+                { ClaimedCount = claimed.Length
+                  EnqueuedCount = enqueued
+                  DeliveredCount = delivered
+                  RequeuedCount = requeued }
+        with ex ->
+            Error $"search_index_outbox_sweep_failed: {ex.Message}"
+
+module SearchIndexJobProcessor =
+    let private claimJobs (batchSize: int) (maxAttempts: int) (conn: NpgsqlConnection) =
+        use cmd =
+            new NpgsqlCommand(
+                """
+with candidate as (
+  select job_id, tenant_id, version_id, attempts
+  from search_index_jobs
+  where status in ('pending', 'failed')
+    and available_at <= now()
+    and attempts < @max_attempts
+  order by available_at, created_at
+  limit @batch_size
+  for update skip locked
+),
+claimed as (
+  update search_index_jobs j
+  set status = 'processing',
+      updated_at = now()
+  from candidate c
+  where j.job_id = c.job_id
+  returning j.job_id, j.tenant_id, j.version_id, j.attempts
+)
+select job_id, tenant_id, version_id, attempts
+from claimed;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("batch_size", max 1 batchSize) |> ignore
+        cmd.Parameters.AddWithValue("max_attempts", max 1 maxAttempts) |> ignore
+
+        use reader = cmd.ExecuteReader()
+        let jobs = ResizeArray<ClaimedSearchJob>()
+
+        let rec loop () =
+            if reader.Read() then
+                jobs.Add(
+                    { JobId = reader.GetGuid(0)
+                      TenantId = reader.GetGuid(1)
+                      VersionId = reader.GetGuid(2)
+                      Attempts = reader.GetInt32(3) }
+                )
+
+                loop ()
+            else
+                jobs |> Seq.toList
+
+        loop ()
+
+    let private canProcessVersion (tenantId: Guid) (versionId: Guid) (conn: NpgsqlConnection) =
+        use cmd =
+            new NpgsqlCommand(
+                """
+select exists(
+  select 1
+  from package_versions
+  where tenant_id = @tenant_id
+    and version_id = @version_id
+    and state = 'published'
+);
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+
+        match cmd.ExecuteScalar() with
+        | :? bool as isPublished -> isPublished
+        | _ -> false
+
+    let private markCompleted (jobId: Guid) (conn: NpgsqlConnection) =
+        use cmd =
+            new NpgsqlCommand(
+                """
+update search_index_jobs
+set status = 'completed',
+    last_error = null,
+    updated_at = now()
+where job_id = @job_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("job_id", jobId) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
+
+    let private markFailed (job: ClaimedSearchJob) (errorMessage: string) (conn: NpgsqlConnection) =
+        let newAttempts = job.Attempts + 1
+        let backoffExponent = min (newAttempts - 1) 5
+        let nextAvailableUtc = DateTimeOffset.UtcNow.AddSeconds(float (30 * (pown 2 backoffExponent)))
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update search_index_jobs
+set status = 'failed',
+    attempts = @attempts,
+    last_error = @last_error,
+    available_at = @available_at,
+    updated_at = now()
+where job_id = @job_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("job_id", job.JobId) |> ignore
+        cmd.Parameters.AddWithValue("attempts", newAttempts) |> ignore
+        cmd.Parameters.AddWithValue("last_error", errorMessage) |> ignore
+        cmd.Parameters.AddWithValue("available_at", nextAvailableUtc) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
+
+    let runSweep (connectionString: string) (batchSize: int) (maxAttempts: int) =
+        try
+            use conn = new NpgsqlConnection(connectionString)
+            conn.Open()
+
+            let claimed = claimJobs batchSize maxAttempts conn
+            let mutable completed = 0
+            let mutable failed = 0
+
+            for job in claimed do
+                let published = canProcessVersion job.TenantId job.VersionId conn
+
+                if published then
+                    markCompleted job.JobId conn
+                    completed <- completed + 1
+                else
+                    markFailed job "version_not_published" conn
+                    failed <- failed + 1
+
+            Ok
+                { ClaimedCount = claimed.Length
+                  CompletedCount = completed
+                  FailedCount = failed }
+        with ex ->
+            Error $"search_index_job_sweep_failed: {ex.Message}"
+
+module WorkerRuntime =
+    let connectionStringFromEnvironment () =
+        match Environment.GetEnvironmentVariable("ConnectionStrings__Postgres") with
+        | null
+        | "" -> "Host=localhost;Port=5432;Username=artifortress;Password=artifortress;Database=artifortress"
+        | value -> value
+
+    let pollSecondsFromEnvironment () =
+        match Int32.TryParse(Environment.GetEnvironmentVariable("Worker__PollSeconds")) with
+        | true, value when value >= 1 -> value
+        | _ -> 30
+
+    let batchSizeFromEnvironment () =
+        match Int32.TryParse(Environment.GetEnvironmentVariable("Worker__BatchSize")) with
+        | true, value when value >= 1 -> value
+        | _ -> 100
+
+    let maxSearchJobAttemptsFromEnvironment () =
+        match Int32.TryParse(Environment.GetEnvironmentVariable("Worker__SearchJobMaxAttempts")) with
+        | true, value when value >= 1 -> value
+        | _ -> 5
+
+module Program =
+    [<EntryPoint>]
+    let main args =
+        use stopToken = new CancellationTokenSource()
+
+        Console.CancelKeyPress.Add(fun eventArgs ->
+            eventArgs.Cancel <- true
+            stopToken.Cancel()
+        )
+
+        let runOnce = args |> Array.exists (fun arg -> String.Equals(arg, "--once", StringComparison.OrdinalIgnoreCase))
+        let connectionString = WorkerRuntime.connectionStringFromEnvironment ()
+        let pollSeconds = WorkerRuntime.pollSecondsFromEnvironment ()
+        let batchSize = WorkerRuntime.batchSizeFromEnvironment ()
+        let maxSearchJobAttempts = WorkerRuntime.maxSearchJobAttemptsFromEnvironment ()
+
+        printfn "Artifortress worker started. Press Ctrl+C to stop."
+        printfn
+            "worker_config batch_size=%d poll_seconds=%d run_once=%b search_job_max_attempts=%d"
+            batchSize
+            pollSeconds
+            runOnce
+            maxSearchJobAttempts
+
+        let runSweepAndLog () =
+            match SearchIndexOutboxProducer.runSweep connectionString batchSize with
+            | Ok outcome ->
+                printfn
+                    "worker_search_sweep_utc=%O claimed=%d enqueued=%d delivered=%d requeued=%d"
+                    DateTimeOffset.UtcNow
+                    outcome.ClaimedCount
+                    outcome.EnqueuedCount
+                    outcome.DeliveredCount
+                    outcome.RequeuedCount
+            | Error err ->
+                printfn "worker_search_sweep_error_utc=%O error=\"%s\"" DateTimeOffset.UtcNow err
+
+            match SearchIndexJobProcessor.runSweep connectionString batchSize maxSearchJobAttempts with
+            | Ok outcome ->
+                printfn
+                    "worker_job_sweep_utc=%O claimed=%d completed=%d failed=%d"
+                    DateTimeOffset.UtcNow
+                    outcome.ClaimedCount
+                    outcome.CompletedCount
+                    outcome.FailedCount
+            | Error err ->
+                printfn "worker_job_sweep_error_utc=%O error=\"%s\"" DateTimeOffset.UtcNow err
+
+        if runOnce then
+            runSweepAndLog ()
+        else
+            while not stopToken.IsCancellationRequested do
+                runSweepAndLog ()
+                Thread.Sleep(TimeSpan.FromSeconds(float pollSeconds))
+
+        printfn "Artifortress worker stopped."
+        0
