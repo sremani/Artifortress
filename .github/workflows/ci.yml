@@ -62,7 +62,7 @@ jobs:
           global-json-file: global.json
 
       - name: Install integration dependencies
-        run: sudo apt-get update && sudo apt-get install -y curl awscli postgresql-client
+        run: sudo apt-get update && sudo apt-get install -y curl postgresql-client
 
       - name: Start MinIO
         run: |
@@ -102,15 +102,11 @@ jobs:
           exit 1
 
       - name: Bootstrap MinIO bucket
-        env:
-          AWS_ACCESS_KEY_ID: artifortress
-          AWS_SECRET_ACCESS_KEY: artifortress
-          AWS_DEFAULT_REGION: us-east-1
-          AWS_EC2_METADATA_DISABLED: "true"
         run: |
-          if ! aws --endpoint-url http://127.0.0.1:9000 s3api head-bucket --bucket artifortress-dev >/dev/null 2>&1; then
-            aws --endpoint-url http://127.0.0.1:9000 s3api create-bucket --bucket artifortress-dev
-          fi
+          docker run --rm --network container:minio --entrypoint /bin/sh minio/mc:latest -c "
+            mc alias set local http://127.0.0.1:9000 artifortress artifortress >/dev/null &&
+            mc mb --ignore-existing local/artifortress-dev >/dev/null
+          "
 
       - name: Run integration tests
         env:
