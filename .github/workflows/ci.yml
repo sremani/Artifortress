@@ -52,15 +52,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: artifortress
-          MINIO_ROOT_PASSWORD: artifortress
-          MINIO_DEFAULT_BUCKETS: artifortress-dev
-        ports:
-          - 9000:9000
-          - 9001:9001
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,6 +63,15 @@ jobs:
 
       - name: Install integration dependencies
         run: sudo apt-get update && sudo apt-get install -y curl awscli postgresql-client
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -p 9001:9001 \
+            -e MINIO_ROOT_USER=artifortress \
+            -e MINIO_ROOT_PASSWORD=artifortress \
+            minio/minio:latest server /data --console-address ":9001"
 
       - name: Wait for Postgres readiness
         env:
