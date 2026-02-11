@@ -3229,6 +3229,32 @@ type Phase1ApiTests(fixture: ApiFixture) =
         ensureStatus HttpStatusCode.OK authorizedGcResponse |> ignore
 
     [<Fact>]
+    member _.``P5-06 GC request validation rejects invalid retentionGraceHours and batchSize`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p506-admin") [| "repo:*:admin" |] 60
+
+        use invalidRetentionResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = true
+                      RetentionGraceHours = -1
+                      BatchSize = 100 })
+
+        ensureStatus HttpStatusCode.BadRequest invalidRetentionResponse |> ignore
+
+        use invalidBatchResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = true
+                      RetentionGraceHours = 0
+                      BatchSize = -5 })
+
+        ensureStatus HttpStatusCode.BadRequest invalidBatchResponse |> ignore
+
+    [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =
         fixture.RequireAvailable()
 

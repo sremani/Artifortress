@@ -2283,6 +2283,22 @@ where run_id = @run_id;
     cmd.ExecuteNonQuery() |> ignore
     Ok()
 
+let private finalizeGcRunAsFailed (runId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+update gc_runs
+set completed_at = coalesce(completed_at, now()),
+    delete_error_count = case when delete_error_count < 1 then 1 else delete_error_count end
+where run_id = @run_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("run_id", runId) |> ignore
+    cmd.ExecuteNonQuery() |> ignore
+    Ok()
+
 let runGcSweep
     (objectStorageClient: IObjectStorageClient)
     (tenantId: Guid)
@@ -2297,64 +2313,72 @@ let runGcSweep
 
     insertGcRun tenantId initiatedBySubject mode retentionGraceHours batchSize conn
     |> Result.bind (fun runId ->
-        insertGcMarksForRun tenantId runId conn
-        |> Result.bind (fun markedCount ->
-            let versionResult =
-                if dryRun then
-                    readExpiredTombstonedVersionIds tenantId batchSize conn
-                    |> Result.map (fun versionIds -> versionIds, 0)
-                else
-                    deleteExpiredTombstonedVersions tenantId batchSize conn
-                    |> Result.map (fun versionIds -> versionIds, versionIds.Length)
+        let runResult =
+            insertGcMarksForRun tenantId runId conn
+            |> Result.bind (fun markedCount ->
+                let versionResult =
+                    if dryRun then
+                        readExpiredTombstonedVersionIds tenantId batchSize conn
+                        |> Result.map (fun versionIds -> versionIds, 0)
+                    else
+                        deleteExpiredTombstonedVersions tenantId batchSize conn
+                        |> Result.map (fun versionIds -> versionIds, versionIds.Length)
 
-            versionResult
-            |> Result.bind (fun (_versionIds, deletedVersionCount) ->
-                readGcCandidateBlobsForRun runId retentionGraceHours batchSize conn
-                |> Result.bind (fun candidates ->
-                    let candidateBlobCount = candidates.Length
-                    let candidateDigests = candidates |> List.map (fun candidate -> candidate.Digest)
+                versionResult
+                |> Result.bind (fun (_versionIds, deletedVersionCount) ->
+                    readGcCandidateBlobsForRun runId retentionGraceHours batchSize conn
+                    |> Result.bind (fun candidates ->
+                        let candidateBlobCount = candidates.Length
+                        let candidateDigests = candidates |> List.map (fun candidate -> candidate.Digest)
 
-                    let deleteResult =
-                        if dryRun then
-                            Ok(0, 0)
-                        else
-                            let mutable deletableDigests = []
-                            let mutable deleteErrorCount = 0
+                        let deleteResult =
+                            if dryRun then
+                                Ok(0, 0)
+                            else
+                                let mutable deletableDigests = []
+                                let mutable deleteErrorCount = 0
 
-                            for candidate in candidates do
-                                match objectStorageClient.DeleteObject(candidate.StorageKey, cancellationToken).Result with
-                                | Ok () ->
-                                    deletableDigests <- candidate.Digest :: deletableDigests
-                                | Error(NotFound _) ->
-                                    deletableDigests <- candidate.Digest :: deletableDigests
-                                | Error _ ->
-                                    deleteErrorCount <- deleteErrorCount + 1
+                                for candidate in candidates do
+                                    match objectStorageClient.DeleteObject(candidate.StorageKey, cancellationToken).Result with
+                                    | Ok () ->
+                                        deletableDigests <- candidate.Digest :: deletableDigests
+                                    | Error(NotFound _) ->
+                                        deletableDigests <- candidate.Digest :: deletableDigests
+                                    | Error _ ->
+                                        deleteErrorCount <- deleteErrorCount + 1
 
-                            let digestsToDelete = deletableDigests |> List.rev
+                                let digestsToDelete = deletableDigests |> List.rev
 
-                            clearUploadSessionCommittedBlobReferences digestsToDelete conn
-                            |> Result.bind (fun _ -> deleteBlobsByDigests digestsToDelete conn)
-                            |> Result.map (fun deletedBlobCount -> deletedBlobCount, deleteErrorCount)
+                                clearUploadSessionCommittedBlobReferences digestsToDelete conn
+                                |> Result.bind (fun _ -> deleteBlobsByDigests digestsToDelete conn)
+                                |> Result.map (fun deletedBlobCount -> deletedBlobCount, deleteErrorCount)
 
-                    deleteResult
-                    |> Result.bind (fun (deletedBlobCount, deleteErrorCount) ->
-                        finalizeGcRun
-                            runId
-                            markedCount
-                            candidateBlobCount
-                            deletedBlobCount
-                            deletedVersionCount
-                            deleteErrorCount
-                            conn
-                        |> Result.map (fun () ->
-                            { RunId = runId
-                              Mode = mode
-                              MarkedCount = markedCount
-                              CandidateBlobCount = candidateBlobCount
-                              DeletedBlobCount = deletedBlobCount
-                              DeletedVersionCount = deletedVersionCount
-                              DeleteErrorCount = deleteErrorCount
-                              CandidateDigests = candidateDigests |> List.truncate 20 }))))))
+                        deleteResult
+                        |> Result.bind (fun (deletedBlobCount, deleteErrorCount) ->
+                            finalizeGcRun
+                                runId
+                                markedCount
+                                candidateBlobCount
+                                deletedBlobCount
+                                deletedVersionCount
+                                deleteErrorCount
+                                conn
+                            |> Result.map (fun () ->
+                                { RunId = runId
+                                  Mode = mode
+                                  MarkedCount = markedCount
+                                  CandidateBlobCount = candidateBlobCount
+                                  DeletedBlobCount = deletedBlobCount
+                                  DeletedVersionCount = deletedVersionCount
+                                  DeleteErrorCount = deleteErrorCount
+                                  CandidateDigests = candidateDigests |> List.truncate 20 })))))
+
+        match runResult with
+        | Ok result -> Ok result
+        | Error err ->
+            match finalizeGcRunAsFailed runId conn with
+            | Ok () -> Error err
+            | Error finalizeErr -> Error $"{err}; additionally failed to finalize GC run: {finalizeErr}")
 
 let readBlobReconcileSummary (tenantId: Guid) (sampleLimit: int) (conn: NpgsqlConnection) =
     let scalarCount (sql: string) =
