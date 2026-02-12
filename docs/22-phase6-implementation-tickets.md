@@ -21,7 +21,7 @@ Status key:
 | P6-09 | Security review closure checklist and launch blockers log | P6-08 | done |
 | P6-10 | Upgrade and rollback procedures runbook | P6-08 | done |
 
-## Current Implementation Notes (2026-02-11)
+## Current Implementation Notes (2026-02-12)
 
 - P6-01 completed:
   - Hardened `/health/ready` to perform real dependency checks:
@@ -43,6 +43,12 @@ Status key:
   - Added integration tests in `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`:
     - `P6-01 readiness endpoint reports healthy postgres and object storage dependencies`
     - `P6-02 ops summary endpoint enforces authz and emits audit`
+  - Added stress coverage for operations-summary counters:
+    - `P6-stress ops summary outbox counters separate pending and available via deterministic deltas`
+    - `P6-stress ops summary search job status counters track pending processing and failed deltas`
+  - Added fixture helpers for deterministic operations-summary state setup:
+    - `SetOutboxEventStateForTest(eventId, availableAtUtc, occurredAtUtc, deliveredAtUtc)`
+    - `UpsertSearchIndexJobForVersionForTest(versionId, status, attempts, availableAtUtc, lastError)`
 - P6-04/P6-05 completed:
   - Added scripts:
     - `scripts/db-backup.sh`
@@ -77,7 +83,8 @@ Status key:
 Latest local verification:
 - `make build`
 - `make test`
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` (`56` passing integration tests)
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`70` passing integration tests)
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`163` total tests)
 - `make format`
 
 ## Ticket Details

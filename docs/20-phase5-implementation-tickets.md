@@ -76,6 +76,22 @@ Status key:
     - `P5-03` GC execute hard-delete for expired tombstones + orphan blobs.
     - `P5-04` reconcile drift summary endpoint.
     - `P5-05` admin endpoint unauthorized/forbidden/authorized matrix.
+    - `P5-07` selective GC execute behavior:
+      - expired tombstones are deleted.
+      - non-expired tombstones remain intact.
+      - orphan blobs are still removed.
+    - `P5-stress` batch-size behavior:
+      - GC execute with `batchSize=1` deletes one expired tombstoned version per run.
+      - repeated runs clear remaining expired tombstones while preserving non-expired tombstones.
+    - `P5-stress` orphan volume behavior:
+      - reconcile sample-limit behavior remains bounded under multi-orphan volume.
+      - GC execute with `batchSize=3` drains orphan blobs predictably across repeated runs.
+    - `P5-stress` retention-grace behavior:
+      - old orphan blobs become GC candidates before fresh blobs under non-zero `retentionGraceHours`.
+      - reducing `retentionGraceHours` to zero then drains previously fresh orphan blobs.
+    - `P5-stress` default-run safety:
+      - GC request without body defaults to `dry_run`.
+      - default dry-run returns zero deletion counts and preserves orphan blobs.
 - P5-08 completed:
   - Added executable demo script:
     - `scripts/phase5-demo.sh`
@@ -87,7 +103,8 @@ Status key:
 Latest local verification:
 - `make build`
 - `make test`
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` (`53` passing integration tests)
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`70` passing integration tests)
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`163` total tests)
 - `make format`
 
 ## Ticket Details

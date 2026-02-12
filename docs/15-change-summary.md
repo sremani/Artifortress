@@ -1,6 +1,6 @@
 # Consolidated Change Summary
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 ## Scope of This Change Set
 
@@ -512,3 +512,205 @@ This change set combines:
 - `MIN_MUTATION_SCORE=40 make mutation-fsharp-native-score`:
   - score: `83.33`
   - threshold met: `true`
+
+## Native Mutation Trend Retention Addendum (2026-02-11, latest)
+
+### Code and workflow changes
+
+- `tools/Artifortress.MutationTrack/Program.fs`
+  - Switched native and compile-validation scratch handling to per-run subdirectories to avoid cross-run delete races (`Directory not empty`) in repeated local/CI execution.
+- `scripts/mutation-fsharp-native-trend.sh` (new)
+  - Added score-history append and trend report generation using score summary artifacts.
+- `Makefile`
+  - Added `mutation-fsharp-native-trend` target.
+- `.github/workflows/mutation-track.yml`
+  - Added cache restore/save steps for `artifacts/mutation/mutation-native-score-history.csv`.
+  - Added trend generation step and trend artifact uploads.
+
+### Validation evidence
+
+- `MAX_MUTANTS=6 make mutation-fsharp-native` passed.
+- `MIN_MUTATION_SCORE=40 make mutation-fsharp-native-score` passed.
+- `make mutation-fsharp-native-trend` passed with cumulative history rows.
+
+## Native Mutation Burn-in Signal Addendum (2026-02-11, latest)
+
+### Code and workflow changes
+
+- `scripts/mutation-fsharp-native-burnin.sh` (new)
+  - Added streak-based readiness evaluation over `artifacts/mutation/mutation-native-score-history.csv`.
+  - Enforces per-run pass conditions:
+    - `compile_error_count == 0`
+    - `infrastructure_error_count == 0`
+    - `threshold_met == true`
+    - `score_percent >= MIN_MUTATION_SCORE`
+  - Emits:
+    - `docs/reports/mutation-native-burnin-latest.md`
+    - `artifacts/ci/mutation-native-burnin-summary.txt`
+    - `artifacts/ci/mutation-native-burnin.json`
+- `Makefile`
+  - Added `mutation-fsharp-native-burnin` target.
+- `.github/workflows/mutation-track.yml`
+  - Added `MUTATION_NATIVE_REQUIRED_STREAK` variable input.
+  - Added burn-in evaluation step and artifact uploads.
+  - Added enforce-time burn-in interlock:
+    - when `MUTATION_NATIVE_ENFORCE=true`, burn-in readiness is required or CI fails.
+- `docs/34-fsharp-native-mutation-tickets.md`
+  - Marked `MUTN-08` as `partial` (time-window dependent).
+  - Added `MUTN-10` as done for burn-in readiness artifact support.
+  - Added `MUTN-11` as done for enforce-time readiness interlock.
+
+### Validation evidence
+
+- `REQUIRED_STREAK=7 MIN_MUTATION_SCORE=40 make mutation-fsharp-native-burnin` passed.
+- Current expected status in local artifacts remains `burnin_ready=false` when history depth is below required streak.
+
+## Lifecycle + Policy/Search Coverage Expansion Addendum (2026-02-11, latest)
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+  - Added lifecycle request validation properties for:
+    - `validateTombstoneRequest` defaulting, range handling, and normalization behavior.
+    - `validateGcRequest` defaulting, batch fallback, and range guard behavior.
+  - Added `7` new FsCheck properties.
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added policy/search mixed-routing stress test:
+    - `P4-09 search outbox sweep handles mixed routing and idempotent job upserts`.
+    - Validates aggregate-id + payload fallback routing, duplicate event idempotent upsert behavior, and malformed-event requeue behavior in one flow.
+  - Added lifecycle selective-GC stress test:
+    - `P5-07 GC execute deletes expired tombstones while preserving retained tombstones`.
+    - Validates selective deletion boundaries for expired vs non-expired tombstones plus orphan cleanup.
+
+### Documentation updates
+
+- Updated:
+  - `docs/10-current-state.md`
+  - `docs/13-phase4-implementation-tickets.md`
+  - `docs/20-phase5-implementation-tickets.md`
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`91` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`58` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`149` tests total).
+- `make format` passed.
+
+## Lifecycle + Policy/Search Stress Wave 2 Addendum (2026-02-11, latest)
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+  - Added GC boundary acceptance property:
+    - `validateGcRequest` accepts boundary values for `retentionGraceHours` (`0`/`8760`) and `batchSize` (`1`/`5000`).
+  - Property count increased to `83`.
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added policy/search stress tests:
+    - `P4-stress quarantine list filters remain consistent under mixed status transitions`.
+    - `P4-stress search sweeps honor batch limits across backlog`.
+  - Added lifecycle stress test:
+    - `P5-stress GC execute honors batch size across multiple runs for expired tombstones`.
+  - Added fixture helper:
+    - `SetTombstoneRetention(versionId, retentionUntilUtc)` for deterministic retention control in lifecycle stress scenarios.
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`92` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`61` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`153` total tests).
+- `make format` passed.
+
+## Lifecycle + Policy/Search Stress Wave 3 Addendum (2026-02-11, latest)
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+  - Added tombstone validation property:
+    - `validateTombstoneRequest` rejects blank reasons.
+  - Property count increased to `84`.
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added policy/search repo-isolation stress test:
+    - `P4-stress quarantine state remains repo-scoped under concurrent repos`.
+  - Added lifecycle orphan-volume stress test:
+    - `P5-stress reconcile sample limit and GC blob batch drain are deterministic under orphan volume`.
+  - Existing wave-2 stress tests retained and validated in full-suite context.
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`63` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`156` total tests).
+- `make format` passed.
+
+## Lifecycle + Policy/Search Stress Wave 4 Addendum (2026-02-11, latest)
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added search retry-window stress test:
+    - `P4-stress failed search job is deferred by backoff and not immediately reclaimed`.
+  - Added lifecycle retention-grace stress test:
+    - `P5-stress GC retention grace excludes fresh orphan blobs until grace window is reduced`.
+  - Added fixture helpers for deterministic stress orchestration:
+    - `SetBlobCreatedAt(digest, createdAtUtc)`
+    - `TryReadSearchIndexJobSchedule(versionId)`
+- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+  - Added tombstone request invariant:
+    - blank `reason` is rejected deterministically.
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`65` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`158` total tests).
+- `make format` passed.
+
+## Lifecycle + Policy/Search Stress Wave 5 Addendum (2026-02-11, latest)
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added outbox event-type filtering stress test:
+    - `P4-stress outbox sweep ignores non-version-published events under mixed backlog`.
+  - Added shared-digest repo-isolation stress test:
+    - `P4-stress quarantined shared digest in one repo does not block download in another repo`.
+    - Includes dedupe-aware upload-path handling (`201 initiated` vs `200 committed`).
+  - Added lifecycle default behavior stress test:
+    - `P5-stress GC defaults to dry-run when request body is omitted`.
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`68` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`161` total tests).
+- `make format` passed.
+
+## Lifecycle + Policy/Search Stress Wave 6 Addendum (2026-02-12, latest)
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added operations-summary outbox stress test:
+    - `P6-stress ops summary outbox counters separate pending and available via deterministic deltas`.
+    - Verifies pending-vs-available separation and delivered-event exclusion via baseline/delta assertions.
+  - Added operations-summary search-job stress test:
+    - `P6-stress ops summary search job status counters track pending processing and failed deltas`.
+    - Verifies `pending + processing` roll-up and `failed` counters with deterministic fixture-driven status setup.
+  - Added fixture helpers for deterministic state control:
+    - `SetOutboxEventStateForTest(eventId, availableAtUtc, occurredAtUtc, deliveredAtUtc)`.
+    - `UpsertSearchIndexJobForVersionForTest(versionId, status, attempts, availableAtUtc, lastError)`.
+
+### Documentation updates
+
+- Updated:
+  - `docs/10-current-state.md`
+  - `docs/20-phase5-implementation-tickets.md`
+  - `docs/22-phase6-implementation-tickets.md`
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P6-stress ops summary"` passed (`2` tests).
+- `make test-integration` passed (`70` integration tests).
+- `make test` passed (`93` non-integration tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`163` total tests).
+- `make format` passed.

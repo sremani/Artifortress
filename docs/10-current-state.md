@@ -1,6 +1,6 @@
 # Artifortress Current State
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 ## 1. What Is Implemented
 
@@ -64,11 +64,11 @@ Persistence:
 
 Automated checks currently passing:
 - `make format`.
-- `make test` (non-integration filter) with `84` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` with `56` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` with `140` passing tests.
+- `make test` (non-integration filter) with `93` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `70` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `163` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
-  - `75` FsCheck properties across domain, API, object storage config, and extracted worker internals (three extraction waves).
+  - `84` FsCheck properties across domain, lifecycle/policy request validation, API, object storage config, and extracted worker internals (three extraction waves).
 - `make phase2-load` baseline run:
   - upload throughput: `1.22 MiB/s` (`4.89 req/s`) with `12` upload iterations at `262144` bytes/object.
   - download throughput: `7.25 MiB/s` (`28.99 req/s`) with `36` download iterations.
@@ -117,6 +117,8 @@ Demonstration assets:
   - `scripts/mutation-fsharp-spike.sh`
   - `scripts/mutation-fsharp-native-run.sh`
   - `scripts/mutation-fsharp-native-score.sh`
+  - `scripts/mutation-fsharp-native-trend.sh`
+  - `scripts/mutation-fsharp-native-burnin.sh`
   - `scripts/mutation-trackb-bootstrap.sh`
   - `scripts/mutation-trackb-build.sh`
   - `scripts/mutation-trackb-spike.sh`
@@ -131,6 +133,8 @@ Demonstration assets:
   - `docs/reports/mutation-track-latest.md`
   - `docs/reports/mutation-native-fsharp-latest.md`
   - `docs/reports/mutation-native-score-latest.md`
+  - `docs/reports/mutation-native-score-history-latest.md`
+  - `docs/reports/mutation-native-burnin-latest.md`
   - `docs/reports/mutation-trackb-mut06-latest.md`
   - `docs/reports/mutation-trackb-mut07c-compile-validation.md`
 
@@ -161,5 +165,8 @@ Not implemented yet:
 - Next implementation targets:
   - post-GA identity integration (OIDC/SAML).
   - search read-model query-serving and rebuild/recovery maturity.
-  - F# native mutation finish plan (runtime lane + non-blocking CI + score threshold policy are active; next work is merge-gate promotion after burn-in).
+  - F# native mutation finish plan (runtime lane + non-blocking CI + score/trend/burn-in policy are active; merge-gate promotion remains intentionally partial until the 7-run burn-in streak is satisfied).
   - continue expanding property-based and integration stress coverage around lifecycle and policy/search paths.
+  - latest stress expansion (wave 6):
+    - `P6-stress ops summary outbox counters separate pending and available via deterministic deltas`
+    - `P6-stress ops summary search job status counters track pending processing and failed deltas`

@@ -705,6 +705,29 @@ where version_id = @version_id;
         if rows <> 1 then
             failwith $"Could not expire tombstone retention for version {versionId}."
 
+    member this.SetTombstoneRetention(versionId: Guid, retentionUntilUtc: DateTimeOffset) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update tombstones
+set retention_until = @retention_until
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        cmd.Parameters.AddWithValue("retention_until", retentionUntilUtc) |> ignore
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not set tombstone retention for version {versionId}."
+
     member this.SeedOrphanBlob(digest: string, lengthBytes: int64) =
         this.RequireAvailable()
 
@@ -752,6 +775,29 @@ select exists(
         match scalar with
         | :? bool as existsValue -> existsValue
         | _ -> failwith $"Unexpected blob exists scalar for digest {digest}."
+
+    member this.SetBlobCreatedAt(digest: string, createdAtUtc: DateTimeOffset) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update blobs
+set created_at = @created_at
+where digest = @digest;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("digest", digest) |> ignore
+        cmd.Parameters.AddWithValue("created_at", createdAtUtc) |> ignore
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not set blob created_at for digest {digest}."
 
     member this.TryMutatePublishedVersionMetadata(versionId: Guid) =
         this.RequireAvailable()
@@ -885,6 +931,104 @@ values
 
         cmd.ExecuteNonQuery() |> ignore
         eventId
+
+    member this.SetOutboxEventStateForTest
+        (
+            eventId: Guid,
+            availableAtUtc: DateTimeOffset,
+            occurredAtUtc: DateTimeOffset,
+            deliveredAtUtc: DateTimeOffset option
+        ) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update outbox_events
+set available_at = @available_at,
+    occurred_at = @occurred_at,
+    delivered_at = @delivered_at
+where event_id = @event_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("event_id", eventId) |> ignore
+        cmd.Parameters.AddWithValue("available_at", availableAtUtc) |> ignore
+        cmd.Parameters.AddWithValue("occurred_at", occurredAtUtc) |> ignore
+
+        let deliveredAtParam = cmd.Parameters.Add("delivered_at", NpgsqlDbType.TimestampTz)
+        deliveredAtParam.Value <- (match deliveredAtUtc with | Some value -> box value | None -> box DBNull.Value)
+
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not update outbox state for event {eventId}."
+
+    member this.UpsertSearchIndexJobForVersionForTest
+        (
+            versionId: Guid,
+            status: string,
+            attempts: int,
+            availableAtUtc: DateTimeOffset,
+            lastError: string option
+        ) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use tenantCmd =
+            new NpgsqlCommand(
+                """
+select tenant_id
+from package_versions
+where version_id = @version_id
+limit 1;
+""",
+                conn
+            )
+
+        tenantCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let tenantScalar = tenantCmd.ExecuteScalar()
+
+        let tenantId =
+            match tenantScalar with
+            | :? Guid as value -> value
+            | _ -> failwith $"Could not resolve tenant for version {versionId}."
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+insert into search_index_jobs (tenant_id, version_id, status, available_at, attempts, last_error)
+values (@tenant_id, @version_id, @status, @available_at, @attempts, @last_error)
+on conflict (tenant_id, version_id)
+do update set
+  status = excluded.status,
+  available_at = excluded.available_at,
+  attempts = excluded.attempts,
+  last_error = excluded.last_error,
+  updated_at = now();
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        cmd.Parameters.AddWithValue("status", status) |> ignore
+        cmd.Parameters.AddWithValue("available_at", availableAtUtc) |> ignore
+        cmd.Parameters.AddWithValue("attempts", attempts) |> ignore
+
+        let lastErrorParam = cmd.Parameters.Add("last_error", NpgsqlDbType.Text)
+        lastErrorParam.Value <- (match lastError with | Some value -> box value | None -> box DBNull.Value)
+
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not upsert search_index_job for version {versionId}."
 
     member this.CountSearchIndexJobsForVersion(versionId: Guid) =
         this.RequireAvailable()
@@ -1066,6 +1210,35 @@ limit 1;
             let attempts = reader.GetInt32(1)
             let lastError = if reader.IsDBNull(2) then None else Some(reader.GetString(2))
             Some(status, attempts, lastError)
+        else
+            None
+
+    member this.TryReadSearchIndexJobSchedule(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select status, attempts, available_at, last_error
+from search_index_jobs
+where version_id = @version_id
+limit 1;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then
+            let status = reader.GetString(0)
+            let attempts = reader.GetInt32(1)
+            let availableAtUtc = reader.GetFieldValue<DateTimeOffset>(2)
+            let lastError = if reader.IsDBNull(3) then None else Some(reader.GetString(3))
+            Some(status, attempts, availableAtUtc, lastError)
         else
             None
 
@@ -3024,6 +3197,501 @@ type Phase1ApiTests(fixture: ApiFixture) =
         )
 
     [<Fact>]
+    member _.``P4-09 search outbox sweep handles mixed routing and idempotent job upserts`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p410-mixed-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p410-mixed"
+        createRepoAsAdmin adminToken repoKey
+        let writeToken, _ = issuePat (makeSubject "p410-mixed-writer") [| $"repo:{repoKey}:write" |] 60
+
+        use draftAResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" $"p410-a-{Guid.NewGuid():N}" "1.0.0"
+
+        let draftABody = ensureStatus HttpStatusCode.Created draftAResponse
+        use draftADoc = JsonDocument.Parse(draftABody)
+        let versionIdA = draftADoc.RootElement.GetProperty("versionId").GetGuid()
+
+        use draftBResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" $"p410-b-{Guid.NewGuid():N}" "1.0.0"
+
+        let draftBBody = ensureStatus HttpStatusCode.Created draftBResponse
+        use draftBDoc = JsonDocument.Parse(draftBBody)
+        let versionIdB = draftBDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let payloadA = JsonSerializer.Serialize({| versionId = versionIdA |})
+        let payloadB = JsonSerializer.Serialize({| versionId = versionIdB |})
+
+        let eventA1 =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionIdA.ToString(), payloadA)
+
+        let eventA2 =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionIdA.ToString(), payloadA)
+
+        let eventB =
+            fixture.InsertOutboxEvent("version.published", "package_version", "not-a-guid", payloadB)
+
+        let malformedEvent =
+            fixture.InsertOutboxEvent("version.published", "package_version", "still-not-a-guid", "{}")
+
+        let outcome = fixture.RunSearchIndexOutboxSweep(100)
+        Assert.Equal(4, outcome.ClaimedCount)
+        Assert.Equal(3, outcome.EnqueuedCount)
+        Assert.Equal(3, outcome.DeliveredCount)
+        Assert.Equal(1, outcome.RequeuedCount)
+
+        Assert.True(fixture.IsOutboxDelivered(eventA1), "Expected first valid event to be marked delivered.")
+        Assert.True(fixture.IsOutboxDelivered(eventA2), "Expected duplicate valid event to be marked delivered.")
+        Assert.True(fixture.IsOutboxDelivered(eventB), "Expected payload-fallback event to be marked delivered.")
+        Assert.False(fixture.IsOutboxDelivered(malformedEvent), "Expected malformed event to remain undelivered.")
+
+        let queuedJobs = fixture.CountSearchIndexJobsForTenant()
+        Assert.Equal(2L, queuedJobs)
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(100, 1)
+        Assert.Equal(2, jobOutcome.ClaimedCount)
+        Assert.Equal(0, jobOutcome.CompletedCount)
+        Assert.Equal(2, jobOutcome.FailedCount)
+
+        match fixture.TryReadSearchIndexJobForVersion(versionIdA) with
+        | None -> failwith "Expected failed search job for versionIdA."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("failed", status)
+            Assert.Equal(1, attempts)
+            Assert.Equal(Some "version_not_published", lastError)
+
+        match fixture.TryReadSearchIndexJobForVersion(versionIdB) with
+        | None -> failwith "Expected failed search job for versionIdB."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("failed", status)
+            Assert.Equal(1, attempts)
+            Assert.Equal(Some "version_not_published", lastError)
+
+        fixture.MakeSearchIndexJobAvailableNow(versionIdA)
+        fixture.MakeSearchIndexJobAvailableNow(versionIdB)
+
+        let replayOutcome = fixture.RunSearchIndexJobSweep(100, 1)
+        Assert.Equal(0, replayOutcome.ClaimedCount)
+
+    [<Fact>]
+    member _.``P4-stress quarantine list filters remain consistent under mixed status transitions`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p4stress-quarantine-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p4stress-quarantine"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p4stress-quarantine-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p4stress-quarantine-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let createDraftVersionId (nameSuffix: string) =
+            use draftResponse =
+                createDraftVersionWithToken writeToken repoKey "nuget" "" $"p4stress-{nameSuffix}-{Guid.NewGuid():N}" "1.0.0"
+
+            let body = ensureStatus HttpStatusCode.Created draftResponse
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("versionId").GetGuid()
+
+        let createQuarantineItem (versionId: Guid) (reason: string) =
+            use response =
+                evaluatePolicyWithToken promoteToken repoKey "promote" versionId "quarantine" reason "policy-stress-v1"
+
+            let body = ensureStatus HttpStatusCode.Created response
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        let listQuarantineIds (statusFilter: string option) =
+            use response = listQuarantineWithToken promoteToken repoKey statusFilter
+            let body = ensureStatus HttpStatusCode.OK response
+            use doc = JsonDocument.Parse(body)
+
+            doc.RootElement.EnumerateArray()
+            |> Seq.map (fun item -> item.GetProperty("quarantineId").GetGuid())
+            |> Set.ofSeq
+
+        let versionA = createDraftVersionId "release"
+        let versionB = createDraftVersionId "reject"
+        let versionC = createDraftVersionId "quarantined"
+
+        let quarantineA = createQuarantineItem versionA "p4 stress release flow"
+        let quarantineB = createQuarantineItem versionB "p4 stress reject flow"
+        let quarantineC = createQuarantineItem versionC "p4 stress stay quarantined flow"
+
+        use releaseResponse = releaseQuarantineItemWithToken promoteToken repoKey quarantineA
+        ensureStatus HttpStatusCode.OK releaseResponse |> ignore
+
+        use rejectResponse = rejectQuarantineItemWithToken promoteToken repoKey quarantineB
+        ensureStatus HttpStatusCode.OK rejectResponse |> ignore
+
+        let releasedIds = listQuarantineIds (Some "released")
+        let rejectedIds = listQuarantineIds (Some "rejected")
+        let quarantinedIds = listQuarantineIds (Some "quarantined")
+        let allIds = listQuarantineIds None
+
+        let expectedReleasedIds = Set.ofList [ quarantineA ]
+        let expectedRejectedIds = Set.ofList [ quarantineB ]
+        let expectedQuarantinedIds = Set.ofList [ quarantineC ]
+        let expectedAllIds = Set.ofList [ quarantineA; quarantineB; quarantineC ]
+
+        Assert.Equal<Set<Guid>>(expectedReleasedIds, releasedIds)
+        Assert.Equal<Set<Guid>>(expectedRejectedIds, rejectedIds)
+        Assert.Equal<Set<Guid>>(expectedQuarantinedIds, quarantinedIds)
+        Assert.Equal<Set<Guid>>(expectedAllIds, allIds)
+
+    [<Fact>]
+    member _.``P4-stress search sweeps honor batch limits across backlog`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p4stress-search-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p4stress-search"
+        createRepoAsAdmin adminToken repoKey
+        let writeToken, _ = issuePat (makeSubject "p4stress-search-writer") [| $"repo:{repoKey}:write" |] 60
+
+        let createDraftVersionId (nameSuffix: string) =
+            use draftResponse =
+                createDraftVersionWithToken writeToken repoKey "nuget" "" $"p4stress-search-{nameSuffix}-{Guid.NewGuid():N}" "1.0.0"
+
+            let body = ensureStatus HttpStatusCode.Created draftResponse
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("versionId").GetGuid()
+
+        let versionIds =
+            [ "a"; "b"; "c"; "d" ]
+            |> List.map createDraftVersionId
+
+        for versionId in versionIds do
+            let payload = JsonSerializer.Serialize({| versionId = versionId |})
+            fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payload)
+            |> ignore
+
+        let firstOutbox = fixture.RunSearchIndexOutboxSweep(2)
+        Assert.Equal(2, firstOutbox.ClaimedCount)
+        Assert.Equal(2, firstOutbox.EnqueuedCount)
+        Assert.Equal(2, firstOutbox.DeliveredCount)
+        Assert.Equal(0, firstOutbox.RequeuedCount)
+        Assert.Equal(2L, fixture.CountSearchIndexJobsForTenant())
+
+        let secondOutbox = fixture.RunSearchIndexOutboxSweep(2)
+        Assert.Equal(2, secondOutbox.ClaimedCount)
+        Assert.Equal(2, secondOutbox.EnqueuedCount)
+        Assert.Equal(2, secondOutbox.DeliveredCount)
+        Assert.Equal(0, secondOutbox.RequeuedCount)
+        Assert.Equal(4L, fixture.CountSearchIndexJobsForTenant())
+
+        let thirdOutbox = fixture.RunSearchIndexOutboxSweep(2)
+        Assert.Equal(0, thirdOutbox.ClaimedCount)
+
+        let firstJobSweep = fixture.RunSearchIndexJobSweep(3, 2)
+        Assert.Equal(3, firstJobSweep.ClaimedCount)
+        Assert.Equal(0, firstJobSweep.CompletedCount)
+        Assert.Equal(3, firstJobSweep.FailedCount)
+
+        let secondJobSweep = fixture.RunSearchIndexJobSweep(3, 2)
+        Assert.Equal(1, secondJobSweep.ClaimedCount)
+        Assert.Equal(0, secondJobSweep.CompletedCount)
+        Assert.Equal(1, secondJobSweep.FailedCount)
+
+        versionIds |> List.iter fixture.MakeSearchIndexJobAvailableNow
+
+        let thirdJobSweep = fixture.RunSearchIndexJobSweep(3, 2)
+        Assert.Equal(3, thirdJobSweep.ClaimedCount)
+        Assert.Equal(0, thirdJobSweep.CompletedCount)
+        Assert.Equal(3, thirdJobSweep.FailedCount)
+
+        let fourthJobSweep = fixture.RunSearchIndexJobSweep(3, 2)
+        Assert.Equal(1, fourthJobSweep.ClaimedCount)
+        Assert.Equal(0, fourthJobSweep.CompletedCount)
+        Assert.Equal(1, fourthJobSweep.FailedCount)
+
+        versionIds |> List.iter fixture.MakeSearchIndexJobAvailableNow
+
+        let cappedJobSweep = fixture.RunSearchIndexJobSweep(3, 2)
+        Assert.Equal(0, cappedJobSweep.ClaimedCount)
+        Assert.Equal(0, cappedJobSweep.CompletedCount)
+        Assert.Equal(0, cappedJobSweep.FailedCount)
+
+        for versionId in versionIds do
+            match fixture.TryReadSearchIndexJobForVersion(versionId) with
+            | None -> failwith $"Expected search job for version {versionId}."
+            | Some(status, attempts, lastError) ->
+                Assert.Equal("failed", status)
+                Assert.Equal(2, attempts)
+                Assert.Equal(Some "version_not_published", lastError)
+
+    [<Fact>]
+    member _.``P4-stress failed search job is deferred by backoff and not immediately reclaimed`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p4stress-backoff-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p4stress-backoff"
+        createRepoAsAdmin adminToken repoKey
+        let writeToken, _ = issuePat (makeSubject "p4stress-backoff-writer") [| $"repo:{repoKey}:write" |] 60
+
+        use draftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" $"p4stress-backoff-{Guid.NewGuid():N}" "1.0.0"
+
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let payload = JsonSerializer.Serialize({| versionId = versionId |})
+        fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payload)
+        |> ignore
+
+        let outboxOutcome = fixture.RunSearchIndexOutboxSweep(20)
+        Assert.Equal(1, outboxOutcome.ClaimedCount)
+        Assert.Equal(1, outboxOutcome.EnqueuedCount)
+        Assert.Equal(1, outboxOutcome.DeliveredCount)
+        Assert.Equal(0, outboxOutcome.RequeuedCount)
+
+        let firstSweepReferenceUtc = DateTimeOffset.UtcNow
+        let firstJobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+        Assert.Equal(1, firstJobOutcome.ClaimedCount)
+        Assert.Equal(0, firstJobOutcome.CompletedCount)
+        Assert.Equal(1, firstJobOutcome.FailedCount)
+
+        let immediateRetryOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+        Assert.Equal(0, immediateRetryOutcome.ClaimedCount)
+        Assert.Equal(0, immediateRetryOutcome.CompletedCount)
+        Assert.Equal(0, immediateRetryOutcome.FailedCount)
+
+        match fixture.TryReadSearchIndexJobSchedule(versionId) with
+        | None -> failwith "Expected search-index job schedule state after failure."
+        | Some(status, attempts, availableAtUtc, lastError) ->
+            Assert.Equal("failed", status)
+            Assert.Equal(1, attempts)
+            Assert.Equal(Some "version_not_published", lastError)
+            Assert.True(availableAtUtc > firstSweepReferenceUtc.AddSeconds(20.0))
+            Assert.True(availableAtUtc < firstSweepReferenceUtc.AddMinutes(2.0))
+
+    [<Fact>]
+    member _.``P4-stress outbox sweep ignores non-version-published events under mixed backlog`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p4stress-noise-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p4stress-noise"
+        createRepoAsAdmin adminToken repoKey
+        let writeToken, _ = issuePat (makeSubject "p4stress-noise-writer") [| $"repo:{repoKey}:write" |] 60
+
+        let createDraftVersionId (suffix: string) =
+            use draftResponse =
+                createDraftVersionWithToken writeToken repoKey "nuget" "" $"p4stress-noise-{suffix}-{Guid.NewGuid():N}" "1.0.0"
+
+            let body = ensureStatus HttpStatusCode.Created draftResponse
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("versionId").GetGuid()
+
+        let versionA = createDraftVersionId "a"
+        let versionB = createDraftVersionId "b"
+        let payloadA = JsonSerializer.Serialize({| versionId = versionA |})
+        let payloadB = JsonSerializer.Serialize({| versionId = versionB |})
+
+        let goodEventA =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionA.ToString(), payloadA)
+
+        let goodEventB =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionB.ToString(), payloadB)
+
+        let noiseEventA =
+            fixture.InsertOutboxEvent("repo.updated", "repo", Guid.NewGuid().ToString(), """{"repo":"changed"}""")
+
+        let noiseEventB =
+            fixture.InsertOutboxEvent("package.deleted", "package_version", versionA.ToString(), """{"state":"deleted"}""")
+
+        let noiseEventC =
+            fixture.InsertOutboxEvent("audit.replayed", "audit_log", Guid.NewGuid().ToString(), """{"ok":true}""")
+
+        let outboxOutcome = fixture.RunSearchIndexOutboxSweep(100)
+        Assert.Equal(2, outboxOutcome.ClaimedCount)
+        Assert.Equal(2, outboxOutcome.EnqueuedCount)
+        Assert.Equal(2, outboxOutcome.DeliveredCount)
+        Assert.Equal(0, outboxOutcome.RequeuedCount)
+
+        Assert.True(fixture.IsOutboxDelivered(goodEventA))
+        Assert.True(fixture.IsOutboxDelivered(goodEventB))
+        Assert.False(fixture.IsOutboxDelivered(noiseEventA))
+        Assert.False(fixture.IsOutboxDelivered(noiseEventB))
+        Assert.False(fixture.IsOutboxDelivered(noiseEventC))
+
+        Assert.Equal(2L, fixture.CountSearchIndexJobsForTenant())
+
+    [<Fact>]
+    member _.``P4-stress quarantine state remains repo-scoped under concurrent repos`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p4stress-repo-admin") [| "repo:*:admin" |] 60
+        let repoA = makeRepoKey "p4stress-repo-a"
+        let repoB = makeRepoKey "p4stress-repo-b"
+        createRepoAsAdmin adminToken repoA
+        createRepoAsAdmin adminToken repoB
+
+        let writeA, _ = issuePat (makeSubject "p4stress-repo-write-a") [| $"repo:{repoA}:write" |] 60
+        let promoteA, _ = issuePat (makeSubject "p4stress-repo-promote-a") [| $"repo:{repoA}:promote" |] 60
+        let writeB, _ = issuePat (makeSubject "p4stress-repo-write-b") [| $"repo:{repoB}:write" |] 60
+        let promoteB, _ = issuePat (makeSubject "p4stress-repo-promote-b") [| $"repo:{repoB}:promote" |] 60
+
+        let createDraftVersionId (token: string) (repoKey: string) (nameSuffix: string) =
+            use draftResponse =
+                createDraftVersionWithToken token repoKey "nuget" "" $"p4stress-repo-{nameSuffix}-{Guid.NewGuid():N}" "1.0.0"
+
+            let body = ensureStatus HttpStatusCode.Created draftResponse
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("versionId").GetGuid()
+
+        let versionA = createDraftVersionId writeA repoA "a"
+        let versionB = createDraftVersionId writeB repoB "b"
+
+        let createQuarantineItem (token: string) (repoKey: string) (versionId: Guid) (reason: string) =
+            use response =
+                evaluatePolicyWithToken token repoKey "promote" versionId "quarantine" reason "policy-stress-v2"
+
+            let body = ensureStatus HttpStatusCode.Created response
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        let quarantineA = createQuarantineItem promoteA repoA versionA "repoA quarantine"
+        let quarantineB = createQuarantineItem promoteB repoB versionB "repoB quarantine"
+
+        let listIdsForRepo (token: string) (repoKey: string) (statusFilter: string option) =
+            use response = listQuarantineWithToken token repoKey statusFilter
+            let body = ensureStatus HttpStatusCode.OK response
+            use doc = JsonDocument.Parse(body)
+
+            doc.RootElement.EnumerateArray()
+            |> Seq.map (fun item -> item.GetProperty("quarantineId").GetGuid())
+            |> Set.ofSeq
+
+        let initialRepoA = listIdsForRepo promoteA repoA (Some "quarantined")
+        let initialRepoB = listIdsForRepo promoteB repoB (Some "quarantined")
+        Assert.Equal<Set<Guid>>(Set.ofList [ quarantineA ], initialRepoA)
+        Assert.Equal<Set<Guid>>(Set.ofList [ quarantineB ], initialRepoB)
+
+        use crossRepoForbidden = getQuarantineItemWithToken promoteB repoA quarantineA
+        ensureStatus HttpStatusCode.Forbidden crossRepoForbidden |> ignore
+
+        use releaseAResponse = releaseQuarantineItemWithToken promoteA repoA quarantineA
+        ensureStatus HttpStatusCode.OK releaseAResponse |> ignore
+
+        let releasedRepoA = listIdsForRepo promoteA repoA (Some "released")
+        let remainingRepoB = listIdsForRepo promoteB repoB (Some "quarantined")
+        Assert.Equal<Set<Guid>>(Set.ofList [ quarantineA ], releasedRepoA)
+        Assert.Equal<Set<Guid>>(Set.ofList [ quarantineB ], remainingRepoB)
+
+    [<Fact>]
+    member _.``P4-stress quarantined shared digest in one repo does not block download in another repo`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p4stress-shared-admin") [| "repo:*:admin" |] 60
+        let repoA = makeRepoKey "p4stress-shared-a"
+        let repoB = makeRepoKey "p4stress-shared-b"
+        createRepoAsAdmin adminToken repoA
+        createRepoAsAdmin adminToken repoB
+
+        let writeA, _ = issuePat (makeSubject "p4stress-shared-write-a") [| $"repo:{repoA}:write" |] 60
+        let readA, _ = issuePat (makeSubject "p4stress-shared-read-a") [| $"repo:{repoA}:read" |] 60
+        let promoteA, _ = issuePat (makeSubject "p4stress-shared-promote-a") [| $"repo:{repoA}:promote" |] 60
+
+        let writeB, _ = issuePat (makeSubject "p4stress-shared-write-b") [| $"repo:{repoB}:write" |] 60
+        let readB, _ = issuePat (makeSubject "p4stress-shared-read-b") [| $"repo:{repoB}:read" |] 60
+
+        let createDraftVersionId (token: string) (repoKey: string) (suffix: string) =
+            use draftResponse =
+                createDraftVersionWithToken token repoKey "nuget" "" $"p4stress-shared-{suffix}-{Guid.NewGuid():N}" "1.0.0"
+
+            let body = ensureStatus HttpStatusCode.Created draftResponse
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("versionId").GetGuid()
+
+        let versionA = createDraftVersionId writeA repoA "a"
+        let versionB = createDraftVersionId writeB repoB "b"
+
+        let payload = Encoding.UTF8.GetBytes($"p4stress-shared-payload-{Guid.NewGuid():N}")
+        let expectedDigest = tokenHashFor (Encoding.UTF8.GetString(payload))
+        let expectedLength = int64 payload.Length
+
+        let commitSharedDigest (token: string) (repoKey: string) =
+            use createResponse = createUploadSessionWithToken token repoKey expectedDigest expectedLength
+            let createBody = readResponseBody createResponse
+
+            if createResponse.StatusCode = HttpStatusCode.ServiceUnavailable
+               || createResponse.StatusCode = HttpStatusCode.NotFound then
+                raise (
+                    SkipException.ForSkip(
+                        $"Skipping P4 shared-digest quarantine isolation test: object storage unavailable. Response: {(int createResponse.StatusCode)} {createBody}"
+                    )
+                )
+
+            if createResponse.StatusCode = HttpStatusCode.OK then
+                use dedupeDoc = JsonDocument.Parse(createBody)
+                Assert.True(dedupeDoc.RootElement.GetProperty("deduped").GetBoolean())
+                Assert.Equal("committed", dedupeDoc.RootElement.GetProperty("state").GetString())
+            else
+                Assert.True(
+                    createResponse.StatusCode = HttpStatusCode.Created,
+                    $"Expected HTTP {(int HttpStatusCode.Created)} or {(int HttpStatusCode.OK)} but got {(int createResponse.StatusCode)}. Body: {createBody}"
+                )
+
+                use createDoc = JsonDocument.Parse(createBody)
+                let uploadId = createDoc.RootElement.GetProperty("uploadId").GetGuid()
+
+                use partResponse = createUploadPartWithToken token repoKey uploadId 1
+                let partBody = ensureStatus HttpStatusCode.OK partResponse
+                use partDoc = JsonDocument.Parse(partBody)
+                let uploadUrl = partDoc.RootElement.GetProperty("uploadUrl").GetString()
+                let etag = uploadPartFromPresignedUrl uploadUrl payload
+
+                use completeResponse =
+                    completeUploadWithToken
+                        token
+                        repoKey
+                        uploadId
+                        [| { PartNumber = 1
+                             ETag = etag } |]
+
+                ensureStatus HttpStatusCode.OK completeResponse |> ignore
+
+                use commitResponse = commitUploadWithToken token repoKey uploadId
+                ensureStatus HttpStatusCode.OK commitResponse |> ignore
+
+        commitSharedDigest writeA repoA
+        commitSharedDigest writeB repoB
+
+        fixture.InsertArtifactEntryForVersion(versionA, $"package/{Guid.NewGuid():N}.nupkg", expectedDigest, expectedLength)
+        fixture.InsertArtifactEntryForVersion(versionB, $"package/{Guid.NewGuid():N}.nupkg", expectedDigest, expectedLength)
+
+        use quarantineResponse =
+            evaluatePolicyWithToken
+                promoteA
+                repoA
+                "promote"
+                versionA
+                "quarantine"
+                "p4 shared digest repo isolation"
+                "policy-stress-v3"
+
+        let quarantineBody = ensureStatus HttpStatusCode.Created quarantineResponse
+        use quarantineDoc = JsonDocument.Parse(quarantineBody)
+        Assert.True(quarantineDoc.RootElement.GetProperty("quarantined").GetBoolean())
+
+        use blockedA = downloadBlobWithToken readA repoA expectedDigest None
+        let blockedBody = ensureStatus HttpStatusCode.Locked blockedA
+        use blockedDoc = JsonDocument.Parse(blockedBody)
+        Assert.Equal("quarantined_blob", blockedDoc.RootElement.GetProperty("error").GetString())
+
+        use allowedB = downloadBlobWithToken readB repoB expectedDigest None
+        Assert.True(
+            allowedB.StatusCode = HttpStatusCode.OK,
+            $"Expected HTTP {(int HttpStatusCode.OK)} from repo {repoB} but got {(int allowedB.StatusCode)}."
+        )
+
+        let allowedBytes = allowedB.Content.ReadAsByteArrayAsync().Result
+        Assert.Equal<byte>(payload, allowedBytes)
+
+    [<Fact>]
     member _.``P5-01 tombstone endpoint enforces authz and transitions published version to tombstoned`` () =
         fixture.RequireAvailable()
 
@@ -3337,6 +4005,409 @@ type Phase1ApiTests(fixture: ApiFixture) =
                       BatchSize = -5 })
 
         ensureStatus HttpStatusCode.BadRequest invalidBatchResponse |> ignore
+
+    [<Fact>]
+    member _.``P5-07 GC execute deletes expired tombstones while preserving retained tombstones`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p507-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p507-gc"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p507-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p507-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let expiredVersionId, expiredDigest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p507-expired-{Guid.NewGuid():N}"
+
+        let retainedVersionId, retainedDigest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p507-retained-{Guid.NewGuid():N}"
+
+        use expiredTombstoneResponse =
+            tombstoneVersionWithToken promoteToken repoKey expiredVersionId "phase5 selective gc expired tombstone" 7
+
+        ensureStatus HttpStatusCode.OK expiredTombstoneResponse |> ignore
+
+        use retainedTombstoneResponse =
+            tombstoneVersionWithToken promoteToken repoKey retainedVersionId "phase5 selective gc retained tombstone" 7
+
+        ensureStatus HttpStatusCode.OK retainedTombstoneResponse |> ignore
+
+        fixture.ExpireTombstoneRetention(expiredVersionId)
+
+        let orphanDigest = tokenHashFor $"p507-orphan-{Guid.NewGuid():N}"
+        fixture.SeedOrphanBlob(orphanDigest, 377L)
+
+        Assert.True(fixture.BlobExists(expiredDigest))
+        Assert.True(fixture.BlobExists(retainedDigest))
+        Assert.True(fixture.BlobExists(orphanDigest))
+
+        use gcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = false
+                      RetentionGraceHours = 0
+                      BatchSize = 500 })
+
+        let gcBody = ensureStatus HttpStatusCode.OK gcResponse
+        use gcDoc = JsonDocument.Parse(gcBody)
+        Assert.Equal("execute", gcDoc.RootElement.GetProperty("mode").GetString())
+
+        let deletedVersionCount = gcDoc.RootElement.GetProperty("deletedVersionCount").GetInt32()
+        let deletedBlobCount = gcDoc.RootElement.GetProperty("deletedBlobCount").GetInt32()
+        Assert.True(deletedVersionCount >= 1, "Expected at least one expired tombstoned version to be deleted.")
+        Assert.True(deletedBlobCount >= 2, "Expected at least expired version blob and orphan blob to be deleted.")
+
+        Assert.Equal(None, fixture.TryReadVersionState(expiredVersionId))
+        Assert.False(fixture.BlobExists(expiredDigest))
+
+        Assert.Equal(Some "tombstoned", fixture.TryReadVersionState(retainedVersionId))
+        Assert.True(fixture.BlobExists(retainedDigest))
+
+        Assert.False(fixture.BlobExists(orphanDigest))
+
+    [<Fact>]
+    member _.``P5-stress GC execute honors batch size across multiple runs for expired tombstones`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p5stress-admin") [| "repo:*:admin" |] 60
+
+        let runGcCleanupBatch () =
+            use response =
+                runGcWithToken
+                    adminToken
+                    (Some
+                        { DryRun = false
+                          RetentionGraceHours = 0
+                          BatchSize = 5000 })
+
+            let body = ensureStatus HttpStatusCode.OK response
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("deletedVersionCount").GetInt32()
+
+        let mutable cleanupDeletedCount = runGcCleanupBatch ()
+        let mutable cleanupIterations = 0
+
+        while cleanupDeletedCount > 0 && cleanupIterations < 20 do
+            cleanupIterations <- cleanupIterations + 1
+            cleanupDeletedCount <- runGcCleanupBatch ()
+
+        let repoKey = makeRepoKey "p5stress-gc"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p5stress-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p5stress-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let expiredAId, expiredADigest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p5stress-expired-a-{Guid.NewGuid():N}"
+
+        let expiredBId, expiredBDigest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p5stress-expired-b-{Guid.NewGuid():N}"
+
+        let retainedId, retainedDigest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p5stress-retained-{Guid.NewGuid():N}"
+
+        use tombstoneExpiredA =
+            tombstoneVersionWithToken promoteToken repoKey expiredAId "p5 stress expired a" 7
+
+        ensureStatus HttpStatusCode.OK tombstoneExpiredA |> ignore
+
+        use tombstoneExpiredB =
+            tombstoneVersionWithToken promoteToken repoKey expiredBId "p5 stress expired b" 7
+
+        ensureStatus HttpStatusCode.OK tombstoneExpiredB |> ignore
+
+        use tombstoneRetained =
+            tombstoneVersionWithToken promoteToken repoKey retainedId "p5 stress retained" 7
+
+        ensureStatus HttpStatusCode.OK tombstoneRetained |> ignore
+
+        fixture.SetTombstoneRetention(expiredAId, DateTimeOffset(1970, 1, 1, 0, 0, 0, TimeSpan.Zero))
+        fixture.SetTombstoneRetention(expiredBId, DateTimeOffset(1970, 1, 1, 0, 0, 1, TimeSpan.Zero))
+
+        let runGcBatchOne () =
+            use response =
+                runGcWithToken
+                    adminToken
+                    (Some
+                        { DryRun = false
+                          RetentionGraceHours = 0
+                          BatchSize = 1 })
+
+            let body = ensureStatus HttpStatusCode.OK response
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("deletedVersionCount").GetInt32()
+
+        let firstDeletedVersionCount = runGcBatchOne ()
+        Assert.Equal(1, firstDeletedVersionCount)
+
+        let secondDeletedVersionCount = runGcBatchOne ()
+        Assert.Equal(1, secondDeletedVersionCount)
+
+        let thirdDeletedVersionCount = runGcBatchOne ()
+        Assert.Equal(0, thirdDeletedVersionCount)
+
+        Assert.Equal(None, fixture.TryReadVersionState(expiredAId))
+        Assert.Equal(None, fixture.TryReadVersionState(expiredBId))
+        Assert.Equal(Some "tombstoned", fixture.TryReadVersionState(retainedId))
+
+        Assert.False(fixture.BlobExists(expiredADigest))
+        Assert.False(fixture.BlobExists(expiredBDigest))
+        Assert.True(fixture.BlobExists(retainedDigest))
+
+    [<Fact>]
+    member _.``P5-stress reconcile sample limit and GC blob batch drain are deterministic under orphan volume`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p5stress-reconcile-admin") [| "repo:*:admin" |] 60
+
+        let runGcCleanupBatch () =
+            use response =
+                runGcWithToken
+                    adminToken
+                    (Some
+                        { DryRun = false
+                          RetentionGraceHours = 0
+                          BatchSize = 5000 })
+
+            let body = ensureStatus HttpStatusCode.OK response
+            use doc = JsonDocument.Parse(body)
+            let deletedVersions = doc.RootElement.GetProperty("deletedVersionCount").GetInt32()
+            let deletedBlobs = doc.RootElement.GetProperty("deletedBlobCount").GetInt32()
+            deletedVersions + deletedBlobs
+
+        let mutable cleanupDeleted = runGcCleanupBatch ()
+        let mutable cleanupIterations = 0
+
+        while cleanupDeleted > 0 && cleanupIterations < 20 do
+            cleanupIterations <- cleanupIterations + 1
+            cleanupDeleted <- runGcCleanupBatch ()
+
+        let orphanDigests =
+            [ 1 .. 7 ]
+            |> List.map (fun idx ->
+                let digest = tokenHashFor $"p5stress-reconcile-orphan-{idx}-{Guid.NewGuid():N}"
+                fixture.SeedOrphanBlob(digest, int64 (100 + idx))
+                digest)
+
+        use reconcileBeforeResponse = reconcileBlobsWithToken adminToken 3
+        let reconcileBeforeBody = ensureStatus HttpStatusCode.OK reconcileBeforeResponse
+        use reconcileBeforeDoc = JsonDocument.Parse(reconcileBeforeBody)
+
+        let orphanCountBefore = reconcileBeforeDoc.RootElement.GetProperty("orphanBlobCount").GetInt64()
+        let orphanSamplesBefore = reconcileBeforeDoc.RootElement.GetProperty("orphanBlobSamples").EnumerateArray() |> Seq.length
+        Assert.True(orphanCountBefore >= int64 orphanDigests.Length)
+        Assert.Equal(3, orphanSamplesBefore)
+
+        let runGcBatchThree () =
+            use response =
+                runGcWithToken
+                    adminToken
+                    (Some
+                        { DryRun = false
+                          RetentionGraceHours = 0
+                          BatchSize = 3 })
+
+            let body = ensureStatus HttpStatusCode.OK response
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("deletedBlobCount").GetInt32()
+
+        let firstDeletedBlobCount = runGcBatchThree ()
+        let secondDeletedBlobCount = runGcBatchThree ()
+        let thirdDeletedBlobCount = runGcBatchThree ()
+        let fourthDeletedBlobCount = runGcBatchThree ()
+
+        Assert.Equal(3, firstDeletedBlobCount)
+        Assert.Equal(3, secondDeletedBlobCount)
+        Assert.Equal(1, thirdDeletedBlobCount)
+        Assert.Equal(0, fourthDeletedBlobCount)
+
+        for digest in orphanDigests do
+            Assert.False(fixture.BlobExists(digest))
+
+    [<Fact>]
+    member _.``P5-stress GC retention grace excludes fresh orphan blobs until grace window is reduced`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p5stress-grace-admin") [| "repo:*:admin" |] 60
+
+        let runGcCleanupBatch () =
+            use response =
+                runGcWithToken
+                    adminToken
+                    (Some
+                        { DryRun = false
+                          RetentionGraceHours = 0
+                          BatchSize = 5000 })
+
+            let body = ensureStatus HttpStatusCode.OK response
+            use doc = JsonDocument.Parse(body)
+            let deletedVersions = doc.RootElement.GetProperty("deletedVersionCount").GetInt32()
+            let deletedBlobs = doc.RootElement.GetProperty("deletedBlobCount").GetInt32()
+            deletedVersions + deletedBlobs
+
+        let mutable cleanupDeleted = runGcCleanupBatch ()
+        let mutable cleanupIterations = 0
+
+        while cleanupDeleted > 0 && cleanupIterations < 20 do
+            cleanupIterations <- cleanupIterations + 1
+            cleanupDeleted <- runGcCleanupBatch ()
+
+        let oldDigest = tokenHashFor $"p5stress-grace-old-{Guid.NewGuid():N}"
+        let freshDigest = tokenHashFor $"p5stress-grace-fresh-{Guid.NewGuid():N}"
+        fixture.SeedOrphanBlob(oldDigest, 201L)
+        fixture.SeedOrphanBlob(freshDigest, 202L)
+        fixture.SetBlobCreatedAt(oldDigest, DateTimeOffset.UtcNow.AddHours(-12.0))
+        fixture.SetBlobCreatedAt(freshDigest, DateTimeOffset.UtcNow)
+
+        use graceGcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = false
+                      RetentionGraceHours = 6
+                      BatchSize = 100 })
+
+        let graceGcBody = ensureStatus HttpStatusCode.OK graceGcResponse
+        use graceGcDoc = JsonDocument.Parse(graceGcBody)
+        let firstDeletedBlobCount = graceGcDoc.RootElement.GetProperty("deletedBlobCount").GetInt32()
+        Assert.True(firstDeletedBlobCount >= 1, "Expected old orphan blob to be eligible under 6-hour grace.")
+
+        Assert.False(fixture.BlobExists(oldDigest))
+        Assert.True(fixture.BlobExists(freshDigest))
+
+        use zeroGraceGcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = false
+                      RetentionGraceHours = 0
+                      BatchSize = 100 })
+
+        let zeroGraceGcBody = ensureStatus HttpStatusCode.OK zeroGraceGcResponse
+        use zeroGraceGcDoc = JsonDocument.Parse(zeroGraceGcBody)
+        let secondDeletedBlobCount = zeroGraceGcDoc.RootElement.GetProperty("deletedBlobCount").GetInt32()
+        Assert.True(secondDeletedBlobCount >= 1, "Expected fresh orphan blob to be eligible once grace is reduced to zero.")
+
+        Assert.False(fixture.BlobExists(freshDigest))
+
+    [<Fact>]
+    member _.``P5-stress GC defaults to dry-run when request body is omitted`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p5stress-default-dryrun-admin") [| "repo:*:admin" |] 60
+        let orphanDigest = tokenHashFor $"p5stress-default-dryrun-orphan-{Guid.NewGuid():N}"
+        fixture.SeedOrphanBlob(orphanDigest, 345L)
+
+        use gcResponse = runGcWithToken adminToken None
+        let gcBody = ensureStatus HttpStatusCode.OK gcResponse
+        use gcDoc = JsonDocument.Parse(gcBody)
+
+        Assert.Equal("dry_run", gcDoc.RootElement.GetProperty("mode").GetString())
+        Assert.Equal(0, gcDoc.RootElement.GetProperty("deletedBlobCount").GetInt32())
+        Assert.Equal(0, gcDoc.RootElement.GetProperty("deletedVersionCount").GetInt32())
+        Assert.True(fixture.BlobExists(orphanDigest))
+
+    [<Fact>]
+    member _.``P6-stress ops summary outbox counters separate pending and available via deterministic deltas`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p6stress-ops-outbox-admin") [| "repo:*:admin" |] 60
+
+        use baselineResponse = opsSummaryWithToken adminToken
+        let baselineBody = ensureStatus HttpStatusCode.OK baselineResponse
+        use baselineDoc = JsonDocument.Parse(baselineBody)
+        let baselinePendingOutbox = baselineDoc.RootElement.GetProperty("pendingOutboxEvents").GetInt64()
+        let baselineAvailableOutbox = baselineDoc.RootElement.GetProperty("availableOutboxEvents").GetInt64()
+        let baselineOldestPendingAge = baselineDoc.RootElement.GetProperty("oldestPendingOutboxAgeSeconds").GetInt64()
+
+        let now = DateTimeOffset.UtcNow
+
+        let availableEventId =
+            fixture.InsertOutboxEvent("wave6.ops.available", "operations", Guid.NewGuid().ToString(), "{}")
+
+        fixture.SetOutboxEventStateForTest(availableEventId, now.AddMinutes(-2.0), now.AddMinutes(-4.0), None)
+
+        let futureEventId =
+            fixture.InsertOutboxEvent("wave6.ops.future", "operations", Guid.NewGuid().ToString(), "{}")
+
+        fixture.SetOutboxEventStateForTest(futureEventId, now.AddMinutes(30.0), now.AddMinutes(-3.0), None)
+
+        let deliveredEventId =
+            fixture.InsertOutboxEvent("wave6.ops.delivered", "operations", Guid.NewGuid().ToString(), "{}")
+
+        fixture.SetOutboxEventStateForTest(
+            deliveredEventId,
+            now.AddMinutes(-1.0),
+            now.AddMinutes(-5.0),
+            Some(now.AddMinutes(-1.0))
+        )
+
+        use afterResponse = opsSummaryWithToken adminToken
+        let afterBody = ensureStatus HttpStatusCode.OK afterResponse
+        use afterDoc = JsonDocument.Parse(afterBody)
+        let pendingOutboxAfter = afterDoc.RootElement.GetProperty("pendingOutboxEvents").GetInt64()
+        let availableOutboxAfter = afterDoc.RootElement.GetProperty("availableOutboxEvents").GetInt64()
+        let oldestPendingAgeAfter = afterDoc.RootElement.GetProperty("oldestPendingOutboxAgeSeconds").GetInt64()
+
+        Assert.Equal(baselinePendingOutbox + 2L, pendingOutboxAfter)
+        Assert.Equal(baselineAvailableOutbox + 1L, availableOutboxAfter)
+        Assert.True(oldestPendingAgeAfter >= baselineOldestPendingAge)
+
+    [<Fact>]
+    member _.``P6-stress ops summary search job status counters track pending processing and failed deltas`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "p6stress-ops-search-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p6stress-ops-search"
+        createRepoAsAdmin adminToken repoKey
+        let writeToken, _ = issuePat (makeSubject "p6stress-ops-search-writer") [| $"repo:{repoKey}:write" |] 60
+
+        let createDraftVersionId (suffix: string) =
+            use response =
+                createDraftVersionWithToken
+                    writeToken
+                    repoKey
+                    "nuget"
+                    ""
+                    $"p6stress-ops-search-{suffix}-{Guid.NewGuid():N}"
+                    "1.0.0"
+
+            let body = ensureStatus HttpStatusCode.Created response
+            use doc = JsonDocument.Parse(body)
+            doc.RootElement.GetProperty("versionId").GetGuid()
+
+        use baselineResponse = opsSummaryWithToken adminToken
+        let baselineBody = ensureStatus HttpStatusCode.OK baselineResponse
+        use baselineDoc = JsonDocument.Parse(baselineBody)
+        let baselinePendingJobs = baselineDoc.RootElement.GetProperty("pendingSearchJobs").GetInt64()
+        let baselineFailedJobs = baselineDoc.RootElement.GetProperty("failedSearchJobs").GetInt64()
+
+        let versionPending = createDraftVersionId "pending"
+        let versionProcessing = createDraftVersionId "processing"
+        let versionFailed = createDraftVersionId "failed"
+        let now = DateTimeOffset.UtcNow
+
+        fixture.UpsertSearchIndexJobForVersionForTest(versionPending, "pending", 0, now.AddMinutes(-1.0), None)
+        fixture.UpsertSearchIndexJobForVersionForTest(versionProcessing, "processing", 1, now.AddMinutes(-1.0), None)
+
+        fixture.UpsertSearchIndexJobForVersionForTest(
+            versionFailed,
+            "failed",
+            3,
+            now.AddMinutes(-1.0),
+            Some "wave6 synthetic search failure"
+        )
+
+        use afterResponse = opsSummaryWithToken adminToken
+        let afterBody = ensureStatus HttpStatusCode.OK afterResponse
+        use afterDoc = JsonDocument.Parse(afterBody)
+        let pendingJobsAfter = afterDoc.RootElement.GetProperty("pendingSearchJobs").GetInt64()
+        let failedJobsAfter = afterDoc.RootElement.GetProperty("failedSearchJobs").GetInt64()
+
+        Assert.Equal(baselinePendingJobs + 2L, pendingJobsAfter)
+        Assert.Equal(baselineFailedJobs + 1L, failedJobsAfter)
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =
