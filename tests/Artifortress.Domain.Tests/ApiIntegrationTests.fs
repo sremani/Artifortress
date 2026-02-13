@@ -3058,6 +3058,72 @@ type Phase1ApiTests(fixture: ApiFixture) =
             Assert.Equal(Some "version_not_published", lastError)
 
     [<Fact>]
+    member _.``P4-05 republished version resets exhausted search job attempts and completes`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p405-republish-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p405-republish"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p405-republish-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"search-republish-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let payloadJson = JsonSerializer.Serialize({| versionId = versionId |})
+
+        fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+        |> ignore
+
+        fixture.RunSearchIndexOutboxSweep(50) |> ignore
+
+        let firstOutcome = fixture.RunSearchIndexJobSweep(50, 2)
+        Assert.Equal(1, firstOutcome.ClaimedCount)
+        Assert.Equal(0, firstOutcome.CompletedCount)
+        Assert.Equal(1, firstOutcome.FailedCount)
+
+        fixture.MakeSearchIndexJobAvailableNow(versionId)
+
+        let secondOutcome = fixture.RunSearchIndexJobSweep(50, 2)
+        Assert.Equal(1, secondOutcome.ClaimedCount)
+        Assert.Equal(0, secondOutcome.CompletedCount)
+        Assert.Equal(1, secondOutcome.FailedCount)
+
+        fixture.MakeSearchIndexJobAvailableNow(versionId)
+
+        let cappedOutcome = fixture.RunSearchIndexJobSweep(50, 2)
+        Assert.Equal(0, cappedOutcome.ClaimedCount)
+
+        fixture.PublishVersionForTest(versionId)
+
+        fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+        |> ignore
+
+        let replayOutbox = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(1, replayOutbox.ClaimedCount)
+        Assert.Equal(1, replayOutbox.EnqueuedCount)
+        Assert.Equal(1, replayOutbox.DeliveredCount)
+        Assert.Equal(0, replayOutbox.RequeuedCount)
+
+        let replayJobSweep = fixture.RunSearchIndexJobSweep(50, 2)
+        Assert.Equal(1, replayJobSweep.ClaimedCount)
+        Assert.Equal(1, replayJobSweep.CompletedCount)
+        Assert.Equal(0, replayJobSweep.FailedCount)
+
+        match fixture.TryReadSearchIndexJobForVersion(versionId) with
+        | None -> failwith "Expected completed search_index_job row after republish replay."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("completed", status)
+            Assert.Equal(0, attempts)
+            Assert.Equal(None, lastError)
+
+    [<Fact>]
     member _.``P4-06 download blocks quarantined blob and unblocks after release`` () =
         fixture.RequireAvailable()
 
@@ -4716,6 +4782,119 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.Equal(0, gcDoc.RootElement.GetProperty("deletedBlobCount").GetInt32())
         Assert.Equal(0, gcDoc.RootElement.GetProperty("deletedVersionCount").GetInt32())
         Assert.True(fixture.BlobExists(orphanDigest))
+
+    [<Fact>]
+    member _.``P5-stress search sweep deterministically splits published quarantined tombstoned and draft versions`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p5stress-mixed-search-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p5stress-mixed-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "p5stress-mixed-search-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p5stress-mixed-search-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let publishedQuarantineVersionId, _ =
+            createPublishedVersionWithBlob
+                repoKey
+                writeToken
+                promoteToken
+                $"p5stress-search-published-quarantine-{Guid.NewGuid():N}"
+
+        use quarantineResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                publishedQuarantineVersionId
+                "quarantine"
+                "p5 stress mixed search quarantine path"
+                "policy-stress-v5"
+
+        let quarantineBody = ensureStatus HttpStatusCode.Created quarantineResponse
+        use quarantineDoc = JsonDocument.Parse(quarantineBody)
+        Assert.True(quarantineDoc.RootElement.GetProperty("quarantined").GetBoolean())
+
+        let tombstonedVersionId, _ =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"p5stress-search-tombstoned-{Guid.NewGuid():N}"
+
+        use tombstoneResponse =
+            tombstoneVersionWithToken promoteToken repoKey tombstonedVersionId "p5 stress mixed search tombstone path" 7
+
+        ensureStatus HttpStatusCode.OK tombstoneResponse |> ignore
+
+        use draftResponse =
+            createDraftVersionWithToken
+                writeToken
+                repoKey
+                "nuget"
+                ""
+                $"p5stress-search-draft-{Guid.NewGuid():N}"
+                "1.0.0"
+
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let draftVersionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        // Reset after setup to remove publish-generated outbox events and keep deterministic backlog shape.
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let payloadPublished = JsonSerializer.Serialize({| versionId = publishedQuarantineVersionId |})
+        let payloadTombstoned = JsonSerializer.Serialize({| versionId = tombstonedVersionId |})
+        let payloadDraft = JsonSerializer.Serialize({| versionId = draftVersionId |})
+
+        let publishedEventId =
+            fixture.InsertOutboxEvent("version.published", "package_version", publishedQuarantineVersionId.ToString(), payloadPublished)
+
+        let tombstonedEventId =
+            fixture.InsertOutboxEvent("version.published", "package_version", tombstonedVersionId.ToString(), payloadTombstoned)
+
+        let draftEventId =
+            fixture.InsertOutboxEvent("version.published", "package_version", draftVersionId.ToString(), payloadDraft)
+
+        let outboxOutcome = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(3, outboxOutcome.ClaimedCount)
+        Assert.Equal(3, outboxOutcome.EnqueuedCount)
+        Assert.Equal(3, outboxOutcome.DeliveredCount)
+        Assert.Equal(0, outboxOutcome.RequeuedCount)
+
+        Assert.True(fixture.IsOutboxDelivered(publishedEventId))
+        Assert.True(fixture.IsOutboxDelivered(tombstonedEventId))
+        Assert.True(fixture.IsOutboxDelivered(draftEventId))
+        Assert.Equal(3L, fixture.CountSearchIndexJobsForTenant())
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(50, 3)
+        Assert.Equal(3, jobOutcome.ClaimedCount)
+        Assert.Equal(1, jobOutcome.CompletedCount)
+        Assert.Equal(2, jobOutcome.FailedCount)
+
+        match fixture.TryReadSearchIndexJobForVersion(publishedQuarantineVersionId) with
+        | None -> failwith "Expected completed search job for published quarantined version."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("completed", status)
+            Assert.Equal(0, attempts)
+            Assert.Equal(None, lastError)
+
+        match fixture.TryReadSearchIndexJobForVersion(tombstonedVersionId) with
+        | None -> failwith "Expected failed search job for tombstoned version."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("failed", status)
+            Assert.Equal(1, attempts)
+            Assert.Equal(Some "version_not_published", lastError)
+
+        match fixture.TryReadSearchIndexJobForVersion(draftVersionId) with
+        | None -> failwith "Expected failed search job for draft version."
+        | Some(status, attempts, lastError) ->
+            Assert.Equal("failed", status)
+            Assert.Equal(1, attempts)
+            Assert.Equal(Some "version_not_published", lastError)
+
+        Assert.Equal(Some "published", fixture.TryReadVersionState(publishedQuarantineVersionId))
+        Assert.Equal(Some "tombstoned", fixture.TryReadVersionState(tombstonedVersionId))
+        Assert.Equal(Some "draft", fixture.TryReadVersionState(draftVersionId))
+        Assert.Equal(1L, fixture.CountPolicyEvaluations(publishedQuarantineVersionId))
+        Assert.Equal(Some "quarantined", fixture.TryReadQuarantineStatus(publishedQuarantineVersionId))
 
     [<Fact>]
     member _.``P6-stress ops summary outbox counters separate pending and available via deterministic deltas`` () =

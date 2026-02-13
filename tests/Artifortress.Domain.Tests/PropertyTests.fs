@@ -305,6 +305,15 @@ let ``API validateQuarantineStatusFilter accepts known values with casing and wh
     | _ -> false
 
 [<Property>]
+let ``API validateQuarantineStatusFilter returns none for blank values`` (useNull: bool) (paddingSeed: int) =
+    let padding = String.replicate (normalizeNonNegativeInt paddingSeed % 4) " "
+    let rawValue = if useNull then null else $"{padding}\t{padding}"
+
+    match Program.validateQuarantineStatusFilter rawValue with
+    | Ok None -> true
+    | _ -> false
+
+[<Property>]
 let ``API normalizeAbortReason defaults and trims`` (reasonRaw: string) =
     let normalized = Program.normalizeAbortReason reasonRaw
 
@@ -464,6 +473,37 @@ let ``API validateEvaluatePolicyRequest maps explicit decision hints`` (versionI
         | Error _ -> false
         | Ok(_, _, decision, decisionSource, _, parsedEngineVersion) ->
             decision = expectedDecision && decisionSource = expectedSource && parsedEngineVersion.IsNone
+
+[<Property>]
+let ``API validateEvaluatePolicyRequest maps blank policy engine version to none`` (versionId: Guid) (useQuarantine: bool) (actionSeed: bool) (reasonRaw: string) =
+    if versionId = Guid.Empty then
+        true
+    else
+        let expectedDecision, expectedDecisionSource =
+            if useQuarantine then
+                "quarantine", "hint_quarantine"
+            else
+                "allow", "hint_allow"
+
+        let action = if actionSeed then "publish" else "promote"
+        let reason = if String.IsNullOrWhiteSpace reasonRaw then "policy-engine-blank" else reasonRaw
+
+        let request: Program.EvaluatePolicyRequest =
+            { Action = action
+              VersionId = versionId
+              DecisionHint = expectedDecision
+              Reason = $"  {reason}  "
+              PolicyEngineVersion = "   " }
+
+        match Program.validateEvaluatePolicyRequest request with
+        | Error _ -> false
+        | Ok(parsedAction, parsedVersionId, parsedDecision, parsedDecisionSource, parsedReason, parsedEngineVersion) ->
+            parsedAction = action
+            && parsedVersionId = versionId
+            && parsedDecision = expectedDecision
+            && parsedDecisionSource = expectedDecisionSource
+            && parsedReason = reason.Trim()
+            && parsedEngineVersion.IsNone
 
 [<Property>]
 let ``API validateEvaluatePolicyRequest rejects unsupported decision hints`` (versionId: Guid) (hintRaw: string) =
@@ -885,6 +925,18 @@ let ``WorkerOutboxParsing resolves version id from payload fallback path`` (vers
         if String.IsNullOrWhiteSpace value then "not-a-guid" else $"{value}-x"
 
     let payload = $"{{\"versionId\":\"{versionId:D}\",\"eventType\":\"version.published\"}}"
+
+    match WorkerOutboxParsing.tryResolveVersionId aggregateId payload with
+    | Some parsed -> parsed = versionId
+    | None -> false
+
+[<Property>]
+let ``WorkerOutboxParsing resolves payload guid with surrounding whitespace`` (versionId: Guid) (aggregateIdRaw: string) =
+    let aggregateId =
+        let value = if isNull aggregateIdRaw then "" else aggregateIdRaw.Trim()
+        if String.IsNullOrWhiteSpace value then "invalid-guid" else $"invalid-{value}"
+
+    let payload = $"{{\"versionId\":\"  {versionId:D}  \"}}"
 
     match WorkerOutboxParsing.tryResolveVersionId aggregateId payload with
     | Some parsed -> parsed = versionId

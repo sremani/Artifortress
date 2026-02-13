@@ -92,6 +92,9 @@ Status key:
     - `P5-stress` default-run safety:
       - GC request without body defaults to `dry_run`.
       - default dry-run returns zero deletion counts and preserves orphan blobs.
+    - `P5-stress` mixed lifecycle/policy/search split:
+      - `P5-stress search sweep deterministically splits published quarantined tombstoned and draft versions`.
+      - validates mixed backlog processing where only published versions complete search jobs while tombstoned/draft versions fail with deterministic retry metadata.
 - P5-08 completed:
   - Added executable demo script:
     - `scripts/phase5-demo.sh`
@@ -103,8 +106,8 @@ Status key:
 Latest local verification:
 - `make build`
 - `make test`
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`70` passing integration tests)
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`163` total tests)
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`83` passing integration tests)
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`185` total tests)
 - `make format`
 
 ## Ticket Details

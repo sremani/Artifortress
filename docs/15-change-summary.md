@@ -843,3 +843,47 @@ This change set combines:
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`81` integration tests).
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` passed (`11` Phase 7 tests).
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`180` total tests).
+
+## Lifecycle + Policy/Search Stress Wave 7 Addendum (2026-02-13, latest)
+
+### Code changes
+
+- `src/Artifortress.Worker/Program.fs`
+  - Fixed replay starvation bug in outbox->search job upsert path:
+    - on `(tenant_id, version_id)` conflict, worker now resets `attempts = 0` when re-enqueuing pending jobs from new `version.published` events.
+    - prevents jobs that previously hit `maxAttempts` from becoming permanently unclaimable after republish/replay.
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added P4 regression coverage for replay starvation fix:
+    - `P4-05 republished version resets exhausted search job attempts and completes`.
+  - Added mixed lifecycle/policy/search stress coverage:
+    - `P5-stress search sweep deterministically splits published quarantined tombstoned and draft versions`.
+    - verifies deterministic split where:
+      - published + quarantined version completes search job,
+      - tombstoned and draft versions fail with retry metadata.
+- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+  - Added FsCheck invariants:
+    - `API validateQuarantineStatusFilter returns none for blank values`
+    - `API validateEvaluatePolicyRequest maps blank policy engine version to none`
+    - `WorkerOutboxParsing resolves payload guid with surrounding whitespace`
+  - Property count increased to `87`.
+
+### Documentation updates
+
+- Updated:
+  - `docs/10-current-state.md`
+  - `docs/13-phase4-implementation-tickets.md`
+  - `docs/20-phase5-implementation-tickets.md`
+  - `docs/15-change-summary.md`
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P4-05 republished version resets exhausted search job attempts and completes" -v minimal` passed (`1` test).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P5-stress search sweep deterministically splits published quarantined tombstoned and draft versions" -v minimal` passed (`1` test).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~PropertyTests" -v minimal` passed (`87` tests).
+- `make test` passed (`102` non-integration tests).
+- `make test-integration` passed (`83` integration tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`185` total tests).
+- `make format` passed.

@@ -100,6 +100,7 @@ values
 on conflict (tenant_id, version_id)
 do update set
   status = 'pending',
+  attempts = 0,
   available_at = excluded.available_at,
   updated_at = now(),
   last_error = null;

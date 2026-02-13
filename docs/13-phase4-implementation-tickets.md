@@ -85,6 +85,11 @@ Status key:
   - Added integration coverage for:
     - successful completion path for published-version jobs.
     - failure + bounded retry behavior for unpublished-version jobs.
+  - Added replay starvation fix for republish events:
+    - `search_index_jobs` upsert path now resets `attempts = 0` when a new `version.published` outbox event is enqueued for an existing `(tenant_id, version_id)` job.
+    - prevents jobs that previously reached `maxAttempts` from remaining permanently unclaimable after a later publish replay.
+  - Added regression integration coverage:
+    - `P4-05 republished version resets exhausted search job attempts and completes`.
 - P4-06 completed:
   - Added quarantine-aware blob download guard in API:
     - `GET /v1/repos/{repoKey}/blobs/{digest}`
