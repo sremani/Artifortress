@@ -844,6 +844,63 @@ This change set combines:
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` passed (`11` Phase 7 tests).
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`180` total tests).
 
+## Search Read-Model Serving Baseline Addendum (2026-02-13, latest)
+
+### Code changes
+
+- `db/migrations/0009_post_ga_search_read_model.sql` (new)
+  - Added `search_documents` projection table with:
+    - unique `(tenant_id, version_id)` projection identity,
+    - generated `search_vector` column,
+    - GIN index for text-search query path.
+- `src/Artifortress.Worker/Program.fs`
+  - Extended search job processor to project published package versions into `search_documents`.
+  - Added deterministic failure semantics for projection write/source read errors:
+    - `search_index_source_read_failed`
+    - `search_index_write_failed`
+  - Kept bounded retry/backoff behavior and completion semantics intact.
+- `src/Artifortress.Api/Program.fs`
+  - Added repo-scoped read-model query endpoint:
+    - `GET /v1/repos/{repoKey}/search/packages`
+    - supports `q`, `limit`, `offset`.
+    - enforces repo `read` scope.
+    - filters out non-published and quarantined/rejected versions.
+  - Added admin rebuild endpoint:
+    - `POST /v1/admin/search/rebuild`
+    - enqueues pending search jobs for published versions (repo-scoped or tenant-wide).
+    - writes audit action `search.rebuild.requested`.
+
+### Test coverage changes
+
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added read-model integration tests:
+    - `P8-01 search query endpoint enforces authz and returns indexed published versions`
+    - `P8-02 search query excludes quarantined and tombstoned versions while allowing released versions`
+    - `P8-03 admin rebuild endpoint enqueues published versions and backfills searchable documents`
+- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+  - Added API helper properties for search controls:
+    - `normalizeSearchLimit` bounds/default behavior.
+    - `normalizeSearchOffset` bounds/default behavior.
+    - `validateSearchRebuildRequest` normalization/default/range behavior.
+  - Property count increased to `91`.
+
+### Documentation updates
+
+- Updated:
+  - `README.md`
+  - `docs/05-implementation-plan.md`
+  - `docs/10-current-state.md`
+  - `docs/15-change-summary.md`
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P8-0" -v minimal` passed (`3` tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~PropertyTests" -v minimal` passed (`91` tests).
+- `make format` passed.
+- `make test` passed (`106` non-integration tests).
+- `make test-integration` passed (`86` integration tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`192` total tests).
+
 ## Lifecycle + Policy/Search Stress Wave 7 Addendum (2026-02-13, latest)
 
 ### Code changes

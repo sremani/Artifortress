@@ -14,7 +14,7 @@ This roadmap converts the design into execution phases with exit criteria.
 | Phase 5 | complete | P5-01 through P5-08 complete, including tombstone, GC dry-run/execute, reconcile API, and demo/runbook. |
 | Phase 6 | complete | P6-01 through P6-10 complete, including readiness hardening, ops summary, DR drill, security closure, and rollback runbooks. |
 | Phase 7 (Identity Federation) | complete | P7-01 through P7-07 complete (OIDC HS256 + JWKS/RS256 + claim mapping, SAML metadata + ACS exchange + role mapping, rollout/runbook controls). |
-| Post-GA | planned | Search read-model serving maturity and F# native mutation hardening (native runtime + non-blocking CI + score/trend/burn-in policy are active; merge-gate promotion remains pending required burn-in streak). |
+| Post-GA | in_progress | Search read-model serving baseline is implemented (`/v1/repos/{repoKey}/search/packages`, `/v1/admin/search/rebuild`, worker-backed `search_documents` projection). Remaining work: relevance tuning, incremental rebuild controls, and mutation-lane gate promotion after burn-in streak. |
 
 ## Phase 0: Foundation (1-2 weeks)
 

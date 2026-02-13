@@ -305,6 +305,71 @@ let ``API validateQuarantineStatusFilter accepts known values with casing and wh
     | _ -> false
 
 [<Property>]
+let ``API normalizeSearchLimit enforces defaults and upper bound`` (limitSeed: int) =
+    let raw =
+        if limitSeed % 3 = 0 then
+            "invalid"
+        else
+            string limitSeed
+
+    let normalized = Program.normalizeSearchLimit raw
+
+    if raw = "invalid" then
+        normalized = 25
+    else
+        let parsed = Int32.Parse(raw)
+        if parsed <= 0 then normalized = 25 elif parsed > 200 then normalized = 200 else normalized = parsed
+
+[<Property>]
+let ``API normalizeSearchOffset enforces non-negative defaults and cap`` (offsetSeed: int) =
+    let raw =
+        if offsetSeed % 3 = 0 then
+            "bad"
+        else
+            string offsetSeed
+
+    let normalized = Program.normalizeSearchOffset raw
+
+    if raw = "bad" then
+        normalized = 0
+    else
+        let parsed = Int32.Parse(raw)
+        if parsed < 0 then normalized = 0 elif parsed > 10000 then normalized = 10000 else normalized = parsed
+
+[<Property>]
+let ``API validateSearchRebuildRequest defaults and normalizes repo key`` (repoRaw: string) (batchSeed: int) =
+    let repoValue =
+        if String.IsNullOrWhiteSpace repoRaw then
+            "  "
+        else
+            repoRaw
+
+    let batchValue = if batchSeed % 2 = 0 then 0 else (normalizeNonNegativeInt batchSeed % 5001)
+
+    let request: Program.SearchRebuildRequest =
+        { RepoKey = repoValue
+          BatchSize = batchValue }
+
+    match Program.validateSearchRebuildRequest (Some request) with
+    | Error _ -> false
+    | Ok(repoKey, batchSize) ->
+        let expectedRepo =
+            let normalized = repoValue.Trim().ToLowerInvariant()
+            if String.IsNullOrWhiteSpace normalized then None else Some normalized
+
+        let expectedBatch = if batchValue <= 0 then 500 else batchValue
+        repoKey = expectedRepo && batchSize = expectedBatch
+
+[<Property>]
+let ``API validateSearchRebuildRequest rejects oversized batch`` (batchSeed: int) =
+    let batchSize = 5001 + (normalizeNonNegativeInt batchSeed % 10000)
+    let request: Program.SearchRebuildRequest = { RepoKey = ""; BatchSize = batchSize }
+
+    match Program.validateSearchRebuildRequest (Some request) with
+    | Ok _ -> false
+    | Error err -> err = "batchSize must be between 1 and 5000."
+
+[<Property>]
 let ``API validateQuarantineStatusFilter returns none for blank values`` (useNull: bool) (paddingSeed: int) =
     let padding = String.replicate (normalizeNonNegativeInt paddingSeed % 4) " "
     let rawValue = if useNull then null else $"{padding}\t{padding}"

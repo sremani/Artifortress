@@ -79,6 +79,12 @@ type RunGcRequest = {
 }
 
 [<CLIMutable>]
+type SearchRebuildRequest = {
+    RepoKey: string
+    BatchSize: int
+}
+
+[<CLIMutable>]
 type CreateUploadSessionRequest = {
     ExpectedDigest: string
     ExpectedLength: int64
@@ -239,6 +245,22 @@ type GcRunResult = {
     DeletedVersionCount: int
     DeleteErrorCount: int
     CandidateDigests: string list
+}
+
+type SearchDocumentRecord = {
+    VersionId: Guid
+    RepoKey: string
+    PackageType: string
+    PackageNamespace: string option
+    PackageName: string
+    PackageVersion: string
+    PublishedAtUtc: DateTimeOffset option
+    IndexedAtUtc: DateTimeOffset
+}
+
+type SearchDocumentsPage = {
+    TotalCount: int64
+    Items: SearchDocumentRecord list
 }
 
 type UploadSessionRecord = {
@@ -545,6 +567,23 @@ let validateGcRequest
         else
             Ok(request.DryRun, retentionGraceHours, batchSize)
 
+let validateSearchRebuildRequest (requestOption: SearchRebuildRequest option) =
+    let defaultBatchSize = 500
+
+    match requestOption with
+    | None -> Ok(None, defaultBatchSize)
+    | Some request ->
+        let repoKey =
+            let value = normalizeRepoKey request.RepoKey
+            if String.IsNullOrWhiteSpace value then None else Some value
+
+        let batchSize = if request.BatchSize <= 0 then defaultBatchSize else request.BatchSize
+
+        if batchSize < 1 || batchSize > 5000 then
+            Error "batchSize must be between 1 and 5000."
+        else
+            Ok(repoKey, batchSize)
+
 let validateEvaluatePolicyRequest (request: EvaluatePolicyRequest) =
     let action = normalizeText request.Action |> fun value -> value.ToLowerInvariant()
     let versionId = request.VersionId
@@ -622,6 +661,18 @@ let validateCompleteUploadRequest (request: CompleteUploadPartsRequest) =
 let normalizeAbortReason (reason: string) =
     let value = normalizeText reason
     if String.IsNullOrWhiteSpace value then "client_abort" else value
+
+let normalizeSearchQueryText (rawQuery: string) = normalizeText rawQuery
+
+let normalizeSearchLimit (rawLimit: string) =
+    match Int32.TryParse rawLimit with
+    | true, parsed when parsed > 0 -> min parsed 200
+    | _ -> 25
+
+let normalizeSearchOffset (rawOffset: string) =
+    match Int32.TryParse rawOffset with
+    | true, parsed when parsed >= 0 -> min parsed 10000
+    | _ -> 0
 
 let parseSingleRangeHeader (rawRangeHeader: string) =
     let headerValue = normalizeText rawRangeHeader
@@ -3381,6 +3432,173 @@ where tenant_id = @tenant_id
                                    pendingSearchJobs = pendingSearchJobs
                                    incompleteGcRuns = incompleteGcRuns
                                    recentPolicyTimeouts24h = recentPolicyTimeouts24h |})))))))
+
+let readSearchDocumentsForRepo
+    (tenantId: Guid)
+    (repoKey: string)
+    (query: string)
+    (limit: int)
+    (offset: int)
+    (conn: NpgsqlConnection)
+    =
+    let normalizedQuery = normalizeSearchQueryText query
+
+    use countCmd =
+        new NpgsqlCommand(
+            """
+select count(*)
+from search_documents sd
+join package_versions pv
+  on pv.version_id = sd.version_id
+ and pv.tenant_id = sd.tenant_id
+left join quarantine_items qi
+  on qi.tenant_id = sd.tenant_id
+ and qi.repo_id = sd.repo_id
+ and qi.version_id = sd.version_id
+where sd.tenant_id = @tenant_id
+  and sd.repo_key = @repo_key
+  and pv.state = 'published'
+  and (qi.status is null or qi.status = 'released')
+  and (
+    @query = ''
+    or sd.search_vector @@ plainto_tsquery('simple', @query)
+  );
+""",
+            conn
+        )
+
+    countCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    countCmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    countCmd.Parameters.AddWithValue("query", normalizedQuery) |> ignore
+
+    let totalCountResult =
+        match countCmd.ExecuteScalar() with
+        | :? int64 as count -> Ok count
+        | :? int32 as count -> Ok(int64 count)
+        | _ -> Error "Unexpected count type returned during search query."
+
+    totalCountResult |> Result.bind (fun totalCount ->
+    use cmd =
+        new NpgsqlCommand(
+            """
+select
+  sd.version_id,
+  sd.repo_key,
+  sd.package_type,
+  sd.package_namespace,
+  sd.package_name,
+  sd.package_version,
+  sd.published_at,
+  sd.indexed_at
+from search_documents sd
+join package_versions pv
+  on pv.version_id = sd.version_id
+ and pv.tenant_id = sd.tenant_id
+left join quarantine_items qi
+  on qi.tenant_id = sd.tenant_id
+ and qi.repo_id = sd.repo_id
+ and qi.version_id = sd.version_id
+where sd.tenant_id = @tenant_id
+  and sd.repo_key = @repo_key
+  and pv.state = 'published'
+  and (qi.status is null or qi.status = 'released')
+  and (
+    @query = ''
+    or sd.search_vector @@ plainto_tsquery('simple', @query)
+  )
+order by sd.package_name asc, sd.package_version desc
+limit @limit
+offset @offset;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("query", normalizedQuery) |> ignore
+    cmd.Parameters.AddWithValue("limit", limit) |> ignore
+    cmd.Parameters.AddWithValue("offset", offset) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let entries = ResizeArray<SearchDocumentRecord>()
+
+    while reader.Read() do
+        let packageNamespace = if reader.IsDBNull(3) then None else Some(reader.GetString(3))
+        let publishedAtUtc = if reader.IsDBNull(6) then None else Some(reader.GetFieldValue<DateTimeOffset>(6))
+        let indexedAtUtc = reader.GetFieldValue<DateTimeOffset>(7)
+
+        entries.Add(
+            { VersionId = reader.GetGuid(0)
+              RepoKey = reader.GetString(1)
+              PackageType = reader.GetString(2)
+              PackageNamespace = packageNamespace
+              PackageName = reader.GetString(4)
+              PackageVersion = reader.GetString(5)
+              PublishedAtUtc = publishedAtUtc
+              IndexedAtUtc = indexedAtUtc }
+        )
+
+    Ok
+        { TotalCount = totalCount
+          Items = entries |> Seq.toList })
+
+let enqueueSearchRebuildJobs
+    (tenantId: Guid)
+    (repoKey: string option)
+    (batchSize: int)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+with candidates as (
+  select pv.tenant_id, pv.version_id
+  from package_versions pv
+  join repos r
+    on r.repo_id = pv.repo_id
+   and r.tenant_id = pv.tenant_id
+  where pv.tenant_id = @tenant_id
+    and pv.state = 'published'
+    and (@repo_key is null or r.repo_key = @repo_key)
+  order by coalesce(pv.published_at, pv.created_at) desc
+  limit @batch_size
+),
+upserted as (
+  insert into search_index_jobs
+    (tenant_id, version_id, status, available_at, attempts, last_error, created_at, updated_at)
+  select
+    c.tenant_id,
+    c.version_id,
+    'pending',
+    now(),
+    0,
+    null,
+    now(),
+    now()
+  from candidates c
+  on conflict (tenant_id, version_id)
+  do update set
+    status = 'pending',
+    attempts = 0,
+    available_at = now(),
+    last_error = null,
+    updated_at = now()
+  returning version_id
+)
+select count(*) from upserted;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    let repoKeyParam = cmd.Parameters.Add("repo_key", NpgsqlDbType.Text)
+    repoKeyParam.Value <- (match repoKey with | Some value -> box value | None -> box DBNull.Value)
+    cmd.Parameters.AddWithValue("batch_size", batchSize) |> ignore
+
+    match cmd.ExecuteScalar() with
+    | :? int64 as count -> Ok count
+    | :? int32 as count -> Ok(int64 count)
+    | _ -> Error "Unexpected row count type returned during search rebuild enqueue."
 
 let evaluatePolicyForVersion
     (tenantId: Guid)
@@ -6535,6 +6753,108 @@ let main args =
                                                 contentType = (downloaded.ContentType |> Option.defaultValue "application/octet-stream")
                                             )
     ))
+    |> ignore
+
+    app.MapGet(
+        "/v1/repos/{repoKey}/search/packages",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let rawQuery = ctx.Request.Query["q"].ToString()
+            let query = normalizeSearchQueryText rawQuery
+            let limit = normalizeSearchLimit (ctx.Request.Query["limit"].ToString())
+            let offset = normalizeSearchOffset (ctx.Request.Query["offset"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match requireRole state ctx repoKey RepoRole.Read with
+                | Error result -> result
+                | Ok principal ->
+                    match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                    | Error err -> serviceUnavailable err
+                    | Ok false ->
+                        Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                    | Ok true ->
+                        match
+                            withConnection state (readSearchDocumentsForRepo principal.TenantId repoKey query limit offset)
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok page ->
+                            Results.Ok(
+                                {| repoKey = repoKey
+                                   query = query
+                                   limit = limit
+                                   offset = offset
+                                   totalCount = page.TotalCount
+                                   items =
+                                    page.Items
+                                    |> List.map (fun item ->
+                                        {| versionId = item.VersionId
+                                           repoKey = item.RepoKey
+                                           packageType = item.PackageType
+                                           packageNamespace = item.PackageNamespace
+                                           packageName = item.PackageName
+                                           version = item.PackageVersion
+                                           publishedAtUtc = item.PublishedAtUtc
+                                           indexedAtUtc = item.IndexedAtUtc |})
+                                    |> List.toArray |}
+                            ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/search/rebuild",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match readOptionalJsonBody<SearchRebuildRequest> ctx with
+                | Error err -> badRequest err
+                | Ok requestOption ->
+                    match validateSearchRebuildRequest requestOption with
+                    | Error err -> badRequest err
+                    | Ok(repoKeyOption, batchSize) ->
+                        let repoExistsResult =
+                            match repoKeyOption with
+                            | None -> Ok true
+                            | Some repoKey -> withConnection state (repoExistsForTenant principal.TenantId repoKey)
+
+                        match repoExistsResult with
+                        | Error err -> serviceUnavailable err
+                        | Ok false ->
+                            Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                        | Ok true ->
+                            match
+                                withConnection state (enqueueSearchRebuildJobs principal.TenantId repoKeyOption batchSize)
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok enqueuedCount ->
+                                let resourceId =
+                                    match repoKeyOption with
+                                    | Some repoKey -> repoKey
+                                    | None -> principal.TenantId.ToString()
+
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "search.rebuild.requested"
+                                        "search_index"
+                                        resourceId
+                                        (Map.ofList
+                                            [ "repoKey", repoKeyOption |> Option.defaultValue "*"
+                                              "batchSize", batchSize.ToString()
+                                              "enqueuedCount", enqueuedCount.ToString() ])
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok () ->
+                                    Results.Ok(
+                                        {| repoKey = repoKeyOption
+                                           batchSize = batchSize
+                                           enqueuedCount = enqueuedCount |}
+                                    ))
+    )
     |> ignore
 
     app.MapGet(

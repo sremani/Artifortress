@@ -13,7 +13,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 5: complete through P5-08 (tombstone lifecycle + GC dry-run/execute + reconcile summary + admin authz/audit + demo/runbook).
 - Phase 6: complete through P6-10 (dependency-backed readiness, ops summary, backup/restore + DR drill, security closure, upgrade/rollback runbooks, GA demo/report).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: post-Phase 7 hardening (OIDC JWKS refresh automation + signed SAML assertion cryptographic verification), search read-model serving maturity, and F# native mutation hardening (native runtime lane + non-blocking CI lane + score threshold reporting are active; next step is merge-gate promotion policy).
+- Current build-out focus: post-Phase 7 hardening (OIDC JWKS refresh automation + signed SAML assertion cryptographic verification), search read-model maturity wave 2 (relevance/ranking + operational rebuild hardening), and F# native mutation hardening (native runtime lane + non-blocking CI lane + score threshold reporting are active; next step is merge-gate promotion policy).
 
 ## Implemented Today
 
@@ -43,7 +43,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Best-effort multipart abort on upload-session create race/failure paths.
   - Null-safe scope/role parsing guards in domain layer.
 - Persistence:
-  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, `db/migrations/0003_phase2_upload_sessions.sql`, `db/migrations/0004_phase3_publish_guardrails.sql`, `db/migrations/0005_phase3_published_immutability_hardening.sql`, `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`, `db/migrations/0007_phase3_manifest_persistence.sql`, and `db/migrations/0008_phase5_tombstones_gc_reconcile.sql`.
+  - Schema migrations in `db/migrations/0001_init.sql`, `db/migrations/0002_phase1_identity_and_rbac.sql`, `db/migrations/0003_phase2_upload_sessions.sql`, `db/migrations/0004_phase3_publish_guardrails.sql`, `db/migrations/0005_phase3_published_immutability_hardening.sql`, `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`, `db/migrations/0007_phase3_manifest_persistence.sql`, `db/migrations/0008_phase5_tombstones_gc_reconcile.sql`, and `db/migrations/0009_post_ga_search_read_model.sql`.
 - Test coverage:
   - Domain unit tests.
   - API integration tests across authz, upload lifecycle, commit verification, dedupe, range behavior, and audit action matrix.

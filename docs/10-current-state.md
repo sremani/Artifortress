@@ -24,6 +24,7 @@ Persistence:
 - Upload-session and publish/policy migrations from `0003_phase2_upload_sessions.sql`, `0004_phase3_publish_guardrails.sql`, `0005_phase3_published_immutability_hardening.sql`, and `0006_phase4_policy_search_quarantine_scaffold.sql`.
 - Manifest persistence migration `0007_phase3_manifest_persistence.sql`.
 - Phase 5 lifecycle migration `0008_phase5_tombstones_gc_reconcile.sql`.
+- Post-GA search read-model migration `0009_post_ga_search_read_model.sql`.
 - Token hash persistence only; plaintext token is response-only at issuance time.
 
 ## 2. API Endpoints (Implemented)
@@ -59,7 +60,9 @@ Persistence:
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/abort`
 - `POST /v1/repos/{repoKey}/uploads/{uploadId}/commit`
 - `GET /v1/repos/{repoKey}/blobs/{digest}`
+- `GET /v1/repos/{repoKey}/search/packages`
 - `POST /v1/admin/gc/runs`
+- `POST /v1/admin/search/rebuild`
 - `GET /v1/admin/ops/summary`
 - `GET /v1/admin/reconcile/blobs`
 - `GET /v1/audit`
@@ -68,11 +71,11 @@ Persistence:
 
 Automated checks currently passing:
 - `make format`.
-- `make test` (non-integration filter) with `102` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `83` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `185` passing tests.
+- `make test` (non-integration filter) with `106` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `86` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `192` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
-  - `87` FsCheck properties across domain, lifecycle/policy request validation, API, object storage config, and extracted worker internals (three extraction waves).
+  - `91` FsCheck properties across domain, lifecycle/policy request validation, API, object storage config, and extracted worker internals (three extraction waves + post-GA search validation helpers).
 - `make phase2-load` baseline run:
   - upload throughput: `1.22 MiB/s` (`4.89 req/s`) with `12` upload iterations at `262144` bytes/object.
   - download throughput: `7.25 MiB/s` (`28.99 req/s`) with `36` download iterations.
@@ -147,7 +150,7 @@ Demonstration assets:
 ## 4. Known Gaps vs Target Architecture
 
 Not implemented yet:
-- Search indexing read-model query-serving integration beyond the current queue/job scaffolding.
+- Search read-model relevance ranking tuning and richer query semantics beyond current deterministic baseline.
 - OIDC remote JWKS fetch/refresh and key rollover automation beyond static `Auth__Oidc__JwksJson`.
 - SAML signed-assertion cryptographic validation against IdP metadata (current path validates assertion structure/issuer/audience/claims).
 
@@ -174,15 +177,13 @@ Not implemented yet:
     - OIDC remote JWKS refresh and operational key-rotation automation.
     - SAML signed-assertion cryptographic validation path.
     - ticket board: `docs/36-phase7-identity-integration-tickets.md`.
-  - search read-model query-serving and rebuild/recovery maturity.
+  - search read-model maturity wave 2:
+    - relevance/ranking tuning on `search_documents`.
+    - incremental rebuild controls and operational rebuild runbook hardening.
   - F# native mutation finish plan (runtime lane + non-blocking CI + score/trend/burn-in policy are active; merge-gate promotion remains intentionally partial until the 7-run burn-in streak is satisfied).
   - continue expanding property-based and integration stress coverage around lifecycle and policy/search paths.
-  - latest stress expansion (wave 7):
-    - `P5-stress search sweep deterministically splits published quarantined tombstoned and draft versions`
-    - `P4-05 republished version resets exhausted search job attempts and completes`
-    - property invariants:
-      - `API validateQuarantineStatusFilter returns none for blank values`
-      - `API validateEvaluatePolicyRequest maps blank policy engine version to none`
-      - `WorkerOutboxParsing resolves payload guid with surrounding whitespace`
-  - latest reliability hardening:
-    - search job replay/reset fix in worker upsert path now resets `attempts=0` on `version.published` re-enqueue to prevent permanent starvation after max-attempt exhaustion.
+  - latest search maturity expansion (wave 8):
+    - `P8-01 search query endpoint enforces authz and returns indexed published versions`
+    - `P8-02 search query excludes quarantined and tombstoned versions while allowing released versions`
+    - `P8-03 admin rebuild endpoint enqueues published versions and backfills searchable documents`
+    - worker search processor now upserts `search_documents` projections for published versions.

@@ -1210,6 +1210,30 @@ where version_id = @version_id;
         | :? int32 as count -> int64 count
         | _ -> failwith $"Unexpected search_index_jobs count scalar value for version {versionId}."
 
+    member this.CountSearchDocumentsForVersion(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from search_documents
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected search_documents count scalar value for version {versionId}."
+
     member this.CountSearchIndexJobsForTenant() =
         this.RequireAvailable()
 
@@ -1724,6 +1748,42 @@ type Phase1ApiTests(fixture: ApiFixture) =
         | Some value -> request.Headers.TryAddWithoutValidation("Range", value) |> ignore
         | None -> ()
 
+        fixture.Client.Send(request)
+
+    let searchPackagesWithToken (token: string) (repoKey: string) (query: string option) (limit: int option) (offset: int option) =
+        let queryParts = ResizeArray<string>()
+
+        match query with
+        | Some value when not (String.IsNullOrWhiteSpace value) -> queryParts.Add($"q={Uri.EscapeDataString(value)}")
+        | _ -> ()
+
+        match limit with
+        | Some value -> queryParts.Add($"limit={value}")
+        | None -> ()
+
+        match offset with
+        | Some value -> queryParts.Add($"offset={value}")
+        | None -> ()
+
+        let suffix =
+            if queryParts.Count = 0 then
+                ""
+            else
+                "?" + String.concat "&" queryParts
+
+        use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/repos/{repoKey}/search/packages{suffix}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let rebuildSearchIndexWithToken (token: string) (repoKey: string option) (batchSize: int option) =
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/search/rebuild")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+
+        let body =
+            {| RepoKey = repoKey |> Option.defaultValue ""
+               BatchSize = batchSize |> Option.defaultValue 0 |}
+
+        request.Content <- JsonContent.Create(body)
         fixture.Client.Send(request)
 
     let getAuditWithToken (token: string) (limit: int) =
@@ -4995,6 +5055,172 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         Assert.Equal(baselinePendingJobs + 2L, pendingJobsAfter)
         Assert.Equal(baselineFailedJobs + 1L, failedJobsAfter)
+
+    [<Fact>]
+    member _.``P8-01 search query endpoint enforces authz and returns indexed published versions`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p801-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p801-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "p801-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "p801-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p801-promote") [| $"repo:{repoKey}:promote" |] 60
+        let outsiderRepoKey = makeRepoKey "p801-outside"
+        let outsiderToken, _ = issuePat (makeSubject "p801-outsider") [| $"repo:{outsiderRepoKey}:read" |] 60
+
+        let packageName = $"p801-search-{Guid.NewGuid():N}"
+        let versionId, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken packageName
+
+        use unauthorizedRequest =
+            new HttpRequestMessage(HttpMethod.Get, $"/v1/repos/{repoKey}/search/packages?q={Uri.EscapeDataString(packageName)}")
+
+        use unauthorizedResponse = fixture.Client.Send(unauthorizedRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedResponse |> ignore
+
+        use forbiddenResponse = searchPackagesWithToken outsiderToken repoKey (Some packageName) None None
+        ensureStatus HttpStatusCode.Forbidden forbiddenResponse |> ignore
+
+        use preIndexResponse = searchPackagesWithToken readToken repoKey (Some packageName) None None
+        let preIndexBody = ensureStatus HttpStatusCode.OK preIndexResponse
+        use preIndexDoc = JsonDocument.Parse(preIndexBody)
+        Assert.Equal(0L, preIndexDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        let outboxOutcome = fixture.RunSearchIndexOutboxSweep(20)
+        Assert.True(outboxOutcome.EnqueuedCount >= 1)
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+        Assert.True(jobOutcome.CompletedCount >= 1)
+        Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionId))
+
+        use searchResponse = searchPackagesWithToken readToken repoKey (Some packageName) (Some 20) (Some 0)
+        let searchBody = ensureStatus HttpStatusCode.OK searchResponse
+        use searchDoc = JsonDocument.Parse(searchBody)
+
+        Assert.Equal(1L, searchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        let item =
+            searchDoc.RootElement.GetProperty("items").EnumerateArray()
+            |> Seq.head
+
+        Assert.Equal(versionId, item.GetProperty("versionId").GetGuid())
+        Assert.Equal(repoKey, item.GetProperty("repoKey").GetString())
+        Assert.Equal("nuget", item.GetProperty("packageType").GetString())
+        Assert.Equal(packageName, item.GetProperty("packageName").GetString())
+        Assert.Equal("1.0.0", item.GetProperty("version").GetString())
+
+        use offsetResponse = searchPackagesWithToken readToken repoKey (Some packageName) (Some 20) (Some 50)
+        let offsetBody = ensureStatus HttpStatusCode.OK offsetResponse
+        use offsetDoc = JsonDocument.Parse(offsetBody)
+        Assert.Equal(1L, offsetDoc.RootElement.GetProperty("totalCount").GetInt64())
+        Assert.Empty(offsetDoc.RootElement.GetProperty("items").EnumerateArray())
+
+    [<Fact>]
+    member _.``P8-02 search query excludes quarantined and tombstoned versions while allowing released versions`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p802-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p802-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "p802-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "p802-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p802-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let packageName = $"p802-search-{Guid.NewGuid():N}"
+        let versionId, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken packageName
+
+        fixture.RunSearchIndexOutboxSweep(20) |> ignore
+        fixture.RunSearchIndexJobSweep(20, 3) |> ignore
+
+        use baselineSearchResponse = searchPackagesWithToken readToken repoKey (Some packageName) None None
+        let baselineSearchBody = ensureStatus HttpStatusCode.OK baselineSearchResponse
+        use baselineSearchDoc = JsonDocument.Parse(baselineSearchBody)
+        Assert.Equal(1L, baselineSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use quarantineResponse =
+            evaluatePolicyWithToken
+                promoteToken
+                repoKey
+                "promote"
+                versionId
+                "quarantine"
+                "p802 quarantine"
+                "policy-search-v1"
+
+        let quarantineBody = ensureStatus HttpStatusCode.Created quarantineResponse
+        use quarantineDoc = JsonDocument.Parse(quarantineBody)
+        let quarantineId = quarantineDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use quarantinedSearchResponse = searchPackagesWithToken readToken repoKey (Some packageName) None None
+        let quarantinedSearchBody = ensureStatus HttpStatusCode.OK quarantinedSearchResponse
+        use quarantinedSearchDoc = JsonDocument.Parse(quarantinedSearchBody)
+        Assert.Equal(0L, quarantinedSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use releaseResponse = releaseQuarantineItemWithToken promoteToken repoKey quarantineId
+        ensureStatus HttpStatusCode.OK releaseResponse |> ignore
+
+        use releasedSearchResponse = searchPackagesWithToken readToken repoKey (Some packageName) None None
+        let releasedSearchBody = ensureStatus HttpStatusCode.OK releasedSearchResponse
+        use releasedSearchDoc = JsonDocument.Parse(releasedSearchBody)
+        Assert.Equal(1L, releasedSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use tombstoneResponse = tombstoneVersionWithToken promoteToken repoKey versionId "p802 tombstone" 7
+        ensureStatus HttpStatusCode.OK tombstoneResponse |> ignore
+
+        use tombstonedSearchResponse = searchPackagesWithToken readToken repoKey (Some packageName) None None
+        let tombstonedSearchBody = ensureStatus HttpStatusCode.OK tombstonedSearchResponse
+        use tombstonedSearchDoc = JsonDocument.Parse(tombstonedSearchBody)
+        Assert.Equal(0L, tombstonedSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+    [<Fact>]
+    member _.``P8-03 admin rebuild endpoint enqueues published versions and backfills searchable documents`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "p803-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "p803-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "p803-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "p803-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "p803-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionA, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken $"p803-a-{Guid.NewGuid():N}"
+        let versionB, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken $"p803-b-{Guid.NewGuid():N}"
+
+        fixture.ResetSearchPipelineStateGlobal()
+
+        use preRebuildSearchResponse = searchPackagesWithToken readToken repoKey None None None
+        let preRebuildSearchBody = ensureStatus HttpStatusCode.OK preRebuildSearchResponse
+        use preRebuildSearchDoc = JsonDocument.Parse(preRebuildSearchBody)
+        Assert.Equal(0L, preRebuildSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use unauthorizedRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/search/rebuild")
+        unauthorizedRequest.Content <- JsonContent.Create({| RepoKey = repoKey; BatchSize = 100 |})
+        use unauthorizedResponse = fixture.Client.Send(unauthorizedRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedResponse |> ignore
+
+        use forbiddenResponse = rebuildSearchIndexWithToken promoteToken (Some repoKey) (Some 100)
+        ensureStatus HttpStatusCode.Forbidden forbiddenResponse |> ignore
+
+        use rebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 100)
+        let rebuildBody = ensureStatus HttpStatusCode.OK rebuildResponse
+        use rebuildDoc = JsonDocument.Parse(rebuildBody)
+        Assert.Equal(2L, rebuildDoc.RootElement.GetProperty("enqueuedCount").GetInt64())
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+        Assert.True(jobOutcome.CompletedCount >= 2)
+        Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionA))
+        Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionB))
+
+        use postRebuildSearchResponse = searchPackagesWithToken readToken repoKey None None None
+        let postRebuildSearchBody = ensureStatus HttpStatusCode.OK postRebuildSearchResponse
+        use postRebuildSearchDoc = JsonDocument.Parse(postRebuildSearchBody)
+        Assert.Equal(2L, postRebuildSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =

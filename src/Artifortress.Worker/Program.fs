@@ -17,6 +17,19 @@ type JobSweepOutcome = {
     FailedCount: int
 }
 
+type SearchIndexSourceRecord = {
+    TenantId: Guid
+    RepoId: Guid
+    VersionId: Guid
+    RepoKey: string
+    PackageType: string
+    PackageNamespace: string option
+    PackageName: string
+    PackageVersion: string
+    PublishedAtUtc: DateTimeOffset option
+    ManifestJson: string option
+}
+
 module SearchIndexOutboxProducer =
     let private claimOutboxEvents (batchSize: int) (conn: NpgsqlConnection) =
         use cmd =
@@ -209,17 +222,33 @@ from claimed;
 
         loop ()
 
-    let private canProcessVersion (tenantId: Guid) (versionId: Guid) (conn: NpgsqlConnection) =
+    let private tryReadSearchIndexSource (tenantId: Guid) (versionId: Guid) (conn: NpgsqlConnection) =
         use cmd =
             new NpgsqlCommand(
                 """
-select exists(
-  select 1
-  from package_versions
-  where tenant_id = @tenant_id
-    and version_id = @version_id
-    and state = 'published'
-);
+select
+  pv.tenant_id,
+  pv.repo_id,
+  pv.version_id,
+  r.repo_key::text,
+  p.package_type,
+  p.namespace,
+  p.name,
+  pv.version,
+  pv.published_at,
+  m.manifest_json::text
+from package_versions pv
+join repos r
+  on r.repo_id = pv.repo_id
+ and r.tenant_id = pv.tenant_id
+join packages p
+  on p.package_id = pv.package_id
+ and p.tenant_id = pv.tenant_id
+left join manifests m on m.version_id = pv.version_id
+where pv.tenant_id = @tenant_id
+  and pv.version_id = @version_id
+  and pv.state = 'published'
+limit 1;
 """,
                 conn
             )
@@ -227,9 +256,90 @@ select exists(
         cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
         cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
 
-        match cmd.ExecuteScalar() with
-        | :? bool as isPublished -> isPublished
-        | _ -> false
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then
+            let packageNamespace = if reader.IsDBNull(5) then None else Some(reader.GetString(5))
+            let publishedAtUtc = if reader.IsDBNull(8) then None else Some(reader.GetFieldValue<DateTimeOffset>(8))
+            let manifestJson = if reader.IsDBNull(9) then None else Some(reader.GetString(9))
+
+            Ok(
+                Some
+                    { TenantId = reader.GetGuid(0)
+                      RepoId = reader.GetGuid(1)
+                      VersionId = reader.GetGuid(2)
+                      RepoKey = reader.GetString(3)
+                      PackageType = reader.GetString(4)
+                      PackageNamespace = packageNamespace
+                      PackageName = reader.GetString(6)
+                      PackageVersion = reader.GetString(7)
+                      PublishedAtUtc = publishedAtUtc
+                      ManifestJson = manifestJson }
+            )
+        else
+            Ok None
+
+    let private buildSearchText (source: SearchIndexSourceRecord) =
+        let fields =
+            [ source.RepoKey
+              source.PackageType
+              source.PackageNamespace |> Option.defaultValue ""
+              source.PackageName
+              source.PackageVersion
+              source.ManifestJson |> Option.defaultValue "" ]
+
+        fields
+        |> List.map (fun value -> value.Trim())
+        |> List.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+        |> String.concat " "
+
+    let private upsertSearchDocument (source: SearchIndexSourceRecord) (conn: NpgsqlConnection) =
+        let searchText = buildSearchText source
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+insert into search_documents
+  (tenant_id, repo_id, version_id, repo_key, package_type, package_namespace, package_name, package_version, manifest_json, published_at, search_text, indexed_at, updated_at)
+values
+  (@tenant_id, @repo_id, @version_id, @repo_key, @package_type, @package_namespace, @package_name, @package_version, @manifest_json, @published_at, @search_text, now(), now())
+on conflict (tenant_id, version_id)
+do update set
+  repo_id = excluded.repo_id,
+  repo_key = excluded.repo_key,
+  package_type = excluded.package_type,
+  package_namespace = excluded.package_namespace,
+  package_name = excluded.package_name,
+  package_version = excluded.package_version,
+  manifest_json = excluded.manifest_json,
+  published_at = excluded.published_at,
+  search_text = excluded.search_text,
+  indexed_at = now(),
+  updated_at = now();
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("tenant_id", source.TenantId) |> ignore
+        cmd.Parameters.AddWithValue("repo_id", source.RepoId) |> ignore
+        cmd.Parameters.AddWithValue("version_id", source.VersionId) |> ignore
+        cmd.Parameters.AddWithValue("repo_key", source.RepoKey) |> ignore
+        cmd.Parameters.AddWithValue("package_type", source.PackageType) |> ignore
+
+        let packageNamespaceParam = cmd.Parameters.Add("package_namespace", NpgsqlTypes.NpgsqlDbType.Text)
+        packageNamespaceParam.Value <- (match source.PackageNamespace with | Some value -> box value | None -> box DBNull.Value)
+
+        cmd.Parameters.AddWithValue("package_name", source.PackageName) |> ignore
+        cmd.Parameters.AddWithValue("package_version", source.PackageVersion) |> ignore
+
+        let manifestParam = cmd.Parameters.Add("manifest_json", NpgsqlTypes.NpgsqlDbType.Jsonb)
+        manifestParam.Value <- (match source.ManifestJson with | Some value -> box value | None -> box DBNull.Value)
+
+        let publishedAtParam = cmd.Parameters.Add("published_at", NpgsqlTypes.NpgsqlDbType.TimestampTz)
+        publishedAtParam.Value <- (match source.PublishedAtUtc with | Some value -> box value | None -> box DBNull.Value)
+
+        cmd.Parameters.AddWithValue("search_text", searchText) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
 
     let private markCompleted (jobId: Guid) (conn: NpgsqlConnection) =
         use cmd =
@@ -283,15 +393,34 @@ where job_id = @job_id;
             let mutable metrics = WorkerSweepMetrics.zeroJobs
 
             for job in claimed do
-                let published = canProcessVersion job.TenantId job.VersionId conn
+                let referenceUtc = DateTimeOffset.UtcNow
 
-                match WorkerJobFlow.decideProcessing DateTimeOffset.UtcNow job.Attempts published with
-                | WorkerJobFlow.Complete ->
-                    markCompleted job.JobId conn
-                    metrics <- WorkerSweepMetrics.recordCompleted metrics
-                | WorkerJobFlow.Fail(attempts, availableAtUtc, errorMessage) ->
+                let failJob (errorMessage: string) =
+                    let attempts, availableAtUtc = WorkerRetryPolicy.computeFailureSchedule referenceUtc job.Attempts
                     markFailed job.JobId attempts availableAtUtc errorMessage conn
                     metrics <- WorkerSweepMetrics.recordFailed metrics
+
+                match tryReadSearchIndexSource job.TenantId job.VersionId conn with
+                | Error _ ->
+                    failJob "search_index_source_read_failed"
+                | Ok None ->
+                    match WorkerJobFlow.decideProcessing referenceUtc job.Attempts false with
+                    | WorkerJobFlow.Complete ->
+                        failJob "version_not_published"
+                    | WorkerJobFlow.Fail(attempts, availableAtUtc, errorMessage) ->
+                        markFailed job.JobId attempts availableAtUtc errorMessage conn
+                        metrics <- WorkerSweepMetrics.recordFailed metrics
+                | Ok(Some source) ->
+                    match WorkerJobFlow.decideProcessing referenceUtc job.Attempts true with
+                    | WorkerJobFlow.Fail(_, _, _) ->
+                        failJob "version_not_published"
+                    | WorkerJobFlow.Complete ->
+                        try
+                            upsertSearchDocument source conn
+                            markCompleted job.JobId conn
+                            metrics <- WorkerSweepMetrics.recordCompleted metrics
+                        with _ ->
+                            failJob "search_index_write_failed"
 
             Ok
                 { ClaimedCount = claimed.Length
