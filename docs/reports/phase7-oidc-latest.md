@@ -1,18 +1,20 @@
-# Phase 7 OIDC Demo Report
+# Phase 7 Identity Validation Report
 
-Generated at: 2026-02-12T14:08:58Z
+Generated at: 2026-02-13T02:58:54Z
 
 ## Checks
 
-- make test: PASS
 - make format: PASS
-- OIDC whoami subject/authSource: PASS
-- OIDC admin-scoped repo create: PASS
-- OIDC invalid audience unauthorized: PASS
-- PAT compatibility path: PASS
+- make test: PASS
+- dotnet test (integration): PASS
+- P7-03 OIDC RS256/JWKS coverage: PASS
+- P7-04 OIDC claim-role mapping coverage: PASS
+- P7-05 SAML metadata + ACS payload validation coverage: PASS
+- P7-06 SAML assertion exchange + issuer rejection coverage: PASS
+- P7 PAT compatibility path: PASS
 
 ## OIDC whoami Snapshot
 
 ```json
-{"authSource":"oidc","scopes":["repo:*:admin"],"subject":"phase7-oidc-user"}
+{"authSource":"oidc","scopes":["repo:*:admin"],"subject":"p703-oidc-rs256-user"}
 ```

@@ -45,7 +45,7 @@ help:
 	@echo "  phase4-demo        Run Phase 4 policy/quarantine/search demo script"
 	@echo "  phase5-demo        Run Phase 5 tombstone/gc/reconcile demo script"
 	@echo "  phase6-demo        Run Phase 6 GA readiness demo script"
-	@echo "  phase7-demo        Run Phase 7 OIDC integration demo script"
+	@echo "  phase7-demo        Run Phase 7 identity integration demo script"
 
 restore:
 	@for project in $(PROJECTS); do \

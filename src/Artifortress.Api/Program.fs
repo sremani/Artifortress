@@ -2,6 +2,7 @@ open System
 open System.Security.Cryptography
 open System.Text
 open System.Text.Json
+open System.Xml.Linq
 open Artifortress.Domain
 open ObjectStorage
 open Microsoft.AspNetCore.Builder
@@ -117,6 +118,12 @@ type EvaluatePolicyRequest = {
     DecisionHint: string
     Reason: string
     PolicyEngineVersion: string
+}
+
+[<CLIMutable>]
+type SamlAcsJsonRequest = {
+    SAMLResponse: string
+    RelayState: string
 }
 
 type PatRecord = {
@@ -294,16 +301,33 @@ type Principal = {
     AuthSource: string
 }
 
+type OidcRs256SigningKey = {
+    Kid: string option
+    Parameters: RSAParameters
+}
+
+type OidcClaimRoleMapping = {
+    ClaimName: string
+    ClaimValue: string
+    RepoKey: string
+    Role: RepoRole
+}
+
 type OidcTokenValidationConfig = {
     Issuer: string
     Audience: string
-    Hs256SharedSecret: string
+    Hs256SharedSecret: string option
+    Rs256SigningKeys: OidcRs256SigningKey list
+    ClaimRoleMappings: OidcClaimRoleMapping list
 }
 
 type SamlIntegrationConfig = {
     Enabled: bool
     IdpMetadataUrl: string option
     ServiceProviderEntityId: string option
+    ExpectedIssuer: string option
+    RoleMappings: OidcClaimRoleMapping list
+    IssuedPatTtlMinutes: int
 }
 
 type AppState = {
@@ -827,10 +851,261 @@ let private parseRepoScopesFromClaimValues (scopeValues: string array) =
     else
         Error(String.concat "; " errors)
 
+let private extractStringValuesForClaim (payload: JsonElement) (claimName: string) =
+    let tryGetClaimElement () =
+        let mutable direct = Unchecked.defaultof<JsonElement>
+
+        if payload.TryGetProperty(claimName, &direct) then
+            Some direct
+        else
+            payload.EnumerateObject()
+            |> Seq.tryFind (fun prop -> String.Equals(prop.Name, claimName, StringComparison.OrdinalIgnoreCase))
+            |> Option.map (fun prop -> prop.Value)
+
+    match tryGetClaimElement () with
+    | Some claim ->
+        match claim.ValueKind with
+        | JsonValueKind.String ->
+            let value = normalizeText (claim.GetString())
+            if String.IsNullOrWhiteSpace value then [] else [ value ]
+        | JsonValueKind.Array ->
+            claim.EnumerateArray()
+            |> Seq.choose (fun element ->
+                if element.ValueKind = JsonValueKind.String then
+                    Some(normalizeText (element.GetString()))
+                else
+                    None)
+            |> Seq.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+            |> Seq.toList
+        | _ -> []
+    | None -> []
+
+let parseOidcClaimRoleMappings (rawValue: string) =
+    let normalized = normalizeText rawValue
+
+    if String.IsNullOrWhiteSpace normalized then
+        Ok []
+    else
+        let entries =
+            normalized.Split(';', StringSplitOptions.TrimEntries ||| StringSplitOptions.RemoveEmptyEntries)
+            |> Array.toList
+
+        entries
+        |> List.fold
+            (fun acc entry ->
+                match acc with
+                | Error err -> Error err
+                | Ok mappings ->
+                    let parts = entry.Split('|', StringSplitOptions.None)
+
+                    if parts.Length <> 4 then
+                        Error
+                            $"Invalid OIDC role mapping entry '{entry}'. Expected format: claimName|claimValue|repoKey|role."
+                    else
+                        let claimName = normalizeText parts.[0] |> fun value -> value.ToLowerInvariant()
+                        let claimValue = normalizeText parts.[1]
+                        let repoKey = normalizeRepoKey parts.[2]
+                        let roleValue = normalizeText parts.[3]
+
+                        if String.IsNullOrWhiteSpace claimName then
+                            Error $"Invalid OIDC role mapping entry '{entry}': claimName is required."
+                        elif String.IsNullOrWhiteSpace claimValue then
+                            Error $"Invalid OIDC role mapping entry '{entry}': claimValue is required."
+                        elif String.IsNullOrWhiteSpace repoKey then
+                            Error $"Invalid OIDC role mapping entry '{entry}': repoKey is required."
+                        else
+                            match RepoRole.tryParse roleValue with
+                            | Error err -> Error $"Invalid OIDC role mapping entry '{entry}': {err}"
+                            | Ok parsedRole ->
+                                match RepoScope.tryCreate repoKey parsedRole with
+                                | Error err -> Error $"Invalid OIDC role mapping entry '{entry}': {err}"
+                                | Ok _ ->
+                                    Ok(
+                                        { ClaimName = claimName
+                                          ClaimValue = claimValue
+                                          RepoKey = repoKey
+                                          Role = parsedRole }
+                                        :: mappings
+                                    ))
+            (Ok [])
+        |> Result.map List.rev
+
+let private extractRepoScopesFromClaimRoleMappings
+    (claimRoleMappings: OidcClaimRoleMapping list)
+    (payload: JsonElement)
+    =
+    claimRoleMappings
+    |> List.fold
+        (fun acc mapping ->
+            match acc with
+            | Error err -> Error err
+            | Ok scopes ->
+                let claimValues = extractStringValuesForClaim payload mapping.ClaimName
+
+                let mappingMatched =
+                    if String.Equals(mapping.ClaimValue, "*", StringComparison.Ordinal) then
+                        not claimValues.IsEmpty
+                    else
+                        claimValues
+                        |> List.exists (fun claimValue ->
+                            String.Equals(claimValue, mapping.ClaimValue, StringComparison.OrdinalIgnoreCase))
+
+                if not mappingMatched then
+                    Ok scopes
+                else
+                    match RepoScope.tryCreate mapping.RepoKey mapping.Role with
+                    | Ok scope -> Ok(scope :: scopes)
+                    | Error err -> Error $"OIDC role mapping is invalid at runtime: {err}")
+        (Ok [])
+    |> Result.map List.rev
+
 let private deriveDeterministicGuid (value: string) =
     use hasher = SHA256.Create()
     let hash = hasher.ComputeHash(Encoding.UTF8.GetBytes(value))
     hash |> Array.take 16 |> Guid
+
+let private tryReadJwkStringProperty (element: JsonElement) (propertyName: string) =
+    let mutable prop = Unchecked.defaultof<JsonElement>
+
+    if element.TryGetProperty(propertyName, &prop) && prop.ValueKind = JsonValueKind.String then
+        let value = normalizeText (prop.GetString())
+        if String.IsNullOrWhiteSpace value then None else Some value
+    else
+        None
+
+let parseOidcJwksJson (jwksJson: string) =
+    let normalized = normalizeText jwksJson
+
+    if String.IsNullOrWhiteSpace normalized then
+        Ok []
+    else
+        try
+            use doc = JsonDocument.Parse(normalized)
+            let root = doc.RootElement
+
+            if root.ValueKind <> JsonValueKind.Object then
+                Error "OIDC JWKS must be a JSON object."
+            else
+                let mutable keysElement = Unchecked.defaultof<JsonElement>
+
+                if not (root.TryGetProperty("keys", &keysElement)) || keysElement.ValueKind <> JsonValueKind.Array then
+                    Error "OIDC JWKS must include a 'keys' array."
+                else
+                    let parseResult =
+                        keysElement.EnumerateArray()
+                        |> Seq.fold
+                            (fun acc keyElement ->
+                                match acc with
+                                | Error err -> Error err
+                                | Ok keys ->
+                                    if keyElement.ValueKind <> JsonValueKind.Object then
+                                        Error "OIDC JWKS key entries must be objects."
+                                    else
+                                        let kty = tryReadJwkStringProperty keyElement "kty" |> Option.defaultValue ""
+                                        let useClaim = tryReadJwkStringProperty keyElement "use"
+                                        let nValue = tryReadJwkStringProperty keyElement "n"
+                                        let eValue = tryReadJwkStringProperty keyElement "e"
+                                        let kid = tryReadJwkStringProperty keyElement "kid"
+
+                                        if not (String.Equals(kty, "RSA", StringComparison.OrdinalIgnoreCase)) then
+                                            Ok keys
+                                        elif useClaim.IsSome
+                                             && not (String.Equals(useClaim.Value, "sig", StringComparison.OrdinalIgnoreCase))
+                                        then
+                                            Ok keys
+                                        else
+                                            match nValue, eValue with
+                                            | Some modulus, Some exponent ->
+                                                parseBase64UrlBytes modulus
+                                                |> Result.bind (fun modulusBytes ->
+                                                    parseBase64UrlBytes exponent
+                                                    |> Result.map (fun exponentBytes -> modulusBytes, exponentBytes))
+                                                |> Result.bind (fun (modulusBytes, exponentBytes) ->
+                                                    if modulusBytes.Length = 0 || exponentBytes.Length = 0 then
+                                                        Error "OIDC JWKS RSA key modulus/exponent cannot be empty."
+                                                    else
+                                                        let mutable rsaParameters = RSAParameters()
+                                                        rsaParameters.Modulus <- modulusBytes
+                                                        rsaParameters.Exponent <- exponentBytes
+
+                                                        Ok
+                                                            ({ Kid = kid
+                                                               Parameters = rsaParameters }
+                                                             :: keys))
+                                            | _ -> Error "OIDC JWKS RSA keys require both 'n' and 'e' properties.")
+                            (Ok [])
+
+                    match parseResult with
+                    | Error err -> Error err
+                    | Ok keys ->
+                        let parsedKeys = keys |> List.rev
+                        if parsedKeys.IsEmpty then Error "OIDC JWKS did not contain any usable RSA signing keys." else Ok parsedKeys
+        with ex ->
+            Error $"OIDC JWKS could not be parsed: {ex.Message}"
+
+let private validateOidcClaims (config: OidcTokenValidationConfig) (payload: JsonElement) =
+    let issuer = tryReadStringClaim payload "iss" |> Option.defaultValue ""
+    let subject = tryReadStringClaim payload "sub" |> Option.defaultValue ""
+    let expirationUnix = tryReadNumericDateClaim payload "exp"
+    let notBeforeUnix = tryReadNumericDateClaim payload "nbf"
+    let nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+
+    if not (String.Equals(issuer, config.Issuer, StringComparison.Ordinal)) then
+        Error "OIDC token issuer did not match configured issuer."
+    elif not (tokenAudienceMatches payload config.Audience) then
+        Error "OIDC token audience did not match configured audience."
+    elif String.IsNullOrWhiteSpace subject then
+        Error "OIDC token is missing subject claim."
+    elif expirationUnix.IsNone || expirationUnix.Value <= nowUnix then
+        Error "OIDC token is expired or missing exp claim."
+    elif notBeforeUnix.IsSome && notBeforeUnix.Value > nowUnix then
+        Error "OIDC token nbf claim is in the future."
+    else
+        let directScopesResult =
+            let scopeValues = extractScopeValuesFromPayload payload |> List.toArray
+            if scopeValues.Length = 0 then Ok [] else parseRepoScopesFromClaimValues scopeValues
+
+        let mappedScopesResult = extractRepoScopesFromClaimRoleMappings config.ClaimRoleMappings payload
+
+        match directScopesResult, mappedScopesResult with
+        | Error err, _
+        | _, Error err -> Error err
+        | Ok directScopes, Ok mappedScopes ->
+            let resolvedScopes =
+                List.append directScopes mappedScopes
+                |> List.distinctBy RepoScope.value
+
+            if resolvedScopes.IsEmpty then
+                Error "OIDC token does not include any repository scopes and no claim-role mappings matched."
+            else
+                let tokenId =
+                    match tryReadStringClaim payload "jti" with
+                    | Some value ->
+                        match Guid.TryParse(value) with
+                        | true, parsed -> parsed
+                        | _ -> deriveDeterministicGuid $"{issuer}:{subject}:{value}"
+                    | None -> deriveDeterministicGuid $"{issuer}:{subject}"
+
+                Ok
+                    {| Subject = subject
+                       TokenId = tokenId
+                       Scopes = resolvedScopes |}
+
+let private selectOidcRs256Key (signingKeys: OidcRs256SigningKey list) (kid: string option) =
+    if signingKeys.IsEmpty then
+        Error "OIDC token uses RS256 but no JWKS signing keys are configured."
+    else
+        match kid with
+        | Some keyId ->
+            signingKeys
+            |> List.tryFind (fun key -> key.Kid.IsSome && String.Equals(key.Kid.Value, keyId, StringComparison.Ordinal))
+            |> function
+                | Some key -> Ok key
+                | None -> Error "OIDC token kid did not match any configured JWKS key."
+        | None ->
+            match signingKeys with
+            | [ single ] -> Ok single
+            | _ -> Error "OIDC token is missing kid and multiple JWKS keys are configured."
 
 let validateOidcBearerToken (config: OidcTokenValidationConfig) (token: string) =
     let segments = token.Split('.', StringSplitOptions.None)
@@ -849,63 +1124,287 @@ let validateOidcBearerToken (config: OidcTokenValidationConfig) (token: string) 
             |> Result.bind (fun payloadBytes ->
                 parseBase64UrlBytes signatureSegment
                 |> Result.bind (fun signatureBytes ->
-                    let expectedSignatureBytes =
-                        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(config.Hs256SharedSecret))
-                        hmac.ComputeHash(Encoding.UTF8.GetBytes(signedPayload))
+                    try
+                        use headerDoc = JsonDocument.Parse(headerBytes)
+                        use payloadDoc = JsonDocument.Parse(payloadBytes)
+                        let header = headerDoc.RootElement
+                        let payload = payloadDoc.RootElement
+                        let alg = tryReadStringClaim header "alg" |> Option.defaultValue ""
+                        let kid = tryReadStringClaim header "kid"
 
-                    if signatureBytes.Length <> expectedSignatureBytes.Length
-                       || not (CryptographicOperations.FixedTimeEquals(ReadOnlySpan(signatureBytes), ReadOnlySpan(expectedSignatureBytes)))
-                    then
-                        Error "OIDC token signature validation failed."
-                    else
-                        try
-                            use headerDoc = JsonDocument.Parse(headerBytes)
-                            use payloadDoc = JsonDocument.Parse(payloadBytes)
-                            let header = headerDoc.RootElement
-                            let payload = payloadDoc.RootElement
+                        let signatureValidationResult =
+                            if String.Equals(alg, "HS256", StringComparison.Ordinal) then
+                                match config.Hs256SharedSecret with
+                                | Some sharedSecret when not (String.IsNullOrWhiteSpace sharedSecret) ->
+                                    let expectedSignatureBytes =
+                                        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(sharedSecret))
+                                        hmac.ComputeHash(Encoding.UTF8.GetBytes(signedPayload))
 
-                            let alg = tryReadStringClaim header "alg" |> Option.defaultValue ""
-
-                            if not (String.Equals(alg, "HS256", StringComparison.Ordinal)) then
-                                Error "OIDC token must use HS256."
-                            else
-                                let issuer = tryReadStringClaim payload "iss" |> Option.defaultValue ""
-                                let subject = tryReadStringClaim payload "sub" |> Option.defaultValue ""
-                                let expirationUnix = tryReadNumericDateClaim payload "exp"
-                                let notBeforeUnix = tryReadNumericDateClaim payload "nbf"
-                                let nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-
-                                if not (String.Equals(issuer, config.Issuer, StringComparison.Ordinal)) then
-                                    Error "OIDC token issuer did not match configured issuer."
-                                elif not (tokenAudienceMatches payload config.Audience) then
-                                    Error "OIDC token audience did not match configured audience."
-                                elif String.IsNullOrWhiteSpace subject then
-                                    Error "OIDC token is missing subject claim."
-                                elif expirationUnix.IsNone || expirationUnix.Value <= nowUnix then
-                                    Error "OIDC token is expired or missing exp claim."
-                                elif notBeforeUnix.IsSome && notBeforeUnix.Value > nowUnix then
-                                    Error "OIDC token nbf claim is in the future."
-                                else
-                                    let scopeValues = extractScopeValuesFromPayload payload |> List.toArray
-
-                                    if scopeValues.Length = 0 then
-                                        Error "OIDC token does not include any repository scope claims."
+                                    if signatureBytes.Length <> expectedSignatureBytes.Length
+                                       || not
+                                           (CryptographicOperations.FixedTimeEquals(
+                                               ReadOnlySpan(signatureBytes),
+                                               ReadOnlySpan(expectedSignatureBytes)
+                                           ))
+                                    then
+                                        Error "OIDC token signature validation failed."
                                     else
-                                        parseRepoScopesFromClaimValues scopeValues
-                                        |> Result.map (fun scopes ->
-                                            let tokenId =
-                                                match tryReadStringClaim payload "jti" with
-                                                | Some value ->
-                                                    match Guid.TryParse(value) with
-                                                    | true, parsed -> parsed
-                                                    | _ -> deriveDeterministicGuid $"{issuer}:{subject}:{value}"
-                                                | None -> deriveDeterministicGuid $"{issuer}:{subject}"
+                                        Ok()
+                                | _ -> Error "OIDC token uses HS256 but no shared secret is configured."
+                            elif String.Equals(alg, "RS256", StringComparison.Ordinal) then
+                                selectOidcRs256Key config.Rs256SigningKeys kid
+                                |> Result.bind (fun signingKey ->
+                                    use rsa = RSA.Create()
+                                    rsa.ImportParameters(signingKey.Parameters)
 
-                                            {| Subject = subject
-                                               TokenId = tokenId
-                                               Scopes = scopes |})
-                        with ex ->
-                            Error $"OIDC token payload could not be parsed: {ex.Message}")))
+                                    let isValid =
+                                        rsa.VerifyData(
+                                            Encoding.UTF8.GetBytes(signedPayload),
+                                            signatureBytes,
+                                            HashAlgorithmName.SHA256,
+                                            RSASignaturePadding.Pkcs1
+                                        )
+
+                                    if isValid then
+                                        Ok()
+                                    else
+                                        Error "OIDC token signature validation failed.")
+                            else
+                                Error "OIDC token signing algorithm is not supported."
+
+                        signatureValidationResult |> Result.bind (fun _ -> validateOidcClaims config payload)
+                    with ex ->
+                        Error $"OIDC token payload could not be parsed: {ex.Message}")))
+
+let private xmlEscape (value: string) =
+    let escaped = System.Security.SecurityElement.Escape(value)
+    if isNull escaped then "" else escaped
+
+let private buildAbsoluteUrl (ctx: HttpContext) (path: string) =
+    let host = ctx.Request.Host.Value
+    let pathBase = ctx.Request.PathBase.ToString().TrimEnd('/')
+    $"{ctx.Request.Scheme}://{host}{pathBase}{path}"
+
+let private buildSamlServiceProviderMetadataXml
+    (serviceProviderEntityId: string)
+    (assertionConsumerServiceUrl: string)
+    (idpMetadataUrl: string option)
+    =
+    let idpMetadataExtension =
+        match idpMetadataUrl with
+        | Some url ->
+            $"<md:Extensions><af:IdpMetadataUrl xmlns:af=\"urn:artifortress:saml:1.0\">{xmlEscape url}</af:IdpMetadataUrl></md:Extensions>"
+        | None -> ""
+
+    $"""<?xml version="1.0" encoding="utf-8"?>
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{xmlEscape serviceProviderEntityId}">
+  <md:SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="false" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    {idpMetadataExtension}
+    <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</md:NameIDFormat>
+    <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{xmlEscape assertionConsumerServiceUrl}" index="0" isDefault="true" />
+  </md:SPSSODescriptor>
+</md:EntityDescriptor>"""
+
+let private readSamlAcsRequest (ctx: HttpContext) =
+    if ctx.Request.HasFormContentType then
+        try
+            let form = ctx.Request.ReadFormAsync().GetAwaiter().GetResult()
+            let samlResponse = normalizeText (form.["SAMLResponse"].ToString())
+            let relayState = normalizeText (form.["RelayState"].ToString())
+            Ok(samlResponse, relayState)
+        with ex ->
+            Error $"Invalid SAML form body: {ex.Message}"
+    else
+        try
+            let payload = ctx.Request.ReadFromJsonAsync<SamlAcsJsonRequest>().GetAwaiter().GetResult()
+
+            if obj.ReferenceEquals(payload, null) then
+                Error "Request body is required."
+            else
+                Ok(normalizeText payload.SAMLResponse, normalizeText payload.RelayState)
+        with ex ->
+            Error $"Invalid JSON body: {ex.Message}"
+
+let private validateSamlAcsPayload (rawSamlResponse: string) =
+    if String.IsNullOrWhiteSpace rawSamlResponse then
+        Error "SAMLResponse is required."
+    else
+        let decodedBytesResult =
+            match parseBase64UrlBytes rawSamlResponse with
+            | Ok payloadBytes -> Ok payloadBytes
+            | Error _ ->
+                try
+                    Ok(Convert.FromBase64String(rawSamlResponse))
+                with _ ->
+                    Error "SAMLResponse must be valid base64 or base64url content."
+
+        decodedBytesResult
+        |> Result.bind (fun payloadBytes ->
+            if payloadBytes.Length = 0 then
+                Error "SAMLResponse cannot be empty after decoding."
+            else
+                Ok payloadBytes)
+
+type SamlAssertionEnvelope = {
+    Issuer: string option
+    Subject: string option
+    Audience: string option
+    Attributes: Map<string, string list>
+}
+
+let private tryReadFirstXmlValueByLocalName (doc: XDocument) (localName: string) =
+    doc.Descendants()
+    |> Seq.tryFind (fun element -> String.Equals(element.Name.LocalName, localName, StringComparison.Ordinal))
+    |> Option.map (fun element -> normalizeText element.Value)
+    |> Option.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+
+let private readSamlAssertionEnvelope (payloadBytes: byte array) =
+    try
+        let xmlText = Encoding.UTF8.GetString(payloadBytes)
+        let doc = XDocument.Parse(xmlText, LoadOptions.PreserveWhitespace)
+
+        let attributes =
+            doc.Descendants()
+            |> Seq.filter (fun element -> String.Equals(element.Name.LocalName, "Attribute", StringComparison.Ordinal))
+            |> Seq.choose (fun attributeElement ->
+                let nameAttribute = attributeElement.Attribute(XName.Get("Name"))
+
+                if isNull nameAttribute then
+                    None
+                else
+                    let name = normalizeText nameAttribute.Value |> fun value -> value.ToLowerInvariant()
+
+                    if String.IsNullOrWhiteSpace name then
+                        None
+                    else
+                        let values =
+                            attributeElement.Descendants()
+                            |> Seq.filter (fun valueElement ->
+                                String.Equals(valueElement.Name.LocalName, "AttributeValue", StringComparison.Ordinal))
+                            |> Seq.map (fun valueElement -> normalizeText valueElement.Value)
+                            |> Seq.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+                            |> Seq.toList
+
+                        if values.IsEmpty then None else Some(name, values))
+            |> Seq.groupBy fst
+            |> Seq.map (fun (name, values) ->
+                let flattenedValues =
+                    values
+                    |> Seq.collect snd
+                    |> Seq.map normalizeText
+                    |> Seq.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+                    |> Seq.distinct
+                    |> Seq.toList
+
+                name, flattenedValues)
+            |> Map.ofSeq
+
+        Ok
+            { Issuer = tryReadFirstXmlValueByLocalName doc "Issuer"
+              Subject = tryReadFirstXmlValueByLocalName doc "NameID"
+              Audience = tryReadFirstXmlValueByLocalName doc "Audience"
+              Attributes = attributes }
+    with ex ->
+        Error $"SAMLResponse could not be parsed as XML: {ex.Message}"
+
+let private splitScopeValuesFromAttribute (rawValue: string) =
+    rawValue.Split(' ', StringSplitOptions.TrimEntries ||| StringSplitOptions.RemoveEmptyEntries)
+    |> Array.toList
+
+let private extractSamlDirectScopeValues (attributes: Map<string, string list>) =
+    [ "scope"; "scp"; "artifortress_scopes" ]
+    |> List.collect (fun key ->
+        match attributes |> Map.tryFind key with
+        | Some values -> values
+        | None -> [])
+    |> List.collect splitScopeValuesFromAttribute
+    |> List.map normalizeText
+    |> List.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+    |> List.distinct
+
+let private extractRepoScopesFromSamlRoleMappings
+    (roleMappings: OidcClaimRoleMapping list)
+    (attributes: Map<string, string list>)
+    =
+    roleMappings
+    |> List.fold
+        (fun acc mapping ->
+            match acc with
+            | Error err -> Error err
+            | Ok scopes ->
+                let claimValues =
+                    attributes
+                    |> Map.tryFind mapping.ClaimName
+                    |> Option.defaultValue []
+
+                let mappingMatched =
+                    if String.Equals(mapping.ClaimValue, "*", StringComparison.Ordinal) then
+                        not claimValues.IsEmpty
+                    else
+                        claimValues
+                        |> List.exists (fun claimValue ->
+                            String.Equals(claimValue, mapping.ClaimValue, StringComparison.OrdinalIgnoreCase))
+
+                if not mappingMatched then
+                    Ok scopes
+                else
+                    match RepoScope.tryCreate mapping.RepoKey mapping.Role with
+                    | Ok scope -> Ok(scope :: scopes)
+                    | Error err -> Error $"SAML role mapping is invalid at runtime: {err}")
+        (Ok [])
+    |> Result.map List.rev
+
+let private resolveSamlScopes (config: SamlIntegrationConfig) (envelope: SamlAssertionEnvelope) =
+    let directScopesResult =
+        let directScopeValues = extractSamlDirectScopeValues envelope.Attributes
+        if directScopeValues.IsEmpty then Ok [] else parseRepoScopesFromClaimValues (directScopeValues |> List.toArray)
+
+    let mappedScopesResult = extractRepoScopesFromSamlRoleMappings config.RoleMappings envelope.Attributes
+
+    match directScopesResult, mappedScopesResult with
+    | Error err, _
+    | _, Error err -> Error err
+    | Ok directScopes, Ok mappedScopes ->
+        let resolvedScopes =
+            List.append directScopes mappedScopes
+            |> List.distinctBy RepoScope.value
+
+        if resolvedScopes.IsEmpty then
+            Error "SAML assertion did not contain repository scopes and no role mappings matched."
+        else
+            Ok resolvedScopes
+
+let private validateSamlAssertion (config: SamlIntegrationConfig) (envelope: SamlAssertionEnvelope) =
+    let issuerResult =
+        match config.ExpectedIssuer with
+        | None -> Ok()
+        | Some expectedIssuer ->
+            match envelope.Issuer with
+            | Some issuer when String.Equals(issuer, expectedIssuer, StringComparison.Ordinal) -> Ok()
+            | Some _ -> Error "SAML assertion issuer did not match configured expected issuer."
+            | None -> Error "SAML assertion is missing issuer."
+
+    let audienceResult =
+        match config.ServiceProviderEntityId with
+        | None -> Ok()
+        | Some expectedAudience ->
+            match envelope.Audience with
+            | Some audience when String.Equals(audience, expectedAudience, StringComparison.Ordinal) -> Ok()
+            | Some _ -> Error "SAML assertion audience did not match service provider entity id."
+            | None -> Error "SAML assertion is missing audience."
+
+    let subjectResult =
+        match envelope.Subject with
+        | Some subject when not (String.IsNullOrWhiteSpace subject) -> Ok subject
+        | _ -> Error "SAML assertion subject (NameID) is missing."
+
+    match issuerResult, audienceResult, subjectResult with
+    | Error err, _, _ -> Error err
+    | _, Error err, _ -> Error err
+    | _, _, Error err -> Error err
+    | Ok(), Ok(), Ok subject ->
+        resolveSamlScopes config envelope
+        |> Result.map (fun scopes -> subject, scopes)
 
 let createPlainToken () =
     let bytes = RandomNumberGenerator.GetBytes(32)
@@ -4059,33 +4558,94 @@ let main args =
                 let issuer = normalizeText builder.Configuration.["Auth:Oidc:Issuer"]
                 let audience = normalizeText builder.Configuration.["Auth:Oidc:Audience"]
                 let hs256SharedSecret = normalizeText builder.Configuration.["Auth:Oidc:Hs256SharedSecret"]
+                let jwksJson = normalizeText builder.Configuration.["Auth:Oidc:JwksJson"]
+                let roleMappingsRaw = normalizeText builder.Configuration.["Auth:Oidc:RoleMappings"]
 
                 if String.IsNullOrWhiteSpace issuer then
                     failwith "Auth:Oidc:Issuer is required when Auth:Oidc:Enabled=true."
                 elif String.IsNullOrWhiteSpace audience then
                     failwith "Auth:Oidc:Audience is required when Auth:Oidc:Enabled=true."
-                elif String.IsNullOrWhiteSpace hs256SharedSecret then
-                    failwith "Auth:Oidc:Hs256SharedSecret is required when Auth:Oidc:Enabled=true."
                 else
+                    let hs256SecretOption =
+                        if String.IsNullOrWhiteSpace hs256SharedSecret then None else Some hs256SharedSecret
+
+                    let rs256SigningKeys =
+                        if String.IsNullOrWhiteSpace jwksJson then
+                            []
+                        else
+                            match parseOidcJwksJson jwksJson with
+                            | Ok keys -> keys
+                            | Error err -> failwith $"Auth:Oidc:JwksJson is invalid: {err}"
+
+                    if hs256SecretOption.IsNone && rs256SigningKeys.IsEmpty then
+                        failwith
+                            "Auth:Oidc:Enabled=true requires at least one signing mode: Auth:Oidc:Hs256SharedSecret and/or Auth:Oidc:JwksJson."
+
+                    let claimRoleMappings =
+                        match parseOidcClaimRoleMappings roleMappingsRaw with
+                        | Ok mappings -> mappings
+                        | Error err -> failwith $"Auth:Oidc:RoleMappings is invalid: {err}"
+
                     Some
                         { Issuer = issuer
                           Audience = audience
-                          Hs256SharedSecret = hs256SharedSecret }
+                          Hs256SharedSecret = hs256SecretOption
+                          Rs256SigningKeys = rs256SigningKeys
+                          ClaimRoleMappings = claimRoleMappings }
 
         let samlIntegration =
             let enabled = builder.Configuration.["Auth:Saml:Enabled"] |> parseBoolean
             let metadataUrl = normalizeText builder.Configuration.["Auth:Saml:IdpMetadataUrl"]
             let serviceProviderEntityId = normalizeText builder.Configuration.["Auth:Saml:ServiceProviderEntityId"]
+            let expectedIssuer = normalizeText builder.Configuration.["Auth:Saml:ExpectedIssuer"]
+            let roleMappingsRaw = normalizeText builder.Configuration.["Auth:Saml:RoleMappings"]
+
+            let issuedPatTtlMinutes =
+                let raw = builder.Configuration.["Auth:Saml:IssuedPatTtlMinutes"]
+
+                match Int32.TryParse raw with
+                | true, value when value >= 5 && value <= 1440 -> value
+                | _ -> 60
 
             let optionalValue value =
                 if String.IsNullOrWhiteSpace value then None else Some value
 
+            let parsedRoleMappings =
+                match parseOidcClaimRoleMappings roleMappingsRaw with
+                | Ok mappings -> mappings
+                | Error err -> failwith $"Auth:Saml:RoleMappings is invalid: {err}"
+
             { Enabled = enabled
               IdpMetadataUrl = optionalValue metadataUrl
-              ServiceProviderEntityId = optionalValue serviceProviderEntityId }
+              ServiceProviderEntityId = optionalValue serviceProviderEntityId
+              ExpectedIssuer = optionalValue expectedIssuer
+              RoleMappings = parsedRoleMappings
+              IssuedPatTtlMinutes = issuedPatTtlMinutes }
 
         if samlIntegration.Enabled then
-            failwith "SAML integration is not implemented yet. Set Auth:Saml:Enabled=false."
+            let metadataUrlResult =
+                match samlIntegration.IdpMetadataUrl with
+                | None -> Error "Auth:Saml:IdpMetadataUrl is required when Auth:Saml:Enabled=true."
+                | Some url ->
+                    match Uri.TryCreate(url, UriKind.Absolute) with
+                    | true, _ -> Ok()
+                    | _ -> Error "Auth:Saml:IdpMetadataUrl must be a valid absolute URI."
+
+            let serviceProviderEntityIdResult =
+                match samlIntegration.ServiceProviderEntityId with
+                | None -> Error "Auth:Saml:ServiceProviderEntityId is required when Auth:Saml:Enabled=true."
+                | Some _ -> Ok()
+
+            let expectedIssuerResult =
+                match samlIntegration.ExpectedIssuer with
+                | None -> Error "Auth:Saml:ExpectedIssuer is required when Auth:Saml:Enabled=true."
+                | Some _ -> Ok()
+
+            match metadataUrlResult, serviceProviderEntityIdResult, expectedIssuerResult with
+            | Error err, _, _ -> failwith err
+            | _, Error err, _ -> failwith err
+            | _, _, Error err -> failwith err
+            | Ok(), Ok(), Ok() -> ()
 
         { ConnectionString = connectionString
           TenantSlug = "default"
@@ -4157,6 +4717,94 @@ let main args =
             | Ok(Some principal) ->
                 let scopeValues = principal.Scopes |> List.map RepoScope.value
                 Results.Ok({| subject = principal.Subject; scopes = scopeValues; authSource = principal.AuthSource |}))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/auth/saml/metadata",
+        Func<HttpContext, IResult>(fun ctx ->
+            if not state.SamlIntegration.Enabled then
+                Results.Json(
+                    {| error = "not_found"
+                       message = "SAML metadata endpoint is disabled." |},
+                    statusCode = StatusCodes.Status404NotFound
+                )
+            else
+                match state.SamlIntegration.ServiceProviderEntityId with
+                | None -> serviceUnavailable "SAML service provider entity id is not configured."
+                | Some entityId ->
+                    let acsUrl = buildAbsoluteUrl ctx "/v1/auth/saml/acs"
+
+                    let metadataXml =
+                        buildSamlServiceProviderMetadataXml entityId acsUrl state.SamlIntegration.IdpMetadataUrl
+
+                    Results.Text(metadataXml, "application/samlmetadata+xml; charset=utf-8"))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/auth/saml/acs",
+        Func<HttpContext, IResult>(fun ctx ->
+            if not state.SamlIntegration.Enabled then
+                Results.Json(
+                    {| error = "not_found"
+                       message = "SAML ACS endpoint is disabled." |},
+                    statusCode = StatusCodes.Status404NotFound
+                )
+            else
+                match readSamlAcsRequest ctx with
+                | Error err -> badRequest err
+                | Ok(samlResponse, relayState) ->
+                    match validateSamlAcsPayload samlResponse with
+                    | Error err -> badRequest err
+                    | Ok payloadBytes ->
+                        match readSamlAssertionEnvelope payloadBytes with
+                        | Error err -> badRequest err
+                        | Ok envelope ->
+                            match validateSamlAssertion state.SamlIntegration envelope with
+                            | Error err -> unauthorized err
+                            | Ok(subject, scopes) ->
+                                let normalizedSubject = normalizeSubject subject
+
+                                if String.IsNullOrWhiteSpace normalizedSubject then
+                                    badRequest "SAML assertion subject is invalid after normalization."
+                                else
+                                    let rawToken = createPlainToken ()
+                                    let tokenHash = toTokenHash rawToken
+                                    let tokenId = Guid.NewGuid()
+                                    let expiry = (nowUtc ()).AddMinutes(float state.SamlIntegration.IssuedPatTtlMinutes)
+                                    let actor = $"saml:{normalizedSubject}"
+
+                                    match
+                                        withConnection state (fun conn ->
+                                            ensureTenantId state conn
+                                            |> Result.bind (fun tenantId ->
+                                                insertPat tenantId normalizedSubject tokenId tokenHash scopes expiry actor conn
+                                                |> Result.map (fun () -> tenantId)))
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok tenantId ->
+                                        match
+                                            writeAudit
+                                                state
+                                                tenantId
+                                                actor
+                                                "auth.saml.exchange"
+                                                "token"
+                                                (tokenId.ToString())
+                                                (Map.ofList [ "subject", normalizedSubject; "relayState", relayState ])
+                                        with
+                                        | Error err -> serviceUnavailable err
+                                        | Ok() ->
+                                            Results.Ok(
+                                                {| tokenId = tokenId
+                                                   token = rawToken
+                                                   subject = normalizedSubject
+                                                   scopes = scopes |> List.map RepoScope.value
+                                                   expiresAtUtc = expiry
+                                                   authSource = "saml"
+                                                   relayState = relayState |}
+                                            ))
     )
     |> ignore
 

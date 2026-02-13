@@ -197,6 +197,104 @@ let private issueOidcToken
 
     $"{signedPayload}.{signatureSegment}"
 
+let private issueOidcTokenWithGroups
+    (issuer: string)
+    (audience: string)
+    (hs256SharedSecret: string)
+    (subject: string)
+    (groups: string array)
+    (expiresAtUtc: DateTimeOffset)
+    =
+    let headerJson = """{"alg":"HS256","typ":"JWT"}"""
+
+    let payloadJson =
+        JsonSerializer.Serialize(
+            {| iss = issuer
+               sub = subject
+               aud = audience
+               exp = expiresAtUtc.ToUnixTimeSeconds()
+               groups = groups |}
+        )
+
+    let headerSegment = headerJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let payloadSegment = payloadJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let signedPayload = $"{headerSegment}.{payloadSegment}"
+
+    let signatureSegment =
+        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(hs256SharedSecret))
+        signedPayload |> Encoding.UTF8.GetBytes |> hmac.ComputeHash |> toBase64Url
+
+    $"{signedPayload}.{signatureSegment}"
+
+let private createIntegrationRs256KeyMaterial () =
+    use rsa = RSA.Create(2048)
+    rsa.ExportParameters(true), rsa.ExportParameters(false)
+
+let private integrationOidcRs256Kid = "integration-rs256-k1"
+let private integrationOidcRs256PrivateParameters, integrationOidcRs256PublicParameters = createIntegrationRs256KeyMaterial ()
+
+let private integrationOidcRs256JwksJson =
+    let n = toBase64Url integrationOidcRs256PublicParameters.Modulus
+    let e = toBase64Url integrationOidcRs256PublicParameters.Exponent
+    $"{{\"keys\":[{{\"kty\":\"RSA\",\"use\":\"sig\",\"alg\":\"RS256\",\"kid\":\"{integrationOidcRs256Kid}\",\"n\":\"{n}\",\"e\":\"{e}\"}}]}}"
+
+let private issueOidcRs256Token
+    (issuer: string)
+    (audience: string)
+    (subject: string)
+    (scopes: string array)
+    (expiresAtUtc: DateTimeOffset)
+    (kid: string)
+    =
+    let headerJson = JsonSerializer.Serialize({| alg = "RS256"; typ = "JWT"; kid = kid |})
+    let scopeText = scopes |> String.concat " "
+
+    let payloadJson =
+        JsonSerializer.Serialize(
+            {| iss = issuer
+               sub = subject
+               aud = audience
+               exp = expiresAtUtc.ToUnixTimeSeconds()
+               scope = scopeText |}
+        )
+
+    let headerSegment = headerJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let payloadSegment = payloadJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let signedPayload = $"{headerSegment}.{payloadSegment}"
+
+    let signatureSegment =
+        use rsa = RSA.Create()
+        rsa.ImportParameters(integrationOidcRs256PrivateParameters)
+
+        rsa.SignData(
+            Encoding.UTF8.GetBytes(signedPayload),
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1
+        )
+        |> toBase64Url
+
+    $"{signedPayload}.{signatureSegment}"
+
+let private buildSamlResponseXml (issuer: string) (audience: string) (subject: string) (groups: string array) =
+    let groupValues =
+        groups
+        |> Array.map (fun group -> $"<saml:AttributeValue>{group}</saml:AttributeValue>")
+        |> String.concat ""
+
+    $"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+<saml:Issuer>{issuer}</saml:Issuer>
+<saml:Assertion>
+  <saml:Issuer>{issuer}</saml:Issuer>
+  <saml:Subject><saml:NameID>{subject}</saml:NameID></saml:Subject>
+  <saml:Conditions>
+    <saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction>
+  </saml:Conditions>
+  <saml:AttributeStatement>
+    <saml:Attribute Name="groups">{groupValues}</saml:Attribute>
+  </saml:AttributeStatement>
+</saml:Assertion>
+</samlp:Response>"""
+
 let private ensureTenantId (conn: NpgsqlConnection) =
     use cmd =
         new NpgsqlCommand(
@@ -280,6 +378,11 @@ type ApiFixture() =
     let oidcIssuer = "https://integration-oidc.artifortress.local"
     let oidcAudience = "artifortress-api"
     let oidcSharedSecret = "integration-phase7-oidc-secret"
+    let oidcRoleMappings = "groups|af-admins|*|admin"
+    let samlIdpMetadataUrl = "https://integration-idp.artifortress.local/metadata"
+    let samlExpectedIssuer = "https://integration-idp.artifortress.local/issuer"
+    let samlServiceProviderEntityId = "urn:artifortress:integration:sp"
+    let samlRoleMappings = "groups|af-admins|*|admin"
     let output = ConcurrentQueue<string>()
     let mutable client: HttpClient option = None
     let mutable apiProcessHandle: Process option = None
@@ -351,7 +454,13 @@ type ApiFixture() =
                     startInfo.Environment["Auth__Oidc__Issuer"] <- oidcIssuer
                     startInfo.Environment["Auth__Oidc__Audience"] <- oidcAudience
                     startInfo.Environment["Auth__Oidc__Hs256SharedSecret"] <- oidcSharedSecret
-                    startInfo.Environment["Auth__Saml__Enabled"] <- "false"
+                    startInfo.Environment["Auth__Oidc__JwksJson"] <- integrationOidcRs256JwksJson
+                    startInfo.Environment["Auth__Oidc__RoleMappings"] <- oidcRoleMappings
+                    startInfo.Environment["Auth__Saml__Enabled"] <- "true"
+                    startInfo.Environment["Auth__Saml__IdpMetadataUrl"] <- samlIdpMetadataUrl
+                    startInfo.Environment["Auth__Saml__ExpectedIssuer"] <- samlExpectedIssuer
+                    startInfo.Environment["Auth__Saml__ServiceProviderEntityId"] <- samlServiceProviderEntityId
+                    startInfo.Environment["Auth__Saml__RoleMappings"] <- samlRoleMappings
 
                     let proc = new Process()
                     proc.StartInfo <- startInfo
@@ -407,6 +516,9 @@ type ApiFixture() =
     member _.OidcIssuer = oidcIssuer
     member _.OidcAudience = oidcAudience
     member _.OidcSharedSecret = oidcSharedSecret
+    member _.SamlIdpMetadataUrl = samlIdpMetadataUrl
+    member _.SamlExpectedIssuer = samlExpectedIssuer
+    member _.SamlServiceProviderEntityId = samlServiceProviderEntityId
 
     member this.InsertTokenDirect (subject: string) (scopes: string array) (expiresAtUtc: DateTimeOffset) (revokedAtUtc: DateTimeOffset option) =
         this.RequireAvailable()
@@ -1716,6 +1828,189 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         use request = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", oidcToken)
+        use response = fixture.Client.Send(request)
+        ensureStatus HttpStatusCode.Unauthorized response |> ignore
+
+    [<Fact>]
+    member _.``P7-03 oidc rs256 bearer flow supports whoami and repo create`` () =
+        fixture.RequireAvailable()
+
+        let subject = makeSubject "p703-oidc-rs256"
+
+        let oidcToken =
+            issueOidcRs256Token
+                fixture.OidcIssuer
+                fixture.OidcAudience
+                subject
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(10.0))
+                integrationOidcRs256Kid
+
+        use whoamiRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        whoamiRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", oidcToken)
+        use whoamiResponse = fixture.Client.Send(whoamiRequest)
+        let whoamiBody = ensureStatus HttpStatusCode.OK whoamiResponse
+        use whoamiDoc = JsonDocument.Parse(whoamiBody)
+        Assert.Equal(subject, whoamiDoc.RootElement.GetProperty("subject").GetString())
+        Assert.Equal("oidc", whoamiDoc.RootElement.GetProperty("authSource").GetString())
+
+        let repoKey = makeRepoKey "p703-rs256-repo"
+        use createRepoResponse = createRepoWithToken oidcToken repoKey
+        ensureStatus HttpStatusCode.Created createRepoResponse |> ignore
+
+    [<Fact>]
+    member _.``P7-03 oidc rs256 token with unknown kid is unauthorized`` () =
+        fixture.RequireAvailable()
+
+        let oidcToken =
+            issueOidcRs256Token
+                fixture.OidcIssuer
+                fixture.OidcAudience
+                (makeSubject "p703-unknown-kid")
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(10.0))
+                "unknown-rs256-kid"
+
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", oidcToken)
+        use response = fixture.Client.Send(request)
+        ensureStatus HttpStatusCode.Unauthorized response |> ignore
+
+    [<Fact>]
+    member _.``P7-04 oidc claim-role mapping grants wildcard admin from groups claim`` () =
+        fixture.RequireAvailable()
+
+        let mappedToken =
+            issueOidcTokenWithGroups
+                fixture.OidcIssuer
+                fixture.OidcAudience
+                fixture.OidcSharedSecret
+                (makeSubject "p704-groups-admin")
+                [| "af-admins" |]
+                (DateTimeOffset.UtcNow.AddMinutes(10.0))
+
+        use whoamiRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        whoamiRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", mappedToken)
+        use whoamiResponse = fixture.Client.Send(whoamiRequest)
+        let whoamiBody = ensureStatus HttpStatusCode.OK whoamiResponse
+        use whoamiDoc = JsonDocument.Parse(whoamiBody)
+
+        let scopes =
+            whoamiDoc.RootElement.GetProperty("scopes").EnumerateArray()
+            |> Seq.map (fun item -> item.GetString())
+            |> Seq.toArray
+
+        Assert.Contains("repo:*:admin", scopes)
+
+        let repoKey = makeRepoKey "p704-mapped-repo"
+        use createRepoResponse = createRepoWithToken mappedToken repoKey
+        ensureStatus HttpStatusCode.Created createRepoResponse |> ignore
+
+    [<Fact>]
+    member _.``P7-04 oidc claim-role mapping denies unmatched group claims`` () =
+        fixture.RequireAvailable()
+
+        let unmappedToken =
+            issueOidcTokenWithGroups
+                fixture.OidcIssuer
+                fixture.OidcAudience
+                fixture.OidcSharedSecret
+                (makeSubject "p704-groups-unmapped")
+                [| "af-readers" |]
+                (DateTimeOffset.UtcNow.AddMinutes(10.0))
+
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", unmappedToken)
+        use response = fixture.Client.Send(request)
+        ensureStatus HttpStatusCode.Unauthorized response |> ignore
+
+    [<Fact>]
+    member _.``P7-05 saml metadata endpoint returns service-provider metadata contract`` () =
+        fixture.RequireAvailable()
+
+        use response = fixture.Client.GetAsync("/v1/auth/saml/metadata").Result
+        let body = ensureStatus HttpStatusCode.OK response
+        let contentType = response.Content.Headers.ContentType.MediaType
+
+        Assert.Equal("application/samlmetadata+xml", contentType)
+        Assert.Contains(fixture.SamlServiceProviderEntityId, body)
+        Assert.Contains("/v1/auth/saml/acs", body)
+        Assert.Contains(fixture.SamlIdpMetadataUrl, body)
+
+    [<Fact>]
+    member _.``P7-06 saml acs exchange validates assertion and returns scoped bearer token`` () =
+        fixture.RequireAvailable()
+
+        let samlResponse =
+            buildSamlResponseXml
+                fixture.SamlExpectedIssuer
+                fixture.SamlServiceProviderEntityId
+                (makeSubject "p706-saml-user")
+                [| "af-admins" |]
+            |> Encoding.UTF8.GetBytes
+            |> Convert.ToBase64String
+
+        let formValues =
+            [ System.Collections.Generic.KeyValuePair("SAMLResponse", samlResponse)
+              System.Collections.Generic.KeyValuePair("RelayState", "p706-relay") ]
+
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/saml/acs")
+        request.Content <- new FormUrlEncodedContent(formValues)
+        use response = fixture.Client.Send(request)
+        let body = ensureStatus HttpStatusCode.OK response
+        use doc = JsonDocument.Parse(body)
+
+        Assert.Equal("saml", doc.RootElement.GetProperty("authSource").GetString())
+        Assert.Equal("p706-relay", doc.RootElement.GetProperty("relayState").GetString())
+
+        let issuedToken = doc.RootElement.GetProperty("token").GetString()
+        Assert.False(String.IsNullOrWhiteSpace issuedToken)
+
+        use whoamiRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        whoamiRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", issuedToken)
+        use whoamiResponse = fixture.Client.Send(whoamiRequest)
+        let whoamiBody = ensureStatus HttpStatusCode.OK whoamiResponse
+        use whoamiDoc = JsonDocument.Parse(whoamiBody)
+
+        Assert.Equal("pat", whoamiDoc.RootElement.GetProperty("authSource").GetString())
+
+        let scopes =
+            whoamiDoc.RootElement.GetProperty("scopes").EnumerateArray()
+            |> Seq.map (fun item -> item.GetString())
+            |> Seq.toArray
+
+        Assert.Contains("repo:*:admin", scopes)
+
+    [<Fact>]
+    member _.``P7-05 saml acs endpoint rejects invalid base64 payload`` () =
+        fixture.RequireAvailable()
+
+        let formValues =
+            [ System.Collections.Generic.KeyValuePair("SAMLResponse", "!!!bad-base64!!!")
+              System.Collections.Generic.KeyValuePair("RelayState", "p705-relay-invalid") ]
+
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/saml/acs")
+        request.Content <- new FormUrlEncodedContent(formValues)
+        use response = fixture.Client.Send(request)
+        ensureStatus HttpStatusCode.BadRequest response |> ignore
+
+    [<Fact>]
+    member _.``P7-06 saml acs exchange rejects assertion with mismatched issuer`` () =
+        fixture.RequireAvailable()
+
+        let samlResponse =
+            buildSamlResponseXml
+                "https://wrong-idp.artifortress.local/issuer"
+                fixture.SamlServiceProviderEntityId
+                (makeSubject "p706-saml-bad-issuer")
+                [| "af-admins" |]
+            |> Encoding.UTF8.GetBytes
+            |> Convert.ToBase64String
+
+        let formValues = [ System.Collections.Generic.KeyValuePair("SAMLResponse", samlResponse) ]
+
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/saml/acs")
+        request.Content <- new FormUrlEncodedContent(formValues)
         use response = fixture.Client.Send(request)
         ensureStatus HttpStatusCode.Unauthorized response |> ignore
 

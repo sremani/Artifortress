@@ -1,6 +1,6 @@
 # Operations How-To
 
-Last updated: 2026-02-12
+Last updated: 2026-02-13
 
 This guide is for day-2 operations after deployment.
 
@@ -29,18 +29,35 @@ curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/ops
 4. Validate PAT issuance using new header value.
 5. Revoke transitional tokens if applicable.
 
-## 3. How To Rotate OIDC Shared Secret (Phase 7 foundation mode)
+## 3. How To Rotate OIDC Signing Material
 
-1. Generate new secret material.
-2. Update `Auth__Oidc__Hs256SharedSecret` in runtime secret store.
+1. Determine active signing mode:
+   - HS256 (`Auth__Oidc__Hs256SharedSecret`)
+   - RS256 (`Auth__Oidc__JwksJson`)
+2. Rotate key material in secret store.
 3. Ensure issuer/audience values remain unchanged:
    - `Auth__Oidc__Issuer`
    - `Auth__Oidc__Audience`
 4. Roll API instances.
-5. Validate `/v1/auth/whoami` with a newly issued OIDC token.
-6. Keep overlap window short to avoid mixed-old/new token confusion.
+5. Validate `/v1/auth/whoami` with newly issued OIDC tokens for each enabled signing mode.
+6. If claim-role mappings are enabled, also validate mapped-scope behavior for mapped claims.
+7. Keep overlap window short to avoid mixed-old/new token confusion.
 
-## 4. How To Run Migrations Safely
+## 4. How To Toggle SAML Federation Safely
+
+1. Confirm federation config is complete:
+   - `Auth__Saml__IdpMetadataUrl`
+   - `Auth__Saml__ExpectedIssuer`
+   - `Auth__Saml__ServiceProviderEntityId`
+   - `Auth__Saml__RoleMappings`
+2. Enable or disable SAML via `Auth__Saml__Enabled=true|false`.
+3. Roll API instances.
+4. Validate:
+   - `GET /v1/auth/saml/metadata`
+   - `POST /v1/auth/saml/acs`
+5. If rollback is needed, set `Auth__Saml__Enabled=false` and re-roll.
+
+## 5. How To Run Migrations Safely
 
 1. Ensure backup exists:
 ```bash
@@ -56,7 +73,7 @@ make db-smoke
 ```
 4. Verify readiness endpoint and smoke APIs.
 
-## 5. How To Handle Rising Backlog
+## 6. How To Handle Rising Backlog
 
 Symptoms:
 - `pendingOutboxEvents` rising,
@@ -70,7 +87,7 @@ Actions:
 4. Re-check metrics after 5-15 minutes.
 5. Capture incident notes if backlog does not recover.
 
-## 6. How To Run Backup/Restore Drill
+## 7. How To Run Backup/Restore Drill
 
 Run drill:
 ```bash
@@ -84,7 +101,7 @@ Expected:
 - parity checks pass for required tables.
 - RTO/RPO status is `PASS`.
 
-## 7. How To Execute GA Readiness Sweep
+## 8. How To Execute GA Readiness Sweep
 
 ```bash
 make phase6-demo
@@ -94,7 +111,7 @@ Outputs:
 - `docs/reports/phase6-rto-rpo-drill-latest.md`
 - `docs/reports/phase6-ga-readiness-latest.md`
 
-## 8. Incident Quick Playbook
+## 9. Incident Quick Playbook
 
 ### API is live but not ready
 
@@ -118,14 +135,14 @@ curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/rec
 ```
 3. Run DR drill in controlled environment to validate recovery path.
 
-## 8. Recommended Weekly Cadence
+## 10. Recommended Weekly Cadence
 
 - Run `make phase6-drill` at least weekly.
 - Review ops summary trends and alert thresholds.
 - Review audit log samples for privileged operations.
 - Rehearse rollback path after major release changes.
 
-## 9. Related Documents
+## 11. Related Documents
 
 - `docs/26-deployment-plan.md`
 - `docs/27-deployment-architecture.md`

@@ -1,6 +1,6 @@
 # Deployment Plan
 
-Last updated: 2026-02-11
+Last updated: 2026-02-13
 
 ## 1. Goal
 
@@ -20,7 +20,7 @@ In scope:
 - environment configuration and operational runbooks.
 
 Out of scope:
-- OIDC/SAML integration (post-GA roadmap).
+- OIDC remote JWKS refresh automation and signed SAML assertion cryptographic validation hardening.
 - search query-serving read model (post-GA roadmap).
 
 ## 3. Baseline Topology

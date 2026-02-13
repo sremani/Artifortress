@@ -2,7 +2,7 @@
 
 This roadmap converts the design into execution phases with exit criteria.
 
-## Current Status Snapshot (2026-02-12)
+## Current Status Snapshot (2026-02-13)
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -13,7 +13,7 @@ This roadmap converts the design into execution phases with exit criteria.
 | Phase 4 | complete | P4-01 through P4-10 complete, including policy/quarantine/search workflow and demo/runbook. |
 | Phase 5 | complete | P5-01 through P5-08 complete, including tombstone, GC dry-run/execute, reconcile API, and demo/runbook. |
 | Phase 6 | complete | P6-01 through P6-10 complete, including readiness hardening, ops summary, DR drill, security closure, and rollback runbooks. |
-| Phase 7 (Identity Federation) | in_progress | OIDC/SAML track started; P7-01 and P7-02 delivered (OIDC validation foundation + integration tests + runbook/demo). |
+| Phase 7 (Identity Federation) | complete | P7-01 through P7-07 complete (OIDC HS256 + JWKS/RS256 + claim mapping, SAML metadata + ACS exchange + role mapping, rollout/runbook controls). |
 | Post-GA | planned | Search read-model serving maturity and F# native mutation hardening (native runtime + non-blocking CI + score/trend/burn-in policy are active; merge-gate promotion remains pending required burn-in streak). |
 
 ## Phase 0: Foundation (1-2 weeks)
@@ -42,7 +42,7 @@ Exit criteria:
 
 Current implementation note:
 - PAT bootstrap remains active.
-- Identity federation work has started under Phase 7 with OIDC bearer-token validation scaffolding.
+- Identity federation (Phase 7) is implemented and documented for staged rollout with explicit fallback toggles.
 
 ## Phase 2: Blob Ingest and Download Path (3-4 weeks)
 

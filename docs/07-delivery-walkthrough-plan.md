@@ -2,7 +2,7 @@
 
 This plan defines the execution sequence we will walk through, with every phase mapped to features, dependencies, and demo milestones.
 
-## 0. Execution Status Snapshot (2026-02-11)
+## 0. Execution Status Snapshot (2026-02-13)
 
 - Phase 0 is complete.
 - Phase 1 is complete.
@@ -11,14 +11,15 @@ This plan defines the execution sequence we will walk through, with every phase 
 - Phase 4 is complete through `P4-10`.
 - Phase 5 is complete through `P5-08`.
 - Phase 6 is complete through `P6-10`.
-- Next active delivery focus is post-GA roadmap work (OIDC/SAML integration and search read-model maturity).
-- OIDC-specific walkthrough steps are deferred; Phase 1 demo uses PAT bootstrap/admin flows.
+- Phase 7 is complete through `P7-07`.
+- Next active delivery focus is post-Phase-7 hardening (OIDC JWKS refresh automation, signed SAML assertion cryptographic verification) and search read-model maturity.
 
 ## 1. Full Feature Inventory
 
 Control plane features:
 - PAT/scoped token issuance and repo-scoped RBAC enforcement (implemented).
-- OIDC authentication integration (planned).
+- OIDC authentication integration (implemented: HS256 + RS256/JWKS + claim-role mapping).
+- SAML metadata/ACS assertion exchange with mapping policy (implemented).
 - Repository management (local, remote, virtual).
 - Package/version metadata lifecycle (draft, publish, tombstone).
 - Audit trail and transactional outbox.

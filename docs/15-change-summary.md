@@ -776,3 +776,70 @@ This change set combines:
 - `make test-integration` passed (`73` integration tests).
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`169` total tests).
 - `make format` passed.
+
+## Phase 7 Identity Completion Addendum (2026-02-13, latest)
+
+### Code changes
+
+- `src/Artifortress.Api/Program.fs`
+  - Completed OIDC RS256/JWKS path:
+    - added JWKS parser and RS256 signature verification.
+    - added `kid` key selection with multi-key rotation support.
+    - added mixed signing-mode configuration (`Hs256SharedSecret` and/or `JwksJson`).
+  - Added OIDC claim-role mapping policy:
+    - config key: `Auth:Oidc:RoleMappings`
+    - mapping format: `claimName|claimValue|repoKey|role`
+    - merged mapped scopes with direct scope claims.
+  - Completed SAML ACS validation flow:
+    - metadata endpoint: `GET /v1/auth/saml/metadata`
+    - ACS endpoint: `POST /v1/auth/saml/acs`
+    - SAML XML parsing and validation (issuer, audience, subject).
+    - SAML claim-role mapping policy using same mapping format.
+    - scoped token issuance and audit action `auth.saml.exchange`.
+  - Added Phase 7 config expansion:
+    - `Auth:Oidc:JwksJson`
+    - `Auth:Oidc:RoleMappings`
+    - `Auth:Saml:ExpectedIssuer`
+    - `Auth:Saml:RoleMappings`
+    - `Auth:Saml:IssuedPatTtlMinutes`
+
+### Test changes
+
+- `tests/Artifortress.Domain.Tests/Tests.fs`
+  - Added OIDC RS256/JWKS unit coverage:
+    - valid RS256 token acceptance.
+    - key-rotation behavior across multiple keys.
+  - Added OIDC claim-role mapping unit coverage when direct scope claim is absent.
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added Phase 7 integration coverage:
+    - `P7-03 oidc rs256 bearer flow supports whoami and repo create`
+    - `P7-03 oidc rs256 token with unknown kid is unauthorized`
+    - `P7-04 oidc claim-role mapping grants wildcard admin from groups claim`
+    - `P7-04 oidc claim-role mapping denies unmatched group claims`
+    - `P7-05 saml metadata endpoint returns service-provider metadata contract`
+    - `P7-05 saml acs endpoint rejects invalid base64 payload`
+    - `P7-06 saml acs exchange validates assertion and returns scoped bearer token`
+    - `P7-06 saml acs exchange rejects assertion with mismatched issuer`
+
+### Documentation and runbook changes
+
+- Updated:
+  - `docs/05-implementation-plan.md`
+  - `docs/10-current-state.md`
+  - `docs/30-deployment-config-reference.md`
+  - `docs/31-operations-howto.md`
+  - `docs/36-phase7-identity-integration-tickets.md`
+  - `docs/37-phase7-runbook.md`
+  - `README.md`
+  - `deploy/staging-api.env.example`
+  - `deploy/production-api.env.example`
+- Expanded demo:
+  - `scripts/phase7-demo.sh` now validates OIDC direct and mapped auth, SAML metadata/ACS exchange, and PAT fallback.
+
+### Validation evidence
+
+- `make format` passed.
+- `make test` passed (`99` non-integration tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`81` integration tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` passed (`11` Phase 7 tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`180` total tests).

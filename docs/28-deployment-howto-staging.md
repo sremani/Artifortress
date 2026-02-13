@@ -1,6 +1,6 @@
 # Staging Deployment How-To
 
-Last updated: 2026-02-12
+Last updated: 2026-02-13
 
 This guide deploys API + worker into a staging environment with a dedicated Postgres DB and object-storage bucket.
 
@@ -32,7 +32,14 @@ Auth__Oidc__Enabled=false
 Auth__Oidc__Issuer=https://idp.staging.example.com
 Auth__Oidc__Audience=artifortress-api
 Auth__Oidc__Hs256SharedSecret=<oidc-shared-secret>
+Auth__Oidc__JwksJson=
+Auth__Oidc__RoleMappings=groups|af-admins|*|admin
 Auth__Saml__Enabled=false
+Auth__Saml__IdpMetadataUrl=https://idp.staging.example.com/metadata
+Auth__Saml__ExpectedIssuer=https://idp.staging.example.com/issuer
+Auth__Saml__ServiceProviderEntityId=urn:artifortress:staging:sp
+Auth__Saml__RoleMappings=groups|af-admins|*|admin
+Auth__Saml__IssuedPatTtlMinutes=60
 ObjectStorage__Endpoint=http://<object-store-endpoint>:9000
 ObjectStorage__AccessKey=<access-key>
 ObjectStorage__SecretKey=<secret-key>
@@ -125,6 +132,7 @@ make phase3-demo
 make phase4-demo
 make phase5-demo
 make phase6-demo
+make phase7-demo
 ```
 
 ## 9. Staging Rollback

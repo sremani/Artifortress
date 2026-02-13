@@ -1,6 +1,6 @@
 # Artifortress Current State
 
-Last updated: 2026-02-12
+Last updated: 2026-02-13
 
 ## 1. What Is Implemented
 
@@ -12,7 +12,8 @@ Runtime and tooling:
 API control-plane features:
 - PAT issuance with TTL bounds and scope parsing.
 - PAT revocation and active-token validation (revoked/expired denied).
-- OIDC bearer-token validation path (HS256, issuer/audience/scope checks) behind configuration gate.
+- OIDC bearer-token validation path (HS256 + JWKS/RS256, issuer/audience checks, claim-role mapping policy) behind configuration gate.
+- SAML metadata + ACS assertion exchange path with issuer/audience checks and claim-role mapping policy.
 - Repo CRUD with repo-scoped authorization checks.
 - Role binding upsert/list for subject-role assignment per repo.
 - Audit persistence for privileged operations.
@@ -31,6 +32,8 @@ Persistence:
 - `GET /health/live`
 - `GET /health/ready`
 - `GET /v1/auth/whoami`
+- `GET /v1/auth/saml/metadata`
+- `POST /v1/auth/saml/acs`
 - `POST /v1/auth/pats`
 - `POST /v1/auth/pats/revoke`
 - `GET /v1/repos`
@@ -65,9 +68,9 @@ Persistence:
 
 Automated checks currently passing:
 - `make format`.
-- `make test` (non-integration filter) with `96` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `73` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `169` passing tests.
+- `make test` (non-integration filter) with `99` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `81` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `180` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `84` FsCheck properties across domain, lifecycle/policy request validation, API, object storage config, and extracted worker internals (three extraction waves).
 - `make phase2-load` baseline run:
@@ -145,8 +148,8 @@ Demonstration assets:
 
 Not implemented yet:
 - Search indexing read-model query-serving integration beyond the current queue/job scaffolding.
-- SAML identity provider integration.
-- OIDC production IdP integration path beyond HS256 bootstrap mode (for example JWKS/RS256 key rotation).
+- OIDC remote JWKS fetch/refresh and key rollover automation beyond static `Auth__Oidc__JwksJson`.
+- SAML signed-assertion cryptographic validation against IdP metadata (current path validates assertion structure/issuer/audience/claims).
 
 ## 5. Next Delivery Focus
 
@@ -167,9 +170,9 @@ Not implemented yet:
     - `docs/24-security-review-closure.md`
     - `docs/25-upgrade-rollback-runbook.md`
 - Next implementation targets:
-  - Phase 7 identity federation:
-    - OIDC production IdP integration (JWKS/RS256 and operational rotation model).
-    - SAML federation path.
+  - Phase 7 post-completion hardening:
+    - OIDC remote JWKS refresh and operational key-rotation automation.
+    - SAML signed-assertion cryptographic validation path.
     - ticket board: `docs/36-phase7-identity-integration-tickets.md`.
   - search read-model query-serving and rebuild/recovery maturity.
   - F# native mutation finish plan (runtime lane + non-blocking CI + score/trend/burn-in policy are active; merge-gate promotion remains intentionally partial until the 7-run burn-in streak is satisfied).

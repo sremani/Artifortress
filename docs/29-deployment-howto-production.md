@@ -1,6 +1,6 @@
 # Production Deployment How-To
 
-Last updated: 2026-02-12
+Last updated: 2026-02-13
 
 This runbook covers production rollout for API + worker with strict preflight and rollback gates.
 
@@ -44,7 +44,16 @@ API required values:
 - `Auth__Oidc__Enabled` (if OIDC federation is enabled for this environment)
 - `Auth__Oidc__Issuer` (when OIDC enabled)
 - `Auth__Oidc__Audience` (when OIDC enabled)
-- `Auth__Oidc__Hs256SharedSecret` (when OIDC enabled in current Phase 7 foundation mode)
+- one or both OIDC signing mode inputs (when OIDC enabled):
+  - `Auth__Oidc__Hs256SharedSecret`
+  - `Auth__Oidc__JwksJson`
+- `Auth__Oidc__RoleMappings` (recommended for claim-to-role policy)
+- SAML values (when SAML enabled):
+  - `Auth__Saml__IdpMetadataUrl`
+  - `Auth__Saml__ExpectedIssuer`
+  - `Auth__Saml__ServiceProviderEntityId`
+  - `Auth__Saml__RoleMappings`
+  - `Auth__Saml__IssuedPatTtlMinutes`
 - `ObjectStorage__Endpoint`
 - `ObjectStorage__AccessKey`
 - `ObjectStorage__SecretKey`

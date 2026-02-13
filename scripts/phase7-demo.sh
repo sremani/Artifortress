@@ -7,9 +7,15 @@ bootstrap_token="${BOOTSTRAP_TOKEN:-phase7-demo-bootstrap}"
 oidc_issuer="${OIDC_ISSUER:-https://phase7-idp.local}"
 oidc_audience="${OIDC_AUDIENCE:-artifortress-api}"
 oidc_shared_secret="${OIDC_SHARED_SECRET:-phase7-demo-oidc-secret}"
+oidc_role_mappings="${OIDC_ROLE_MAPPINGS:-groups|af-admins|*|admin}"
+saml_idp_metadata_url="${SAML_IDP_METADATA_URL:-https://phase7-idp.local/metadata}"
+saml_expected_issuer="${SAML_EXPECTED_ISSUER:-https://phase7-idp.local/issuer}"
+saml_sp_entity_id="${SAML_SP_ENTITY_ID:-urn:artifortress:phase7:sp}"
+saml_role_mappings="${SAML_ROLE_MAPPINGS:-groups|af-admins|*|admin}"
 api_dll="src/Artifortress.Api/bin/Debug/net10.0/Artifortress.Api.dll"
 api_log_file="/tmp/artifortress-phase7-demo-api.log"
 report_path="${REPORT_PATH:-docs/reports/phase7-oidc-latest.md}"
+skip_static_checks="${SKIP_STATIC_CHECKS:-false}"
 
 if [ ! -f "$api_dll" ]; then
   echo "Missing API binary at $api_dll. Run 'make build' first."
@@ -38,6 +44,21 @@ issue_oidc_token() {
   printf '%s.%s.%s' "$header_b64" "$payload_b64" "$signature"
 }
 
+issue_oidc_groups_token() {
+  local subject="$1"
+  local audience="$2"
+  local group_name="$3"
+  local exp_epoch="$4"
+  local header payload header_b64 payload_b64 signature
+
+  header='{"alg":"HS256","typ":"JWT"}'
+  payload="{\"iss\":\"$oidc_issuer\",\"sub\":\"$subject\",\"aud\":\"$audience\",\"exp\":$exp_epoch,\"groups\":[\"$group_name\"]}"
+  header_b64="$(printf '%s' "$header" | b64url)"
+  payload_b64="$(printf '%s' "$payload" | b64url)"
+  signature="$(printf '%s' "${header_b64}.${payload_b64}" | openssl dgst -binary -sha256 -hmac "$oidc_shared_secret" | b64url)"
+  printf '%s.%s.%s' "$header_b64" "$payload_b64" "$signature"
+}
+
 curl_call() {
   local method="$1"
   local path="$2"
@@ -53,6 +74,19 @@ curl_call() {
     response_status="$(curl -sS -o "$temp_body" -w "%{http_code}" -X "$method" "$api_url$path" "$@")"
   fi
 
+  response_body="$(cat "$temp_body")"
+  rm -f "$temp_body"
+}
+
+curl_form_call() {
+  local method="$1"
+  local path="$2"
+  local data="$3"
+  shift 3
+
+  local temp_body
+  temp_body="$(mktemp)"
+  response_status="$(curl -sS -o "$temp_body" -w "%{http_code}" -X "$method" "$api_url$path" -H "Content-Type: application/x-www-form-urlencoded" "$@" --data "$data")"
   response_body="$(cat "$temp_body")"
   rm -f "$temp_body"
 }
@@ -78,9 +112,13 @@ json_string_field() {
   printf '%s' "$json" | sed -n "s/.*\"$field\":\"\\([^\"]*\\)\".*/\\1/p"
 }
 
-echo "[phase7-demo] Running static checks..."
-make test
-make format
+if [ "$skip_static_checks" = "true" ]; then
+  echo "[phase7-demo] Skipping static checks (SKIP_STATIC_CHECKS=true)"
+else
+  echo "[phase7-demo] Running static checks..."
+  make test
+  make format
+fi
 
 echo "[phase7-demo] Starting API at $api_url"
 ConnectionStrings__Postgres="$connection_string" \
@@ -89,7 +127,12 @@ Auth__Oidc__Enabled="true" \
 Auth__Oidc__Issuer="$oidc_issuer" \
 Auth__Oidc__Audience="$oidc_audience" \
 Auth__Oidc__Hs256SharedSecret="$oidc_shared_secret" \
-Auth__Saml__Enabled="false" \
+Auth__Oidc__RoleMappings="$oidc_role_mappings" \
+Auth__Saml__Enabled="true" \
+Auth__Saml__IdpMetadataUrl="$saml_idp_metadata_url" \
+Auth__Saml__ExpectedIssuer="$saml_expected_issuer" \
+Auth__Saml__ServiceProviderEntityId="$saml_sp_entity_id" \
+Auth__Saml__RoleMappings="$saml_role_mappings" \
   dotnet "$api_dll" --urls "$api_url" >"$api_log_file" 2>&1 &
 api_pid=$!
 
@@ -141,6 +184,47 @@ bad_audience_token="$(issue_oidc_token "$oidc_subject" "wrong-audience" "repo:*:
 curl_call "GET" "/v1/auth/whoami" "" -H "Authorization: Bearer $bad_audience_token"
 assert_status "401"
 
+echo "[phase7-demo] Validating OIDC claim-role mapping path"
+oidc_groups_subject="phase7-oidc-groups-user"
+oidc_groups_token="$(issue_oidc_groups_token "$oidc_groups_subject" "$oidc_audience" "af-admins" "$exp_epoch")"
+curl_call "GET" "/v1/auth/whoami" "" -H "Authorization: Bearer $oidc_groups_token"
+assert_status "200"
+
+if ! contains_text "$response_body" "\"repo:*:admin\""; then
+  echo "OIDC claim-role mapping did not resolve repo:*:admin scope. Body: $response_body"
+  exit 1
+fi
+
+echo "[phase7-demo] Validating SAML metadata endpoint"
+curl_call "GET" "/v1/auth/saml/metadata" ""
+assert_status "200"
+
+if ! contains_text "$response_body" "$saml_sp_entity_id"; then
+  echo "SAML metadata missing configured SP entity id. Body: $response_body"
+  exit 1
+fi
+
+echo "[phase7-demo] Validating SAML ACS assertion exchange"
+saml_subject="phase7-saml-user"
+saml_xml="<samlp:Response xmlns:samlp=\"urn:oasis:names:tc:SAML:2.0:protocol\" xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\"><saml:Issuer>${saml_expected_issuer}</saml:Issuer><saml:Assertion><saml:Issuer>${saml_expected_issuer}</saml:Issuer><saml:Subject><saml:NameID>${saml_subject}</saml:NameID></saml:Subject><saml:Conditions><saml:AudienceRestriction><saml:Audience>${saml_sp_entity_id}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AttributeStatement><saml:Attribute Name=\"groups\"><saml:AttributeValue>af-admins</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion></samlp:Response>"
+saml_response_b64="$(printf '%s' "$saml_xml" | b64url)"
+curl_form_call "POST" "/v1/auth/saml/acs" "SAMLResponse=$saml_response_b64&RelayState=phase7-relay"
+assert_status "200"
+saml_token="$(json_string_field "$response_body" "token")"
+
+if [ -z "$saml_token" ]; then
+  echo "Failed to parse SAML exchange token."
+  exit 1
+fi
+
+curl_call "GET" "/v1/auth/whoami" "" -H "Authorization: Bearer $saml_token"
+assert_status "200"
+
+if ! contains_text "$response_body" "\"authSource\":\"pat\""; then
+  echo "SAML issued token did not authenticate via PAT path. Body: $response_body"
+  exit 1
+fi
+
 echo "[phase7-demo] Validating PAT path still works"
 curl_call "POST" "/v1/auth/pats" "{\"Subject\":\"phase7-admin\",\"Scopes\":[\"repo:*:admin\"],\"TtlMinutes\":60}" -H "X-Bootstrap-Token: $bootstrap_token"
 assert_status "200"
@@ -172,6 +256,9 @@ mkdir -p "$(dirname "$report_path")"
   echo "- OIDC whoami subject/authSource: PASS"
   echo "- OIDC admin-scoped repo create: PASS"
   echo "- OIDC invalid audience unauthorized: PASS"
+  echo "- OIDC claim-role mapping policy: PASS"
+  echo "- SAML metadata endpoint contract: PASS"
+  echo "- SAML ACS exchange and mapped-scope token issuance: PASS"
   echo "- PAT compatibility path: PASS"
   echo
   echo "## OIDC whoami Snapshot"

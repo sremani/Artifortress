@@ -1,6 +1,6 @@
 # Phase 6 Security Review Closure
 
-Last updated: 2026-02-11
+Last updated: 2026-02-13
 
 ## Scope
 
@@ -47,7 +47,7 @@ Open P0 blockers: `0`
 Open P1 blockers: `0`
 
 Residual risks (accepted for launch):
-- OIDC/SAML integration remains deferred and tracked as post-GA roadmap work.
+- OIDC remote JWKS refresh automation and signed SAML assertion cryptographic validation remain post-Phase-7 hardening items.
 - Search read-model query-serving remains scoped as post-GA maturity work.
 
 ## Sign-off

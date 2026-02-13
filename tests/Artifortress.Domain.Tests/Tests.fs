@@ -16,6 +16,12 @@ let private OidcAudience = "artifortress-api"
 [<Literal>]
 let private OidcSecret = "phase7-oidc-hs256-secret"
 
+[<Literal>]
+let private OidcRs256KidA = "phase7-rs256-key-a"
+
+[<Literal>]
+let private OidcRs256KidB = "phase7-rs256-key-b"
+
 let private toBase64Url (bytes: byte array) =
     Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 
@@ -41,12 +47,75 @@ let private issueOidcToken (subject: string) (scopes: string array) (expiresAtUt
 
     $"{signedPayload}.{signatureSegment}"
 
+let private issueOidcTokenWithGroups (subject: string) (groups: string array) (expiresAtUtc: DateTimeOffset) =
+    let headerJson = """{"alg":"HS256","typ":"JWT"}"""
+    let payloadJson =
+        JsonSerializer.Serialize(
+            {| iss = OidcIssuer
+               sub = subject
+               aud = OidcAudience
+               exp = expiresAtUtc.ToUnixTimeSeconds()
+               groups = groups |}
+        )
+
+    let headerSegment = headerJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let payloadSegment = payloadJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let signedPayload = $"{headerSegment}.{payloadSegment}"
+
+    let signatureSegment =
+        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(OidcSecret))
+        signedPayload |> Encoding.UTF8.GetBytes |> hmac.ComputeHash |> toBase64Url
+
+    $"{signedPayload}.{signatureSegment}"
+
+let private issueOidcRs256Token
+    (rsaParameters: RSAParameters)
+    (kid: string)
+    (subject: string)
+    (scopes: string array)
+    (expiresAtUtc: DateTimeOffset)
+    =
+    let headerJson = JsonSerializer.Serialize({| alg = "RS256"; typ = "JWT"; kid = kid |})
+    let scopeText = scopes |> String.concat " "
+    let payloadJson =
+        JsonSerializer.Serialize(
+            {| iss = OidcIssuer
+               sub = subject
+               aud = OidcAudience
+               exp = expiresAtUtc.ToUnixTimeSeconds()
+               scope = scopeText |}
+        )
+
+    let headerSegment = headerJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let payloadSegment = payloadJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let signedPayload = $"{headerSegment}.{payloadSegment}"
+
+    let signatureSegment =
+        use rsa = RSA.Create()
+        rsa.ImportParameters(rsaParameters)
+
+        rsa.SignData(
+            Encoding.UTF8.GetBytes(signedPayload),
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1
+        )
+        |> toBase64Url
+
+    $"{signedPayload}.{signatureSegment}"
+
+let private buildRsaJwkJsonFragment (kid: string) (publicParameters: RSAParameters) =
+    let n = toBase64Url publicParameters.Modulus
+    let e = toBase64Url publicParameters.Exponent
+    $"{{\"kty\":\"RSA\",\"use\":\"sig\",\"alg\":\"RS256\",\"kid\":\"{kid}\",\"n\":\"{n}\",\"e\":\"{e}\"}}"
+
 [<Fact>]
 let ``OIDC token validation accepts HS256 token with matching issuer audience and scopes`` () =
     let config: Program.OidcTokenValidationConfig =
         { Issuer = OidcIssuer
           Audience = OidcAudience
-          Hs256SharedSecret = OidcSecret }
+          Hs256SharedSecret = Some OidcSecret
+          Rs256SigningKeys = []
+          ClaimRoleMappings = [] }
 
     let subject = "oidc-user-01"
     let token = issueOidcToken subject [| "repo:*:admin"; "repo:core-libs:read" |] (DateTimeOffset.UtcNow.AddMinutes(5.0))
@@ -65,7 +134,9 @@ let ``OIDC token validation rejects token with mismatched issuer`` () =
     let config: Program.OidcTokenValidationConfig =
         { Issuer = "https://other-idp.example.com"
           Audience = OidcAudience
-          Hs256SharedSecret = OidcSecret }
+          Hs256SharedSecret = Some OidcSecret
+          Rs256SigningKeys = []
+          ClaimRoleMappings = [] }
 
     let token = issueOidcToken "oidc-user-issuer-mismatch" [| "repo:*:admin" |] (DateTimeOffset.UtcNow.AddMinutes(5.0))
 
@@ -78,13 +149,122 @@ let ``OIDC token validation rejects expired token`` () =
     let config: Program.OidcTokenValidationConfig =
         { Issuer = OidcIssuer
           Audience = OidcAudience
-          Hs256SharedSecret = OidcSecret }
+          Hs256SharedSecret = Some OidcSecret
+          Rs256SigningKeys = []
+          ClaimRoleMappings = [] }
 
     let token = issueOidcToken "oidc-user-expired" [| "repo:*:read" |] (DateTimeOffset.UtcNow.AddMinutes(-5.0))
 
     match Program.validateOidcBearerToken config token with
     | Ok _ -> failwith "Expected expiration validation failure."
     | Error err -> Assert.Contains("expired", err)
+
+[<Fact>]
+let ``OIDC token validation resolves claim-role mappings when scope claim is absent`` () =
+    let mappings =
+        match Program.parseOidcClaimRoleMappings "groups|af-admins|*|admin" with
+        | Ok values -> values
+        | Error err -> failwithf "Expected valid mapping parse but got: %s" err
+
+    let config: Program.OidcTokenValidationConfig =
+        { Issuer = OidcIssuer
+          Audience = OidcAudience
+          Hs256SharedSecret = Some OidcSecret
+          Rs256SigningKeys = []
+          ClaimRoleMappings = mappings }
+
+    let token =
+        issueOidcTokenWithGroups "oidc-groups-user" [| "af-admins" |] (DateTimeOffset.UtcNow.AddMinutes(5.0))
+
+    match Program.validateOidcBearerToken config token with
+    | Error err -> failwithf "Expected claim-role mapping to grant scope but got: %s" err
+    | Ok principal ->
+        let scopes = principal.Scopes |> List.map RepoScope.value
+        Assert.Contains("repo:*:admin", scopes)
+
+[<Fact>]
+let ``OIDC token validation accepts RS256 token against configured JWKS`` () =
+    use rsa = RSA.Create(2048)
+    let privateParameters = rsa.ExportParameters(true)
+    let publicParameters = rsa.ExportParameters(false)
+
+    let jwksJson =
+        let keyJson = buildRsaJwkJsonFragment OidcRs256KidA publicParameters
+        $"{{\"keys\":[{keyJson}]}}"
+
+    let rs256Keys =
+        match Program.parseOidcJwksJson jwksJson with
+        | Ok keys -> keys
+        | Error err -> failwithf "Expected parseable JWKS but got: %s" err
+
+    let config: Program.OidcTokenValidationConfig =
+        { Issuer = OidcIssuer
+          Audience = OidcAudience
+          Hs256SharedSecret = None
+          Rs256SigningKeys = rs256Keys
+          ClaimRoleMappings = [] }
+
+    let token =
+        issueOidcRs256Token
+            privateParameters
+            OidcRs256KidA
+            "oidc-rs256-user"
+            [| "repo:*:admin" |]
+            (DateTimeOffset.UtcNow.AddMinutes(5.0))
+
+    match Program.validateOidcBearerToken config token with
+    | Error err -> failwithf "Expected valid RS256 token but got: %s" err
+    | Ok principal -> Assert.Equal("oidc-rs256-user", principal.Subject)
+
+[<Fact>]
+let ``OIDC token validation supports RS256 key rotation with matching kid`` () =
+    use rsaA = RSA.Create(2048)
+    use rsaB = RSA.Create(2048)
+    let privateA = rsaA.ExportParameters(true)
+    let privateB = rsaB.ExportParameters(true)
+    let publicA = rsaA.ExportParameters(false)
+    let publicB = rsaB.ExportParameters(false)
+
+    let jwksJson =
+        let keyAJson = buildRsaJwkJsonFragment OidcRs256KidA publicA
+        let keyBJson = buildRsaJwkJsonFragment OidcRs256KidB publicB
+        $"{{\"keys\":[{keyAJson},{keyBJson}]}}"
+
+    let rs256Keys =
+        match Program.parseOidcJwksJson jwksJson with
+        | Ok keys -> keys
+        | Error err -> failwithf "Expected parseable JWKS but got: %s" err
+
+    let config: Program.OidcTokenValidationConfig =
+        { Issuer = OidcIssuer
+          Audience = OidcAudience
+          Hs256SharedSecret = None
+          Rs256SigningKeys = rs256Keys
+          ClaimRoleMappings = [] }
+
+    let tokenA =
+        issueOidcRs256Token
+            privateA
+            OidcRs256KidA
+            "oidc-rs256-rotation-a"
+            [| "repo:*:read" |]
+            (DateTimeOffset.UtcNow.AddMinutes(5.0))
+
+    let tokenB =
+        issueOidcRs256Token
+            privateB
+            OidcRs256KidB
+            "oidc-rs256-rotation-b"
+            [| "repo:*:write" |]
+            (DateTimeOffset.UtcNow.AddMinutes(5.0))
+
+    match Program.validateOidcBearerToken config tokenA with
+    | Error err -> failwithf "Expected rotated key A token to validate but got: %s" err
+    | Ok principal -> Assert.Equal("oidc-rs256-rotation-a", principal.Subject)
+
+    match Program.validateOidcBearerToken config tokenB with
+    | Error err -> failwithf "Expected rotated key B token to validate but got: %s" err
+    | Ok principal -> Assert.Equal("oidc-rs256-rotation-b", principal.Subject)
 
 [<Fact>]
 let ``ServiceName normalizes casing and trims spaces`` () =

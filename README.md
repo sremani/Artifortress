@@ -13,13 +13,14 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 5: complete through P5-08 (tombstone lifecycle + GC dry-run/execute + reconcile summary + admin authz/audit + demo/runbook).
 - Phase 6: complete through P6-10 (dependency-backed readiness, ops summary, backup/restore + DR drill, security closure, upgrade/rollback runbooks, GA demo/report).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: Phase 7 identity federation track has started (OIDC foundation delivered; SAML path scaffold in progress), alongside search read-model serving maturity and F# native mutation hardening (native runtime lane + non-blocking CI lane + score threshold reporting are active; next step is merge-gate promotion policy).
+- Current build-out focus: post-Phase 7 hardening (OIDC JWKS refresh automation + signed SAML assertion cryptographic verification), search read-model serving maturity, and F# native mutation hardening (native runtime lane + non-blocking CI lane + score threshold reporting are active; next step is merge-gate promotion policy).
 
 ## Implemented Today
 
 - Control plane:
   - PAT issue/revoke + bearer validation.
-  - OIDC bearer-token validation path (HS256, issuer/audience/scope checks) behind config gate.
+  - OIDC bearer-token validation path (HS256 + JWKS/RS256 + claim-role mapping) behind config gate.
+  - SAML metadata + ACS assertion exchange with issuer/audience checks and claim-role mapping.
   - Repository CRUD (local/remote/virtual).
   - Repo role bindings.
   - Tenant-scoped audit query endpoint.
@@ -96,7 +97,7 @@ Run Phase 6 readiness demo:
 make phase6-demo
 ```
 
-Run Phase 7 OIDC demo:
+Run Phase 7 identity demo:
 ```bash
 make phase7-demo
 ```
@@ -197,7 +198,8 @@ make mutation-trackb-compile-validate
 - `docs/34-fsharp-native-mutation-tickets.md`: F#-first native mutation finish plan and ticket board.
 - `docs/35-native-mutation-gate-promotion.md`: promotion criteria and rollout guide for making native mutation lane blocking.
 - `docs/36-phase7-identity-integration-tickets.md`: Phase 7 identity federation ticket board and implementation notes.
-- `docs/37-phase7-runbook.md`: executable Phase 7 OIDC demo and troubleshooting runbook.
+- `docs/37-phase7-runbook.md`: executable Phase 7 identity runbook (OIDC + SAML) and troubleshooting guide.
+- `docs/38-phase7-rollout-gates.md`: Phase 7 rollout gates and fallback-control checklist.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
 - `docs/reports/mutation-spike-fsharp-latest.md`: latest F# mutation feasibility report artifact.
 - `docs/reports/mutation-track-latest.md`: latest wrapper default mutation run report artifact.

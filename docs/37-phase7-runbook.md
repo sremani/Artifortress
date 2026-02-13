@@ -1,9 +1,11 @@
-# Phase 7 OIDC Runbook
+# Phase 7 Identity Runbook
 
-This runbook demonstrates the current Phase 7 identity federation flow:
-- OIDC bearer-token validation (HS256 foundation mode),
-- PAT compatibility under mixed auth modes,
-- deterministic validation of audience-rejection behavior.
+This runbook validates the implemented Phase 7 identity federation flow:
+- OIDC HS256 bearer-token validation,
+- OIDC RS256/JWKS bearer-token validation (integration-tested),
+- OIDC claim-to-role mapping policy,
+- SAML metadata + ACS assertion exchange,
+- PAT fallback compatibility path.
 
 ## Prerequisites
 
@@ -23,8 +25,6 @@ make build
 
 ## Core command
 
-Run Phase 7 OIDC demo:
-
 ```bash
 make phase7-demo
 ```
@@ -32,15 +32,15 @@ make phase7-demo
 ## What `phase7-demo` validates
 
 - `make test` and `make format` pass.
-- API starts with OIDC enabled and SAML disabled.
-- OIDC bearer token succeeds on `/v1/auth/whoami` with:
-  - expected `subject`
-  - `authSource=oidc`
+- API starts with OIDC and SAML enabled.
+- OIDC HS256 token succeeds on `/v1/auth/whoami` (`authSource=oidc`).
 - OIDC admin scope allows `POST /v1/repos`.
-- OIDC token with mismatched audience is rejected (`401`).
-- PAT bootstrap issuance and `/v1/auth/whoami` remain functional with:
-  - `authSource=pat`
-- report is generated:
+- OIDC invalid audience is rejected (`401`).
+- OIDC group claim maps to repository admin scope via configured mapping policy.
+- SAML metadata endpoint returns configured SP contract.
+- SAML ACS exchange validates assertion and issues scoped bearer token.
+- PAT issuance + PAT `/v1/auth/whoami` path remains functional.
+- report is generated at:
   - `docs/reports/phase7-oidc-latest.md`
 
 ## Environment variables
@@ -52,13 +52,46 @@ make phase7-demo
 - `OIDC_ISSUER` (default `https://phase7-idp.local`)
 - `OIDC_AUDIENCE` (default `artifortress-api`)
 - `OIDC_SHARED_SECRET` (default `phase7-demo-oidc-secret`)
+- `OIDC_ROLE_MAPPINGS` (default `groups|af-admins|*|admin`)
+- `SAML_IDP_METADATA_URL` (default `https://phase7-idp.local/metadata`)
+- `SAML_EXPECTED_ISSUER` (default `https://phase7-idp.local/issuer`)
+- `SAML_SP_ENTITY_ID` (default `urn:artifortress:phase7:sp`)
+- `SAML_ROLE_MAPPINGS` (default `groups|af-admins|*|admin`)
 - `REPORT_PATH` (default `docs/reports/phase7-oidc-latest.md`)
+- `SKIP_STATIC_CHECKS` (default `false`; set `true` to skip `make test`/`make format` prechecks)
+
+## Rollout and Fallback Controls
+
+- OIDC enable/disable:
+  - `Auth__Oidc__Enabled=true|false`
+- OIDC signing mode controls:
+  - HS256: `Auth__Oidc__Hs256SharedSecret`
+  - RS256: `Auth__Oidc__JwksJson`
+- OIDC claim mapping:
+  - `Auth__Oidc__RoleMappings`
+- SAML enable/disable:
+  - `Auth__Saml__Enabled=true|false`
+- SAML validation anchors:
+  - `Auth__Saml__ExpectedIssuer`
+  - `Auth__Saml__ServiceProviderEntityId`
+- SAML role mapping:
+  - `Auth__Saml__RoleMappings`
+- SAML exchange token TTL:
+  - `Auth__Saml__IssuedPatTtlMinutes`
+
+If identity federation needs immediate rollback:
+1. Set `Auth__Saml__Enabled=false`.
+2. Optionally set `Auth__Oidc__Enabled=false`.
+3. Continue access via PAT bootstrap/admin path while triaging.
 
 ## Troubleshooting
 
 - If API does not become healthy:
-  - inspect `/tmp/artifortress-phase7-demo-api.log`
-- If OIDC token calls return `401` unexpectedly:
-  - verify `Auth__Oidc__Issuer`, `Auth__Oidc__Audience`, and `Auth__Oidc__Hs256SharedSecret` values match token claims/signing secret
-- If PAT bootstrap fails:
-  - verify `Auth__BootstrapToken` sent by demo matches runtime config
+  - inspect `/tmp/artifortress-phase7-demo-api.log`.
+- If OIDC calls return `401` unexpectedly:
+  - verify issuer, audience, signing mode config, and role mappings.
+- If SAML ACS returns `401`:
+  - verify assertion issuer/audience values match configured expected values.
+  - verify mapping entries resolve at least one repository scope.
+- If SAML ACS returns `400`:
+  - verify `SAMLResponse` is valid base64/base64url and XML.
