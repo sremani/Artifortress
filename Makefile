@@ -7,7 +7,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo
+.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
 
 help:
 	@echo "Targets:"
@@ -30,6 +30,8 @@ help:
 	@echo "  mutation-track     Run mutation wrapper default flow and generate report"
 	@echo "  mutation-fsharp-native     Run native F# mutation runtime lane and generate report"
 	@echo "  mutation-fsharp-native-score  Compute native mutation score and threshold report"
+	@echo "  mutation-fsharp-native-trend  Append native score history and generate trend report"
+	@echo "  mutation-fsharp-native-burnin  Evaluate burn-in readiness from score history"
 	@echo "  mutation-trackb-bootstrap  Prepare patched Stryker.NET workspace for MUT-06"
 	@echo "  mutation-trackb-build      Build patched Stryker.NET CLI in local workspace"
 	@echo "  mutation-trackb-spike      Run wrapper flow against patched Stryker.NET CLI"
@@ -43,6 +45,7 @@ help:
 	@echo "  phase4-demo        Run Phase 4 policy/quarantine/search demo script"
 	@echo "  phase5-demo        Run Phase 5 tombstone/gc/reconcile demo script"
 	@echo "  phase6-demo        Run Phase 6 GA readiness demo script"
+	@echo "  phase7-demo        Run Phase 7 OIDC integration demo script"
 
 restore:
 	@for project in $(PROJECTS); do \
@@ -123,6 +126,12 @@ mutation-fsharp-native:
 mutation-fsharp-native-score:
 	./scripts/mutation-fsharp-native-score.sh
 
+mutation-fsharp-native-trend:
+	./scripts/mutation-fsharp-native-trend.sh
+
+mutation-fsharp-native-burnin:
+	./scripts/mutation-fsharp-native-burnin.sh
+
 mutation-trackb-bootstrap:
 	./scripts/mutation-trackb-bootstrap.sh
 
@@ -161,3 +170,6 @@ phase5-demo: build
 
 phase6-demo: build
 	./scripts/phase6-demo.sh
+
+phase7-demo: build
+	./scripts/phase7-demo.sh

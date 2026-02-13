@@ -1,6 +1,6 @@
 # Staging Deployment How-To
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 This guide deploys API + worker into a staging environment with a dedicated Postgres DB and object-storage bucket.
 
@@ -28,6 +28,11 @@ ASPNETCORE_ENVIRONMENT=Staging
 ASPNETCORE_URLS=http://0.0.0.0:8086
 ConnectionStrings__Postgres=Host=<pg-host>;Port=5432;Username=<user>;Password=<password>;Database=artifortress_staging
 Auth__BootstrapToken=<secure-bootstrap-token>
+Auth__Oidc__Enabled=false
+Auth__Oidc__Issuer=https://idp.staging.example.com
+Auth__Oidc__Audience=artifortress-api
+Auth__Oidc__Hs256SharedSecret=<oidc-shared-secret>
+Auth__Saml__Enabled=false
 ObjectStorage__Endpoint=http://<object-store-endpoint>:9000
 ObjectStorage__AccessKey=<access-key>
 ObjectStorage__SecretKey=<secret-key>

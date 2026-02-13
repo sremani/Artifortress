@@ -1,6 +1,6 @@
 # Deployment Configuration Reference
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 This reference lists runtime configuration for API, worker, and deployment scripts.
 
@@ -16,6 +16,13 @@ Template files:
 |---|---|---|---|
 | `ConnectionStrings__Postgres` | `Host=localhost;Port=5432;Username=artifortress;Password=artifortress;Database=artifortress` | yes | Primary DB connection string. |
 | `Auth__BootstrapToken` | none | yes | Required to mint PATs via bootstrap path. |
+| `Auth__Oidc__Enabled` | `false` | recommended | Enables OIDC bearer-token validation path. |
+| `Auth__Oidc__Issuer` | none | when OIDC enabled | Exact `iss` claim value expected from incoming OIDC JWTs. |
+| `Auth__Oidc__Audience` | none | when OIDC enabled | Required `aud` value expected in OIDC JWTs. |
+| `Auth__Oidc__Hs256SharedSecret` | none | when OIDC enabled | Shared secret for HS256 signature validation (Phase 7 foundation mode). |
+| `Auth__Saml__Enabled` | `false` | no | SAML scaffolding flag; runtime currently fails fast when set to `true` because SAML validation is not yet implemented. |
+| `Auth__Saml__IdpMetadataUrl` | none | no | Planned IdP metadata endpoint for SAML integration track. |
+| `Auth__Saml__ServiceProviderEntityId` | none | no | Planned SP entity id for SAML integration track. |
 | `ObjectStorage__Endpoint` | `http://localhost:9000` | yes | S3-compatible endpoint URL. |
 | `ObjectStorage__AccessKey` | `artifortress` | yes | Object-store access key. |
 | `ObjectStorage__SecretKey` | `artifortress` | yes | Object-store secret key. |
@@ -59,6 +66,7 @@ Template files:
 - Never commit real secrets to git.
 - Inject production secrets from a secret manager or runtime environment.
 - Rotate `Auth__BootstrapToken` after onboarding and at regular intervals.
+- Keep `Auth__Saml__Enabled=false` until Phase 7 SAML validation path is delivered.
 - Use per-environment object-storage credentials and buckets.
 
 ## 5. Config Validation Checklist

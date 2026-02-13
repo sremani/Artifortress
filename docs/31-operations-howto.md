@@ -1,6 +1,6 @@
 # Operations How-To
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 This guide is for day-2 operations after deployment.
 
@@ -29,7 +29,18 @@ curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/ops
 4. Validate PAT issuance using new header value.
 5. Revoke transitional tokens if applicable.
 
-## 3. How To Run Migrations Safely
+## 3. How To Rotate OIDC Shared Secret (Phase 7 foundation mode)
+
+1. Generate new secret material.
+2. Update `Auth__Oidc__Hs256SharedSecret` in runtime secret store.
+3. Ensure issuer/audience values remain unchanged:
+   - `Auth__Oidc__Issuer`
+   - `Auth__Oidc__Audience`
+4. Roll API instances.
+5. Validate `/v1/auth/whoami` with a newly issued OIDC token.
+6. Keep overlap window short to avoid mixed-old/new token confusion.
+
+## 4. How To Run Migrations Safely
 
 1. Ensure backup exists:
 ```bash
@@ -45,7 +56,7 @@ make db-smoke
 ```
 4. Verify readiness endpoint and smoke APIs.
 
-## 4. How To Handle Rising Backlog
+## 5. How To Handle Rising Backlog
 
 Symptoms:
 - `pendingOutboxEvents` rising,
@@ -59,7 +70,7 @@ Actions:
 4. Re-check metrics after 5-15 minutes.
 5. Capture incident notes if backlog does not recover.
 
-## 5. How To Run Backup/Restore Drill
+## 6. How To Run Backup/Restore Drill
 
 Run drill:
 ```bash
@@ -73,7 +84,7 @@ Expected:
 - parity checks pass for required tables.
 - RTO/RPO status is `PASS`.
 
-## 6. How To Execute GA Readiness Sweep
+## 7. How To Execute GA Readiness Sweep
 
 ```bash
 make phase6-demo
@@ -83,7 +94,7 @@ Outputs:
 - `docs/reports/phase6-rto-rpo-drill-latest.md`
 - `docs/reports/phase6-ga-readiness-latest.md`
 
-## 7. Incident Quick Playbook
+## 8. Incident Quick Playbook
 
 ### API is live but not ready
 

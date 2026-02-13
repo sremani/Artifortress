@@ -714,3 +714,65 @@ This change set combines:
 - `make test` passed (`93` non-integration tests).
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`163` total tests).
 - `make format` passed.
+
+## Phase 7 Identity Track Kickoff Addendum (2026-02-12, latest)
+
+### Code changes
+
+- `src/Artifortress.Api/Program.fs`
+  - Added OIDC validation configuration model:
+    - `Auth:Oidc:Enabled`
+    - `Auth:Oidc:Issuer`
+    - `Auth:Oidc:Audience`
+    - `Auth:Oidc:Hs256SharedSecret`
+  - Added JWT validation path for OIDC bearer tokens (HS256 foundation mode):
+    - signature validation,
+    - issuer/audience/expiry/not-before claim checks,
+    - scope extraction from `scope`, `scp`, and `artifortress_scopes` claims.
+  - Added PAT-first auth fallback model:
+    - token is first resolved as PAT,
+    - then evaluated as OIDC when OIDC is enabled.
+  - Added principal auth-source tagging (`pat` / `oidc`) and exposed it via `/v1/auth/whoami`.
+  - Added SAML configuration scaffolding with explicit guard:
+    - startup fails if `Auth:Saml:Enabled=true` because SAML validation flow is not implemented yet.
+
+### Test changes
+
+- `tests/Artifortress.Domain.Tests/Tests.fs`
+  - Added unit tests for OIDC token validation:
+    - accepts valid HS256 token with matching issuer/audience/scope claims.
+    - rejects mismatched issuer.
+    - rejects expired token.
+- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+  - Added Phase 7 OIDC integration tests:
+    - `P7-02 oidc bearer flow supports whoami and admin-scoped repo create`.
+    - `P7-02 oidc token with mismatched audience is unauthorized`.
+
+### Documentation changes
+
+- Added:
+  - `docs/36-phase7-identity-integration-tickets.md`
+  - `docs/37-phase7-runbook.md`
+- Updated:
+  - `README.md`
+  - `docs/05-implementation-plan.md`
+  - `docs/10-current-state.md`
+  - `docs/28-deployment-howto-staging.md`
+  - `docs/29-deployment-howto-production.md`
+  - `docs/30-deployment-config-reference.md`
+  - `docs/31-operations-howto.md`
+  - `deploy/staging-api.env.example`
+  - `deploy/production-api.env.example`
+  - `Makefile`
+- Added executable demo flow:
+  - `scripts/phase7-demo.sh`
+  - `make phase7-demo`
+
+### Validation evidence
+
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "OIDC token validation"` passed (`3` tests).
+- `make test` passed (`96` non-integration tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-02"` passed (`2` tests).
+- `make test-integration` passed (`73` integration tests).
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`169` total tests).
+- `make format` passed.

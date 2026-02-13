@@ -1,6 +1,6 @@
 # Production Deployment How-To
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 This runbook covers production rollout for API + worker with strict preflight and rollback gates.
 
@@ -41,6 +41,10 @@ cp deploy/production-worker.env.example deploy/production-worker.env
 API required values:
 - `ConnectionStrings__Postgres`
 - `Auth__BootstrapToken`
+- `Auth__Oidc__Enabled` (if OIDC federation is enabled for this environment)
+- `Auth__Oidc__Issuer` (when OIDC enabled)
+- `Auth__Oidc__Audience` (when OIDC enabled)
+- `Auth__Oidc__Hs256SharedSecret` (when OIDC enabled in current Phase 7 foundation mode)
 - `ObjectStorage__Endpoint`
 - `ObjectStorage__AccessKey`
 - `ObjectStorage__SecretKey`

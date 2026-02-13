@@ -117,6 +117,24 @@ Status key:
   - Added integration test coverage for degraded search pipeline behavior:
     - malformed outbox event requeue + failed unpublished search job paths are exercised.
     - policy quarantine->release flow remains correct while degraded search events/jobs exist.
+  - Added mixed-routing outbox stress coverage:
+    - validates aggregate-id and payload-fallback routing in the same sweep.
+    - validates idempotent search job upsert behavior when duplicate events target the same version.
+    - validates malformed events stay undelivered/requeued while valid events are delivered.
+  - Added queue backlog stress coverage:
+    - validates outbox and search-job sweep batch-size limits across multi-item backlog processing.
+    - validates `maxAttempts` capping behavior under repeated search-job failures.
+  - Added quarantine list consistency stress coverage:
+    - validates `quarantined|released|rejected` filters remain mutually consistent after mixed transitions.
+  - Added cross-repo isolation stress coverage:
+    - validates quarantine listing and retrieval remain repo-scoped when multiple repositories carry concurrent quarantine items.
+    - validates cross-repo token usage is rejected (`403`) for quarantine item access.
+  - Added retry-window stress coverage:
+    - validates failed search jobs are deferred by backoff and are not immediately reclaimed in the next sweep cycle.
+  - Added mixed-backlog event-type stress coverage:
+    - validates outbox sweep claims only `version.published` events while unrelated outbox event types remain untouched.
+  - Added shared-digest cross-repo quarantine isolation coverage:
+    - validates quarantine lock on a digest in repo A does not block same-digest download in repo B.
 - P4-10 completed:
   - Added executable Phase 4 demo script:
     - `scripts/phase4-demo.sh`

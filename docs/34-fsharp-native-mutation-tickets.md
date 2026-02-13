@@ -7,6 +7,7 @@ Status key:
 - `in_progress`: active work
 - `done`: implemented and validated
 - `blocked`: external dependency blocks completion
+- `partial`: implementation is complete, but exit criteria depend on elapsed burn-in time
 
 ## Why This Plan
 
@@ -24,7 +25,10 @@ Primary path is now native F# mutation execution in this repository.
 | MUTN-05 | CI native mutation lane (non-blocking) | done | Added `mutation-native` job in `.github/workflows/mutation-track.yml` with artifact upload. |
 | MUTN-06 | Expand safe rewrite set beyond initial lexical whitelist | done | Enabled safe `=` expression mutations in boolean contexts; latest native run discovered `7` and selected `6` mutants with `0` compile errors. |
 | MUTN-07 | Mutation score policy + trend report | done | Added score script/report with threshold policy (`MIN_MUTATION_SCORE`) and CI artifacts. |
-| MUTN-08 | Promote native lane to merge gate | in_progress | Enforcement toggle and thresholds are wired via GitHub variables; burn-in window remains before enabling blocking mode. |
+| MUTN-08 | Promote native lane to merge gate | partial | Enforcement toggle and thresholds are wired via GitHub variables; promotion is intentionally pending completion of the 7-run burn-in window. |
+| MUTN-09 | Native score history retention across CI runs | done | Added trend script and cache-backed history CSV persistence (`mutation-native-score-history.csv`). |
+| MUTN-10 | Burn-in readiness evaluator + artifact | done | Added `mutation-fsharp-native-burnin` script/target and CI artifact that computes readiness from history streak rules. |
+| MUTN-11 | Enforce-time burn-in interlock | done | Burn-in checker now fails promotion attempts when `MUTATION_NATIVE_ENFORCE=true` but readiness streak is not yet satisfied. |
 
 ## Current Acceptance Bar
 
@@ -43,10 +47,19 @@ Primary path is now native F# mutation execution in this repository.
 2. `MIN_MUTATION_SCORE=40 make mutation-fsharp-native-score`:
    - score: `83.33`
    - threshold met: `true`
+3. `make mutation-fsharp-native-trend`:
+   - appends score row to `artifacts/mutation/mutation-native-score-history.csv`
+   - generates `docs/reports/mutation-native-score-history-latest.md`
+4. `REQUIRED_STREAK=7 MIN_MUTATION_SCORE=40 make mutation-fsharp-native-burnin`:
+   - computes passing streak over retained history,
+   - generates `docs/reports/mutation-native-burnin-latest.md`,
+   - marks readiness as pending until streak criterion is met.
 
 ## Next Steps
 
-1. Complete `MUTN-08` rollout:
-   - set `MUTATION_NATIVE_ENFORCE=true` once burn-in SLO is met,
-   - tune `MUTATION_NATIVE_MAX_MUTANTS` and `MUTATION_NATIVE_MIN_SCORE` repo variables.
-2. Expand score history retention (daily trend artifact) before strict gate rollout.
+1. Keep `MUTN-08` in partial state until burn-in report shows ready:
+   - current gate signal: `docs/reports/mutation-native-burnin-latest.md`
+   - required: 7-run passing streak with zero compile/infra errors.
+2. Promote to blocking mode once ready:
+   - set `MUTATION_NATIVE_ENFORCE=true`,
+   - keep `MUTATION_NATIVE_MAX_MUTANTS` and `MUTATION_NATIVE_MIN_SCORE` tuned for CI budget.

@@ -61,6 +61,7 @@ jobs:
     env:
       MUTATION_NATIVE_MAX_MUTANTS: ${{ vars.MUTATION_NATIVE_MAX_MUTANTS }}
       MUTATION_NATIVE_MIN_SCORE: ${{ vars.MUTATION_NATIVE_MIN_SCORE }}
+      MUTATION_NATIVE_REQUIRED_STREAK: ${{ vars.MUTATION_NATIVE_REQUIRED_STREAK }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,6 +70,14 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+
+      - name: Restore native trend cache
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/mutation/mutation-native-score-history.csv
+          key: mutation-native-score-history-v1
+          restore-keys: |
+            mutation-native-score-history-v1-
 
       - name: Show native lane mode
         run: |
@@ -83,6 +92,25 @@ jobs:
         if: always()
         run: MIN_MUTATION_SCORE=${MUTATION_NATIVE_MIN_SCORE:-40} make mutation-fsharp-native-score
 
+      - name: Update native mutation trend
+        if: always()
+        run: make mutation-fsharp-native-trend
+
+      - name: Evaluate native mutation burn-in readiness
+        if: always()
+        run: |
+          REQUIRED_STREAK=${MUTATION_NATIVE_REQUIRED_STREAK:-7} \
+          MIN_MUTATION_SCORE=${MUTATION_NATIVE_MIN_SCORE:-40} \
+          ENFORCE_BURNIN_READY=${{ vars.MUTATION_NATIVE_ENFORCE == 'true' && 'true' || 'false' }} \
+          make mutation-fsharp-native-burnin
+
+      - name: Save native trend cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/mutation/mutation-native-score-history.csv
+          key: mutation-native-score-history-v1-${{ github.run_id }}
+
       - name: Upload native mutation artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -92,7 +120,14 @@ jobs:
             docs/reports/mutation-native-fsharp-latest.md
             artifacts/mutation/mutation-native-fsharp-latest.json
             docs/reports/mutation-native-score-latest.md
+            docs/reports/mutation-native-score-history-latest.md
+            artifacts/mutation/mutation-native-score-history.csv
             artifacts/ci/mutation-native-fsharp-summary.txt
             artifacts/ci/mutation-native-fsharp-metrics.json
             artifacts/ci/mutation-native-score-summary.txt
             artifacts/ci/mutation-native-score.json
+            artifacts/ci/mutation-native-trend-summary.txt
+            artifacts/ci/mutation-native-trend.json
+            docs/reports/mutation-native-burnin-latest.md
+            artifacts/ci/mutation-native-burnin-summary.txt
+            artifacts/ci/mutation-native-burnin.json

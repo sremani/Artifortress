@@ -17,6 +17,8 @@ The `mutation-native` job in `.github/workflows/mutation-track.yml` reads these 
   - defaults to `6` when unset
 - `MUTATION_NATIVE_MIN_SCORE`
   - defaults to `40` when unset
+- `MUTATION_NATIVE_REQUIRED_STREAK`
+  - defaults to `7` when unset
 
 ## Promotion Criteria
 
@@ -31,6 +33,11 @@ The `mutation-native` job in `.github/workflows/mutation-track.yml` reads these 
 3. Runtime budget
 - Job duration remains within agreed CI budget for 95th percentile runs.
 
+4. Burn-in signal
+- `docs/reports/mutation-native-burnin-latest.md` reports:
+  - `burn-in ready: true`
+  - `passing streak >= required streak`
+
 ## Rollout Steps
 
 1. Burn-in mode (current)
@@ -39,11 +46,13 @@ The `mutation-native` job in `.github/workflows/mutation-track.yml` reads these 
 
 2. Soft enforcement
 - Set `MUTATION_NATIVE_MIN_SCORE` to target floor (example `50`).
-- Keep non-blocking while observing trend.
+- Keep non-blocking while observing trend and burn-in readiness report.
 
 3. Hard enforcement
 - Set `MUTATION_NATIVE_ENFORCE=true`.
 - Native lane becomes blocking for merges.
+- Burn-in interlock is automatically enforced in CI:
+  - promotion fails if required streak is not yet ready.
 
 ## Rollback Plan
 
@@ -54,5 +63,7 @@ If flaky behavior appears after promotion:
 3. Triage failures from:
 - `docs/reports/mutation-native-fsharp-latest.md`
 - `docs/reports/mutation-native-score-latest.md`
+- `docs/reports/mutation-native-burnin-latest.md`
 - `artifacts/ci/mutation-native-fsharp-summary.txt`
 - `artifacts/ci/mutation-native-score-summary.txt`
+- `artifacts/ci/mutation-native-burnin-summary.txt`

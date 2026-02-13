@@ -493,6 +493,139 @@ let ``API validateEvaluatePolicyRequest rejects unsupported decision hints`` (ve
             | Error err -> err = "decisionHint must be one of: allow, deny, quarantine."
 
 [<Property>]
+let ``API validateTombstoneRequest defaults non-positive retention days`` (defaultSeed: int) (reasonRaw: string) (retentionSeed: int) =
+    let defaultRetentionDays = (normalizeNonNegativeInt defaultSeed % 3650) + 1
+    let reason = if String.IsNullOrWhiteSpace reasonRaw then "cleanup" else reasonRaw
+    let retentionDays = -(normalizeNonNegativeInt retentionSeed % 10000)
+
+    let request: Program.TombstoneVersionRequest =
+        { Reason = $"  {reason}  "
+          RetentionDays = retentionDays }
+
+    match Program.validateTombstoneRequest defaultRetentionDays request with
+    | Error _ -> false
+    | Ok(parsedReason, parsedRetentionDays) ->
+        parsedReason = reason.Trim() && parsedRetentionDays = defaultRetentionDays
+
+[<Property>]
+let ``API validateTombstoneRequest preserves explicit retention in allowed range`` (reasonRaw: string) (retentionSeed: int) =
+    let reason = if String.IsNullOrWhiteSpace reasonRaw then "manual-retention" else reasonRaw
+    let retentionDays = (normalizeNonNegativeInt retentionSeed % 3650) + 1
+
+    let request: Program.TombstoneVersionRequest =
+        { Reason = reason
+          RetentionDays = retentionDays }
+
+    match Program.validateTombstoneRequest 30 request with
+    | Error _ -> false
+    | Ok(parsedReason, parsedRetentionDays) ->
+        parsedReason = reason.Trim() && parsedRetentionDays = retentionDays
+
+[<Property>]
+let ``API validateTombstoneRequest rejects retention greater than maximum`` (reasonRaw: string) (retentionSeed: int) =
+    let reason = if String.IsNullOrWhiteSpace reasonRaw then "retention-too-high" else reasonRaw
+    let retentionDays = 3651 + (normalizeNonNegativeInt retentionSeed % 10000)
+
+    let request: Program.TombstoneVersionRequest =
+        { Reason = reason
+          RetentionDays = retentionDays }
+
+    match Program.validateTombstoneRequest 30 request with
+    | Ok _ -> false
+    | Error err -> err = "retentionDays must be between 1 and 3650."
+
+[<Property>]
+let ``API validateTombstoneRequest rejects blank reason`` (defaultSeed: int) (retentionSeed: int) =
+    let defaultRetentionDays = (normalizeNonNegativeInt defaultSeed % 3650) + 1
+    let retentionDays = (normalizeNonNegativeInt retentionSeed % 3650) + 1
+
+    let request: Program.TombstoneVersionRequest =
+        { Reason = "   "
+          RetentionDays = retentionDays }
+
+    match Program.validateTombstoneRequest defaultRetentionDays request with
+    | Ok _ -> false
+    | Error err -> err = "reason is required."
+
+[<Property>]
+let ``API validateGcRequest defaults dry-run and configured values when request is absent`` (retentionSeed: int) (batchSeed: int) =
+    let defaultRetentionGraceHours = normalizeNonNegativeInt retentionSeed % 8761
+    let defaultBatchSize = (normalizeNonNegativeInt batchSeed % 5000) + 1
+
+    match Program.validateGcRequest defaultRetentionGraceHours defaultBatchSize None with
+    | Error _ -> false
+    | Ok(dryRun, retentionGraceHours, batchSize) ->
+        dryRun && retentionGraceHours = defaultRetentionGraceHours && batchSize = defaultBatchSize
+
+[<Property>]
+let ``API validateGcRequest uses default batch size when request batch is zero`` (retentionSeed: int) (defaultBatchSeed: int) (dryRun: bool) =
+    let retentionGraceHours = normalizeNonNegativeInt retentionSeed % 8761
+    let defaultBatchSize = (normalizeNonNegativeInt defaultBatchSeed % 5000) + 1
+
+    let request: Program.RunGcRequest =
+        { DryRun = dryRun
+          RetentionGraceHours = retentionGraceHours
+          BatchSize = 0 }
+
+    match Program.validateGcRequest 12 defaultBatchSize (Some request) with
+    | Error _ -> false
+    | Ok(parsedDryRun, parsedRetentionGraceHours, parsedBatchSize) ->
+        parsedDryRun = dryRun
+        && parsedRetentionGraceHours = retentionGraceHours
+        && parsedBatchSize = defaultBatchSize
+
+[<Property>]
+let ``API validateGcRequest rejects retentionGraceHours outside allowed range`` (retentionSeed: int) (tooHigh: bool) =
+    let retentionGraceHours =
+        if tooHigh then
+            8761 + (normalizeNonNegativeInt retentionSeed % 10000)
+        else
+            -((normalizeNonNegativeInt retentionSeed % 10000) + 1)
+
+    let request: Program.RunGcRequest =
+        { DryRun = true
+          RetentionGraceHours = retentionGraceHours
+          BatchSize = 100 }
+
+    match Program.validateGcRequest 0 100 (Some request) with
+    | Ok _ -> false
+    | Error err -> err = "retentionGraceHours must be between 0 and 8760."
+
+[<Property>]
+let ``API validateGcRequest rejects batch size outside allowed range`` (batchSeed: int) (tooHigh: bool) =
+    let batchSize =
+        if tooHigh then
+            5001 + (normalizeNonNegativeInt batchSeed % 10000)
+        else
+            -((normalizeNonNegativeInt batchSeed % 10000) + 1)
+
+    let request: Program.RunGcRequest =
+        { DryRun = false
+          RetentionGraceHours = 0
+          BatchSize = batchSize }
+
+    match Program.validateGcRequest 0 100 (Some request) with
+    | Ok _ -> false
+    | Error err -> err = "batchSize must be between 1 and 5000."
+
+[<Property>]
+let ``API validateGcRequest accepts retention and batch boundary values`` (dryRun: bool) (useUpperRetention: bool) (useUpperBatch: bool) =
+    let retentionGraceHours = if useUpperRetention then 8760 else 0
+    let batchSize = if useUpperBatch then 5000 else 1
+
+    let request: Program.RunGcRequest =
+        { DryRun = dryRun
+          RetentionGraceHours = retentionGraceHours
+          BatchSize = batchSize }
+
+    match Program.validateGcRequest 24 200 (Some request) with
+    | Error _ -> false
+    | Ok(parsedDryRun, parsedRetentionGraceHours, parsedBatchSize) ->
+        parsedDryRun = dryRun
+        && parsedRetentionGraceHours = retentionGraceHours
+        && parsedBatchSize = batchSize
+
+[<Property>]
 let ``API validateRepoRequest local normalizes repo key`` (repoKeyRaw: string) =
     let repoKey = sanitizeRepoKey repoKeyRaw
 

@@ -12,6 +12,7 @@ Runtime and tooling:
 API control-plane features:
 - PAT issuance with TTL bounds and scope parsing.
 - PAT revocation and active-token validation (revoked/expired denied).
+- OIDC bearer-token validation path (HS256, issuer/audience/scope checks) behind configuration gate.
 - Repo CRUD with repo-scoped authorization checks.
 - Role binding upsert/list for subject-role assignment per repo.
 - Audit persistence for privileged operations.
@@ -64,9 +65,9 @@ Persistence:
 
 Automated checks currently passing:
 - `make format`.
-- `make test` (non-integration filter) with `93` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `70` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `163` passing tests.
+- `make test` (non-integration filter) with `96` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `73` passing integration tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `169` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `84` FsCheck properties across domain, lifecycle/policy request validation, API, object storage config, and extracted worker internals (three extraction waves).
 - `make phase2-load` baseline run:
@@ -95,6 +96,8 @@ Demonstration assets:
 - `scripts/phase6-drill.sh`
 - `scripts/phase6-demo.sh`
 - `docs/23-phase6-runbook.md`
+- `scripts/phase7-demo.sh`
+- `docs/37-phase7-runbook.md`
 - `docs/24-security-review-closure.md`
 - `docs/25-upgrade-rollback-runbook.md`
 - deployment docs:
@@ -142,7 +145,8 @@ Demonstration assets:
 
 Not implemented yet:
 - Search indexing read-model query-serving integration beyond the current queue/job scaffolding.
-- OIDC/SAML identity provider integration.
+- SAML identity provider integration.
+- OIDC production IdP integration path beyond HS256 bootstrap mode (for example JWKS/RS256 key rotation).
 
 ## 5. Next Delivery Focus
 
@@ -163,7 +167,10 @@ Not implemented yet:
     - `docs/24-security-review-closure.md`
     - `docs/25-upgrade-rollback-runbook.md`
 - Next implementation targets:
-  - post-GA identity integration (OIDC/SAML).
+  - Phase 7 identity federation:
+    - OIDC production IdP integration (JWKS/RS256 and operational rotation model).
+    - SAML federation path.
+    - ticket board: `docs/36-phase7-identity-integration-tickets.md`.
   - search read-model query-serving and rebuild/recovery maturity.
   - F# native mutation finish plan (runtime lane + non-blocking CI + score/trend/burn-in policy are active; merge-gate promotion remains intentionally partial until the 7-run burn-in streak is satisfied).
   - continue expanding property-based and integration stress coverage around lifecycle and policy/search paths.

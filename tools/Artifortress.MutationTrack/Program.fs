@@ -671,6 +671,14 @@ let private isRelativePathWithinParent (relativePath: string) =
     && not (relativePath.StartsWith(".." + string Path.DirectorySeparatorChar, StringComparison.Ordinal))
     && not (relativePath.StartsWith(".." + string Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
 
+let private createRunScratchRoot (baseScratchRoot: string) =
+    Directory.CreateDirectory(baseScratchRoot) |> ignore
+    let runSuffix = Guid.NewGuid().ToString("N").Substring(0, 8)
+    let runId = $"run-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}-{runSuffix}"
+    let runScratchRoot = Path.Combine(baseScratchRoot, runId)
+    Directory.CreateDirectory(runScratchRoot) |> ignore
+    runScratchRoot
+
 let private classifyNativeMutantRun (exitCode: int) (output: string) =
     if exitCode = 0 then
         Survived
@@ -844,17 +852,13 @@ let private runFsharpCompileValidation (arguments: Map<string, string>) =
             let allCandidates = discoverFsharpOperatorCandidates sourceText sourceLines
             let selectedCandidates = selectCompileValidationCandidates options.MaxMutants allCandidates
             let startedAt = nowUtc ()
-
-            if Directory.Exists(scratchRoot) then
-                Directory.Delete(scratchRoot, true)
-
-            Directory.CreateDirectory(scratchRoot) |> ignore
+            let runScratchRoot = createRunScratchRoot scratchRoot
 
             let entries = ResizeArray<FsharpCompileValidationEntry>()
 
             selectedCandidates
             |> List.iteri (fun index candidate ->
-                let mutantPath = Path.Combine(scratchRoot, $"mutant-{index + 1:D3}")
+                let mutantPath = Path.Combine(runScratchRoot, $"mutant-{index + 1:D3}")
                 copyDirectoryRecursive projectDirectory mutantPath
                 let mutantSourcePath = Path.Combine(mutantPath, sourceRelativePath)
                 let mutable succeeded = false
@@ -1089,18 +1093,14 @@ let private runFsharpNativeRuntime (arguments: Map<string, string>) =
                 let allCandidates = discoverFsharpOperatorCandidates sourceText sourceLines
                 let selectedCandidates = selectCompileValidationCandidates options.MaxMutants allCandidates
                 let startedAt = nowUtc ()
-
-                if Directory.Exists(scratchRoot) then
-                    Directory.Delete(scratchRoot, true)
-
-                Directory.CreateDirectory(scratchRoot) |> ignore
+                let runScratchRoot = createRunScratchRoot scratchRoot
 
                 let entries = ResizeArray<FsharpNativeMutantEntry>()
 
                 selectedCandidates
                 |> List.iteri (fun index candidate ->
                     let mutantIndex = index + 1
-                    let mutantWorkspacePath = Path.Combine(scratchRoot, $"mutant-{mutantIndex:D3}")
+                    let mutantWorkspacePath = Path.Combine(runScratchRoot, $"mutant-{mutantIndex:D3}")
                     copyDirectoryRecursive workspaceRoot mutantWorkspacePath
                     let mutantSourcePath = Path.Combine(mutantWorkspacePath, sourceRelativePath)
                     let mutantTestProjectPath = Path.Combine(mutantWorkspacePath, testProjectRelativePath)

@@ -164,6 +164,39 @@ let private tokenHashFor (rawToken: string) =
     let bytes = Encoding.UTF8.GetBytes(rawToken)
     hasher.ComputeHash(bytes) |> Convert.ToHexString |> fun value -> value.ToLowerInvariant()
 
+let private toBase64Url (bytes: byte array) =
+    Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+
+let private issueOidcToken
+    (issuer: string)
+    (audience: string)
+    (hs256SharedSecret: string)
+    (subject: string)
+    (scopes: string array)
+    (expiresAtUtc: DateTimeOffset)
+    =
+    let headerJson = """{"alg":"HS256","typ":"JWT"}"""
+    let scopeText = scopes |> String.concat " "
+
+    let payloadJson =
+        JsonSerializer.Serialize(
+            {| iss = issuer
+               sub = subject
+               aud = audience
+               exp = expiresAtUtc.ToUnixTimeSeconds()
+               scope = scopeText |}
+        )
+
+    let headerSegment = headerJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let payloadSegment = payloadJson |> Encoding.UTF8.GetBytes |> toBase64Url
+    let signedPayload = $"{headerSegment}.{payloadSegment}"
+
+    let signatureSegment =
+        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(hs256SharedSecret))
+        signedPayload |> Encoding.UTF8.GetBytes |> hmac.ComputeHash |> toBase64Url
+
+    $"{signedPayload}.{signatureSegment}"
+
 let private ensureTenantId (conn: NpgsqlConnection) =
     use cmd =
         new NpgsqlCommand(
@@ -244,6 +277,9 @@ type ApiFixture() =
         | value -> value
 
     let bootstrapToken = "phase1-bootstrap-token"
+    let oidcIssuer = "https://integration-oidc.artifortress.local"
+    let oidcAudience = "artifortress-api"
+    let oidcSharedSecret = "integration-phase7-oidc-secret"
     let output = ConcurrentQueue<string>()
     let mutable client: HttpClient option = None
     let mutable apiProcessHandle: Process option = None
@@ -311,6 +347,11 @@ type ApiFixture() =
                     startInfo.RedirectStandardError <- true
                     startInfo.Environment["ConnectionStrings__Postgres"] <- connectionString
                     startInfo.Environment["Auth__BootstrapToken"] <- bootstrapToken
+                    startInfo.Environment["Auth__Oidc__Enabled"] <- "true"
+                    startInfo.Environment["Auth__Oidc__Issuer"] <- oidcIssuer
+                    startInfo.Environment["Auth__Oidc__Audience"] <- oidcAudience
+                    startInfo.Environment["Auth__Oidc__Hs256SharedSecret"] <- oidcSharedSecret
+                    startInfo.Environment["Auth__Saml__Enabled"] <- "false"
 
                     let proc = new Process()
                     proc.StartInfo <- startInfo
@@ -363,6 +404,9 @@ type ApiFixture() =
         | None -> raise (InvalidOperationException("API fixture is unavailable."))
 
     member _.BootstrapToken = bootstrapToken
+    member _.OidcIssuer = oidcIssuer
+    member _.OidcAudience = oidcAudience
+    member _.OidcSharedSecret = oidcSharedSecret
 
     member this.InsertTokenDirect (subject: string) (scopes: string array) (expiresAtUtc: DateTimeOffset) (revokedAtUtc: DateTimeOffset option) =
         this.RequireAvailable()
@@ -1604,6 +1648,75 @@ type Phase1ApiTests(fixture: ApiFixture) =
     member _.``P1-10 unauthorized caller is rejected`` () =
         fixture.RequireAvailable()
         use response = fixture.Client.GetAsync("/v1/auth/whoami").Result
+        ensureStatus HttpStatusCode.Unauthorized response |> ignore
+
+    [<Fact>]
+    member _.``P7-01 whoami returns pat auth source for PAT caller`` () =
+        fixture.RequireAvailable()
+
+        let subject = makeSubject "p701-pat"
+        let token, _ = issuePat subject [| "repo:*:read" |] 60
+
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        use response = fixture.Client.Send(request)
+        let body = ensureStatus HttpStatusCode.OK response
+        use doc = JsonDocument.Parse(body)
+
+        Assert.Equal(subject, doc.RootElement.GetProperty("subject").GetString())
+        Assert.Equal("pat", doc.RootElement.GetProperty("authSource").GetString())
+
+        let scopes =
+            doc.RootElement.GetProperty("scopes").EnumerateArray()
+            |> Seq.map (fun element -> element.GetString())
+            |> Seq.toArray
+
+        Assert.Contains("repo:*:read", scopes)
+
+    [<Fact>]
+    member _.``P7-02 oidc bearer flow supports whoami and admin-scoped repo create`` () =
+        fixture.RequireAvailable()
+
+        let subject = makeSubject "p702-oidc"
+
+        let oidcToken =
+            issueOidcToken
+                fixture.OidcIssuer
+                fixture.OidcAudience
+                fixture.OidcSharedSecret
+                subject
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(10.0))
+
+        use whoamiRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        whoamiRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", oidcToken)
+        use whoamiResponse = fixture.Client.Send(whoamiRequest)
+        let whoamiBody = ensureStatus HttpStatusCode.OK whoamiResponse
+        use whoamiDoc = JsonDocument.Parse(whoamiBody)
+
+        Assert.Equal(subject, whoamiDoc.RootElement.GetProperty("subject").GetString())
+        Assert.Equal("oidc", whoamiDoc.RootElement.GetProperty("authSource").GetString())
+
+        let repoKey = makeRepoKey "p702-oidc-repo"
+        use createRepoResponse = createRepoWithToken oidcToken repoKey
+        ensureStatus HttpStatusCode.Created createRepoResponse |> ignore
+
+    [<Fact>]
+    member _.``P7-02 oidc token with mismatched audience is unauthorized`` () =
+        fixture.RequireAvailable()
+
+        let oidcToken =
+            issueOidcToken
+                fixture.OidcIssuer
+                "wrong-audience"
+                fixture.OidcSharedSecret
+                (makeSubject "p702-oidc-bad-aud")
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(10.0))
+
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", oidcToken)
+        use response = fixture.Client.Send(request)
         ensureStatus HttpStatusCode.Unauthorized response |> ignore
 
     [<Fact>]

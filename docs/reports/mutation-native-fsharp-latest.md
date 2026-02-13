@@ -1,6 +1,6 @@
 # Native F# Mutation Runtime Report
 
-Generated at: 2026-02-11T21:02:11Z
+Generated at: 2026-02-11T21:49:25Z
 
 ## Inputs
 
@@ -22,9 +22,9 @@ Generated at: 2026-02-11T21:02:11Z
 
 | # | Location | Mutation | Status | Duration (ms) |
 |---|---|---|---|---|
-| 1 | L83:C34 | `|| -> &&` | survived | 11293 |
-| 2 | L83:C29 | `<> -> =` | killed | 11754 |
-| 3 | L83:C73 | `<> -> =` | killed | 13727 |
-| 4 | L97:C43 | `= -> <>` | killed | 13373 |
-| 5 | L97:C49 | `|| -> &&` | killed | 10577 |
-| 6 | L97:C66 | `= -> <>` | killed | 12330 |
+| 1 | L83:C34 | `|| -> &&` | survived | 10677 |
+| 2 | L83:C29 | `<> -> =` | killed | 10721 |
+| 3 | L83:C73 | `<> -> =` | killed | 13736 |
+| 4 | L97:C43 | `= -> <>` | killed | 18031 |
+| 5 | L97:C49 | `|| -> &&` | killed | 9362 |
+| 6 | L97:C66 | `= -> <>` | killed | 16305 |

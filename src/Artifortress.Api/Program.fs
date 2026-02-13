@@ -291,6 +291,19 @@ type Principal = {
     TokenId: Guid
     Subject: string
     Scopes: RepoScope list
+    AuthSource: string
+}
+
+type OidcTokenValidationConfig = {
+    Issuer: string
+    Audience: string
+    Hs256SharedSecret: string
+}
+
+type SamlIntegrationConfig = {
+    Enabled: bool
+    IdpMetadataUrl: string option
+    ServiceProviderEntityId: string option
 }
 
 type AppState = {
@@ -303,6 +316,8 @@ type AppState = {
     DefaultTombstoneRetentionDays: int
     DefaultGcRetentionGraceHours: int
     DefaultGcBatchSize: int
+    OidcTokenValidation: OidcTokenValidationConfig option
+    SamlIntegration: SamlIntegrationConfig
 }
 
 let nowUtc () = DateTimeOffset.UtcNow
@@ -686,6 +701,212 @@ let secureEquals (left: string) (right: string) =
         else
             CryptographicOperations.FixedTimeEquals(ReadOnlySpan(leftBytes), ReadOnlySpan(rightBytes))
 
+let private parseBoolean (rawValue: string) =
+    match Boolean.TryParse(rawValue) with
+    | true, value -> value
+    | _ -> false
+
+let private parseBase64UrlBytes (value: string) =
+    if String.IsNullOrWhiteSpace value then
+        Error "Base64url value was empty."
+    else
+        try
+            let normalized = value.Replace('-', '+').Replace('_', '/')
+            let remainder = normalized.Length % 4
+
+            let padded =
+                if remainder = 0 then
+                    normalized
+                elif remainder = 2 then
+                    normalized + "=="
+                elif remainder = 3 then
+                    normalized + "="
+                else
+                    ""
+
+            if String.IsNullOrWhiteSpace padded then
+                Error "Base64url value had invalid padding."
+            else
+                Ok(Convert.FromBase64String(padded))
+        with ex ->
+            Error $"Invalid base64url segment: {ex.Message}"
+
+let private tryReadStringClaim (payload: JsonElement) (claimName: string) =
+    let mutable claim = Unchecked.defaultof<JsonElement>
+
+    if payload.TryGetProperty(claimName, &claim) && claim.ValueKind = JsonValueKind.String then
+        let value = normalizeText (claim.GetString())
+        if String.IsNullOrWhiteSpace value then None else Some value
+    else
+        None
+
+let private tryReadNumericDateClaim (payload: JsonElement) (claimName: string) =
+    let mutable claim = Unchecked.defaultof<JsonElement>
+
+    if payload.TryGetProperty(claimName, &claim) then
+        match claim.ValueKind with
+        | JsonValueKind.Number ->
+            match claim.TryGetInt64() with
+            | true, value -> Some value
+            | _ -> None
+        | JsonValueKind.String ->
+            match Int64.TryParse(normalizeText (claim.GetString())) with
+            | true, value -> Some value
+            | _ -> None
+        | _ -> None
+    else
+        None
+
+let private tokenAudienceMatches (payload: JsonElement) (requiredAudience: string) =
+    let mutable audienceClaim = Unchecked.defaultof<JsonElement>
+
+    if not (payload.TryGetProperty("aud", &audienceClaim)) then
+        false
+    else
+        match audienceClaim.ValueKind with
+        | JsonValueKind.String ->
+            String.Equals(audienceClaim.GetString(), requiredAudience, StringComparison.Ordinal)
+        | JsonValueKind.Array ->
+            audienceClaim.EnumerateArray()
+            |> Seq.exists (fun element ->
+                element.ValueKind = JsonValueKind.String
+                && String.Equals(element.GetString(), requiredAudience, StringComparison.Ordinal))
+        | _ -> false
+
+let private extractScopeValuesFromPayload (payload: JsonElement) =
+    let splitScopes (rawValue: string) =
+        rawValue.Split(' ', StringSplitOptions.TrimEntries ||| StringSplitOptions.RemoveEmptyEntries)
+        |> Array.toList
+
+    let readStringOrArrayClaim (claimName: string) =
+        let mutable claim = Unchecked.defaultof<JsonElement>
+
+        if payload.TryGetProperty(claimName, &claim) then
+            match claim.ValueKind with
+            | JsonValueKind.String -> splitScopes (claim.GetString())
+            | JsonValueKind.Array ->
+                claim.EnumerateArray()
+                |> Seq.choose (fun element ->
+                    if element.ValueKind = JsonValueKind.String then
+                        Some(normalizeText (element.GetString()))
+                    else
+                        None)
+                |> Seq.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+                |> Seq.toList
+            | _ -> []
+        else
+            []
+
+    [ readStringOrArrayClaim "scope"
+      readStringOrArrayClaim "scp"
+      readStringOrArrayClaim "artifortress_scopes" ]
+    |> List.collect id
+    |> List.map normalizeText
+    |> List.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+    |> List.distinct
+
+let private parseRepoScopesFromClaimValues (scopeValues: string array) =
+    let parsed =
+        scopeValues
+        |> Array.toList
+        |> List.map (fun scopeText -> RepoScope.tryParse scopeText)
+
+    let errors =
+        parsed
+        |> List.choose (function
+            | Error err -> Some err
+            | Ok _ -> None)
+
+    if errors.IsEmpty then
+        Ok(
+            parsed
+            |> List.choose (function
+                | Ok scope -> Some scope
+                | Error _ -> None)
+        )
+    else
+        Error(String.concat "; " errors)
+
+let private deriveDeterministicGuid (value: string) =
+    use hasher = SHA256.Create()
+    let hash = hasher.ComputeHash(Encoding.UTF8.GetBytes(value))
+    hash |> Array.take 16 |> Guid
+
+let validateOidcBearerToken (config: OidcTokenValidationConfig) (token: string) =
+    let segments = token.Split('.', StringSplitOptions.None)
+
+    if segments.Length <> 3 then
+        Error "OIDC token must be a compact JWT with three segments."
+    else
+        let headerSegment = segments.[0]
+        let payloadSegment = segments.[1]
+        let signatureSegment = segments.[2]
+        let signedPayload = $"{headerSegment}.{payloadSegment}"
+
+        parseBase64UrlBytes headerSegment
+        |> Result.bind (fun headerBytes ->
+            parseBase64UrlBytes payloadSegment
+            |> Result.bind (fun payloadBytes ->
+                parseBase64UrlBytes signatureSegment
+                |> Result.bind (fun signatureBytes ->
+                    let expectedSignatureBytes =
+                        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(config.Hs256SharedSecret))
+                        hmac.ComputeHash(Encoding.UTF8.GetBytes(signedPayload))
+
+                    if signatureBytes.Length <> expectedSignatureBytes.Length
+                       || not (CryptographicOperations.FixedTimeEquals(ReadOnlySpan(signatureBytes), ReadOnlySpan(expectedSignatureBytes)))
+                    then
+                        Error "OIDC token signature validation failed."
+                    else
+                        try
+                            use headerDoc = JsonDocument.Parse(headerBytes)
+                            use payloadDoc = JsonDocument.Parse(payloadBytes)
+                            let header = headerDoc.RootElement
+                            let payload = payloadDoc.RootElement
+
+                            let alg = tryReadStringClaim header "alg" |> Option.defaultValue ""
+
+                            if not (String.Equals(alg, "HS256", StringComparison.Ordinal)) then
+                                Error "OIDC token must use HS256."
+                            else
+                                let issuer = tryReadStringClaim payload "iss" |> Option.defaultValue ""
+                                let subject = tryReadStringClaim payload "sub" |> Option.defaultValue ""
+                                let expirationUnix = tryReadNumericDateClaim payload "exp"
+                                let notBeforeUnix = tryReadNumericDateClaim payload "nbf"
+                                let nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+
+                                if not (String.Equals(issuer, config.Issuer, StringComparison.Ordinal)) then
+                                    Error "OIDC token issuer did not match configured issuer."
+                                elif not (tokenAudienceMatches payload config.Audience) then
+                                    Error "OIDC token audience did not match configured audience."
+                                elif String.IsNullOrWhiteSpace subject then
+                                    Error "OIDC token is missing subject claim."
+                                elif expirationUnix.IsNone || expirationUnix.Value <= nowUnix then
+                                    Error "OIDC token is expired or missing exp claim."
+                                elif notBeforeUnix.IsSome && notBeforeUnix.Value > nowUnix then
+                                    Error "OIDC token nbf claim is in the future."
+                                else
+                                    let scopeValues = extractScopeValuesFromPayload payload |> List.toArray
+
+                                    if scopeValues.Length = 0 then
+                                        Error "OIDC token does not include any repository scope claims."
+                                    else
+                                        parseRepoScopesFromClaimValues scopeValues
+                                        |> Result.map (fun scopes ->
+                                            let tokenId =
+                                                match tryReadStringClaim payload "jti" with
+                                                | Some value ->
+                                                    match Guid.TryParse(value) with
+                                                    | true, parsed -> parsed
+                                                    | _ -> deriveDeterministicGuid $"{issuer}:{subject}:{value}"
+                                                | None -> deriveDeterministicGuid $"{issuer}:{subject}"
+
+                                            {| Subject = subject
+                                               TokenId = tokenId
+                                               Scopes = scopes |})
+                        with ex ->
+                            Error $"OIDC token payload could not be parsed: {ex.Message}")))
+
 let createPlainToken () =
     let bytes = RandomNumberGenerator.GetBytes(32)
     Convert.ToHexString(bytes).ToLowerInvariant()
@@ -918,7 +1139,8 @@ limit 1;
                     { TenantId = tenantId
                       TokenId = tokenId
                       Subject = subject
-                      Scopes = scopes }
+                      Scopes = scopes
+                      AuthSource = "pat" }
             )
         | Error err -> Error $"Persisted scopes are invalid: {err}"
     else
@@ -3385,12 +3607,32 @@ returning upload_id;
             tx.Rollback()
             Ok false
 
+let private tryAuthenticateWithOidcToken (state: AppState) (rawToken: string) =
+    match state.OidcTokenValidation with
+    | None -> Ok None
+    | Some oidcConfig ->
+        match validateOidcBearerToken oidcConfig rawToken with
+        | Error _ -> Ok None
+        | Ok oidcPrincipal ->
+            withConnection state (fun conn ->
+                ensureTenantId state conn
+                |> Result.map (fun tenantId ->
+                    Some
+                        { TenantId = tenantId
+                          TokenId = oidcPrincipal.TokenId
+                          Subject = oidcPrincipal.Subject
+                          Scopes = oidcPrincipal.Scopes
+                          AuthSource = "oidc" }))
+
 let tryAuthenticate (state: AppState) (ctx: HttpContext) =
     match tryReadBearerToken ctx with
     | None -> Ok None
     | Some rawToken ->
         let tokenHash = toTokenHash rawToken
-        withConnection state (tryReadPrincipalByTokenHash tokenHash)
+        match withConnection state (tryReadPrincipalByTokenHash tokenHash) with
+        | Error err -> Error err
+        | Ok(Some principal) -> Ok(Some principal)
+        | Ok None -> tryAuthenticateWithOidcToken state rawToken
 
 let requireRole (state: AppState) (ctx: HttpContext) (repoKey: string) (requiredRole: RepoRole) =
     match tryAuthenticate state ctx with
@@ -3808,6 +4050,43 @@ let main args =
             | true, value when value >= 1 && value <= 5000 -> value
             | _ -> 200
 
+        let oidcTokenValidation =
+            let enabled = builder.Configuration.["Auth:Oidc:Enabled"] |> parseBoolean
+
+            if not enabled then
+                None
+            else
+                let issuer = normalizeText builder.Configuration.["Auth:Oidc:Issuer"]
+                let audience = normalizeText builder.Configuration.["Auth:Oidc:Audience"]
+                let hs256SharedSecret = normalizeText builder.Configuration.["Auth:Oidc:Hs256SharedSecret"]
+
+                if String.IsNullOrWhiteSpace issuer then
+                    failwith "Auth:Oidc:Issuer is required when Auth:Oidc:Enabled=true."
+                elif String.IsNullOrWhiteSpace audience then
+                    failwith "Auth:Oidc:Audience is required when Auth:Oidc:Enabled=true."
+                elif String.IsNullOrWhiteSpace hs256SharedSecret then
+                    failwith "Auth:Oidc:Hs256SharedSecret is required when Auth:Oidc:Enabled=true."
+                else
+                    Some
+                        { Issuer = issuer
+                          Audience = audience
+                          Hs256SharedSecret = hs256SharedSecret }
+
+        let samlIntegration =
+            let enabled = builder.Configuration.["Auth:Saml:Enabled"] |> parseBoolean
+            let metadataUrl = normalizeText builder.Configuration.["Auth:Saml:IdpMetadataUrl"]
+            let serviceProviderEntityId = normalizeText builder.Configuration.["Auth:Saml:ServiceProviderEntityId"]
+
+            let optionalValue value =
+                if String.IsNullOrWhiteSpace value then None else Some value
+
+            { Enabled = enabled
+              IdpMetadataUrl = optionalValue metadataUrl
+              ServiceProviderEntityId = optionalValue serviceProviderEntityId }
+
+        if samlIntegration.Enabled then
+            failwith "SAML integration is not implemented yet. Set Auth:Saml:Enabled=false."
+
         { ConnectionString = connectionString
           TenantSlug = "default"
           TenantName = "Default Tenant"
@@ -3816,7 +4095,9 @@ let main args =
           PolicyEvaluationTimeoutMs = policyEvaluationTimeoutMs
           DefaultTombstoneRetentionDays = defaultTombstoneRetentionDays
           DefaultGcRetentionGraceHours = defaultGcRetentionGraceHours
-          DefaultGcBatchSize = defaultGcBatchSize }
+          DefaultGcBatchSize = defaultGcBatchSize
+          OidcTokenValidation = oidcTokenValidation
+          SamlIntegration = samlIntegration }
 
     let app = builder.Build()
 
@@ -3875,7 +4156,7 @@ let main args =
             | Ok None -> unauthorized "Missing or invalid bearer token."
             | Ok(Some principal) ->
                 let scopeValues = principal.Scopes |> List.map RepoScope.value
-                Results.Ok({| subject = principal.Subject; scopes = scopeValues |}))
+                Results.Ok({| subject = principal.Subject; scopes = scopeValues; authSource = principal.AuthSource |}))
     )
     |> ignore
 
