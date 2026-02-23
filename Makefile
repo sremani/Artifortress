@@ -1,4 +1,5 @@
 CONFIGURATION := Debug
+TEST_DLL := tests/Artifortress.Domain.Tests/bin/$(CONFIGURATION)/net10.0/Artifortress.Domain.Tests.dll
 PROJECTS := \
 	src/Artifortress.Domain/Artifortress.Domain.fsproj \
 	src/Artifortress.Api/Artifortress.Api.fsproj \
@@ -7,14 +8,15 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
+.PHONY: help restore build test test-integration test-integration-full format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
 
 help:
 	@echo "Targets:"
 	@echo "  restore            Restore .NET dependencies"
 	@echo "  build              Build all projects"
 	@echo "  test               Run non-integration tests"
-	@echo "  test-integration   Run integration tests (requires local deps)"
+	@echo "  test-integration   Run integration tests using existing build artifacts when available"
+	@echo "  test-integration-full  Force restore/build, then run integration tests"
 	@echo "  format             Verify formatting"
 	@echo "  dev-up             Start local dependencies (Postgres, MinIO, Redis, OTel, Jaeger)"
 	@echo "  dev-down           Stop local dependencies"
@@ -65,11 +67,19 @@ test: build
 		dotnet test "$$project" --configuration $(CONFIGURATION) --no-build -v minimal --filter "Category!=Integration"; \
 	done
 
-test-integration: build
+test-integration:
+	@if [ ! -f "$(TEST_DLL)" ]; then \
+		echo "Missing integration test binary at $(TEST_DLL)."; \
+		echo "Attempting no-restore build for tests project..."; \
+		dotnet build tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration $(CONFIGURATION) --no-restore -v minimal || \
+		( echo "No-restore build failed; running full build."; $(MAKE) build ); \
+	fi
 	@for project in $(TEST_PROJECTS); do \
 		echo "Testing integration suite $$project"; \
 		dotnet test "$$project" --configuration $(CONFIGURATION) --no-build -v minimal --filter "Category=Integration"; \
 	done
+
+test-integration-full: build test-integration
 
 format:
 	@echo "Checking for tabs in source and config files..."

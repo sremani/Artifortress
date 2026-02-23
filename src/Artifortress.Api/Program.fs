@@ -1,4 +1,5 @@
 open System
+open System.Net.Http
 open System.Security.Cryptography
 open System.Text
 open System.Text.Json
@@ -341,6 +342,20 @@ type OidcTokenValidationConfig = {
     Hs256SharedSecret: string option
     Rs256SigningKeys: OidcRs256SigningKey list
     ClaimRoleMappings: OidcClaimRoleMapping list
+    RemoteJwksState: OidcRemoteJwksState option
+}
+
+and OidcRemoteJwksState = {
+    Endpoint: Uri
+    RefreshInterval: TimeSpan
+    RefreshTimeout: TimeSpan
+    StaticFallbackKeys: OidcRs256SigningKey list
+    HttpClient: HttpClient
+    RefreshLock: Threading.SemaphoreSlim
+    mutable ActiveKeys: OidcRs256SigningKey list
+    mutable LastRefreshAttemptAtUtc: DateTimeOffset option
+    mutable LastRefreshSucceededAtUtc: DateTimeOffset option
+    mutable LastRefreshError: string option
 }
 
 type SamlIntegrationConfig = {
@@ -781,6 +796,38 @@ let private parseBoolean (rawValue: string) =
     | true, value -> value
     | _ -> false
 
+let private parseBoundedPositiveInt
+    (configuration: IConfiguration)
+    (key: string)
+    (defaultValue: int)
+    (minValue: int)
+    (maxValue: int)
+    =
+    let rawValue = configuration.[key]
+
+    match Int32.TryParse rawValue with
+    | true, value when value >= minValue && value <= maxValue -> value
+    | _ -> defaultValue
+
+let private oidcSigningKeyIdentity (key: OidcRs256SigningKey) =
+    let kid = key.Kid |> Option.defaultValue ""
+    let modulus = if isNull key.Parameters.Modulus then "" else Convert.ToBase64String(key.Parameters.Modulus)
+    let exponent = if isNull key.Parameters.Exponent then "" else Convert.ToBase64String(key.Parameters.Exponent)
+    $"{kid}|{modulus}|{exponent}"
+
+let mergeOidcRs256SigningKeys (preferred: OidcRs256SigningKey list) (fallback: OidcRs256SigningKey list) =
+    List.append preferred fallback
+    |> List.fold
+        (fun (resolved, seen) key ->
+            let identity = oidcSigningKeyIdentity key
+
+            if Set.contains identity seen then
+                resolved, seen
+            else
+                key :: resolved, Set.add identity seen)
+        ([], Set.empty)
+    |> fun (resolved, _) -> List.rev resolved
+
 let private parseBase64UrlBytes (value: string) =
     if String.IsNullOrWhiteSpace value then
         Error "Base64url value was empty."
@@ -1093,6 +1140,58 @@ let parseOidcJwksJson (jwksJson: string) =
                         if parsedKeys.IsEmpty then Error "OIDC JWKS did not contain any usable RSA signing keys." else Ok parsedKeys
         with ex ->
             Error $"OIDC JWKS could not be parsed: {ex.Message}"
+
+let refreshOidcRemoteJwks (remoteState: OidcRemoteJwksState) =
+    if not (remoteState.RefreshLock.Wait(0)) then
+        Error "OIDC JWKS refresh already in progress."
+    else
+        try
+            try
+                let attemptedAt = nowUtc ()
+                remoteState.LastRefreshAttemptAtUtc <- Some attemptedAt
+
+                use timeoutCts = new Threading.CancellationTokenSource(remoteState.RefreshTimeout)
+                use response = remoteState.HttpClient.GetAsync(remoteState.Endpoint, timeoutCts.Token).Result
+
+                if not response.IsSuccessStatusCode then
+                    let statusCode = int response.StatusCode
+                    let reasonPhrase = if isNull response.ReasonPhrase then "" else response.ReasonPhrase
+                    let message = normalizeText $"OIDC JWKS endpoint returned HTTP {statusCode} {reasonPhrase}."
+                    remoteState.LastRefreshError <- Some message
+                    Error message
+                else
+                    let payload = response.Content.ReadAsStringAsync().Result
+
+                    match parseOidcJwksJson payload with
+                    | Error err ->
+                        let message = $"OIDC remote JWKS payload is invalid: {err}"
+                        remoteState.LastRefreshError <- Some message
+                        Error message
+                    | Ok remoteKeys ->
+                        let merged = mergeOidcRs256SigningKeys remoteKeys remoteState.StaticFallbackKeys
+                        remoteState.ActiveKeys <- merged
+                        remoteState.LastRefreshSucceededAtUtc <- Some attemptedAt
+                        remoteState.LastRefreshError <- None
+                        Ok merged
+            with ex ->
+                let message = $"OIDC remote JWKS refresh failed: {ex.Message}"
+                remoteState.LastRefreshError <- Some message
+                Error message
+        finally
+            remoteState.RefreshLock.Release() |> ignore
+
+let startOidcRemoteJwksRefreshTimer (remoteState: OidcRemoteJwksState) =
+    let callback = Threading.TimerCallback(fun _ -> refreshOidcRemoteJwks remoteState |> ignore)
+    new Threading.Timer(callback, null, remoteState.RefreshInterval, remoteState.RefreshInterval)
+
+let private resolveOidcRs256SigningKeys (config: OidcTokenValidationConfig) =
+    match config.RemoteJwksState with
+    | Some remoteState -> remoteState.ActiveKeys
+    | None -> config.Rs256SigningKeys
+
+let private oidcShouldRetryAfterRemoteJwksRefresh (validationError: string) =
+    validationError.Contains("kid did not match", StringComparison.OrdinalIgnoreCase)
+    || validationError.Contains("no JWKS signing keys are configured", StringComparison.OrdinalIgnoreCase)
 
 let private validateOidcClaims (config: OidcTokenValidationConfig) (payload: JsonElement) =
     let issuer = tryReadStringClaim payload "iss" |> Option.defaultValue ""
@@ -4328,7 +4427,25 @@ let private tryAuthenticateWithOidcToken (state: AppState) (rawToken: string) =
     match state.OidcTokenValidation with
     | None -> Ok None
     | Some oidcConfig ->
-        match validateOidcBearerToken oidcConfig rawToken with
+        let validateWithCurrentKeys () =
+            let effectiveConfig =
+                { oidcConfig with
+                    Rs256SigningKeys = resolveOidcRs256SigningKeys oidcConfig }
+
+            validateOidcBearerToken effectiveConfig rawToken
+
+        let validationResult =
+            match validateWithCurrentKeys () with
+            | Ok principal -> Ok principal
+            | Error err ->
+                match oidcConfig.RemoteJwksState with
+                | Some remoteState when oidcShouldRetryAfterRemoteJwksRefresh err ->
+                    match refreshOidcRemoteJwks remoteState with
+                    | Ok _ -> validateWithCurrentKeys ()
+                    | Error _ -> Error err
+                | _ -> Error err
+
+        match validationResult with
         | Error _ -> Ok None
         | Ok oidcPrincipal ->
             withConnection state (fun conn ->
@@ -4777,6 +4894,7 @@ let main args =
                 let audience = normalizeText builder.Configuration.["Auth:Oidc:Audience"]
                 let hs256SharedSecret = normalizeText builder.Configuration.["Auth:Oidc:Hs256SharedSecret"]
                 let jwksJson = normalizeText builder.Configuration.["Auth:Oidc:JwksJson"]
+                let jwksUrl = normalizeText builder.Configuration.["Auth:Oidc:JwksUrl"]
                 let roleMappingsRaw = normalizeText builder.Configuration.["Auth:Oidc:RoleMappings"]
 
                 if String.IsNullOrWhiteSpace issuer then
@@ -4795,9 +4913,55 @@ let main args =
                             | Ok keys -> keys
                             | Error err -> failwith $"Auth:Oidc:JwksJson is invalid: {err}"
 
-                    if hs256SecretOption.IsNone && rs256SigningKeys.IsEmpty then
+                    let remoteJwksState =
+                        if String.IsNullOrWhiteSpace jwksUrl then
+                            None
+                        else
+                            match Uri.TryCreate(jwksUrl, UriKind.Absolute) with
+                            | false, _ -> failwith "Auth:Oidc:JwksUrl must be a valid absolute URI."
+                            | true, endpoint ->
+                                let refreshIntervalSeconds =
+                                    parseBoundedPositiveInt
+                                        builder.Configuration
+                                        "Auth:Oidc:JwksRefreshIntervalSeconds"
+                                        300
+                                        30
+                                        86400
+
+                                let refreshTimeoutSeconds =
+                                    parseBoundedPositiveInt
+                                        builder.Configuration
+                                        "Auth:Oidc:JwksRefreshTimeoutSeconds"
+                                        10
+                                        1
+                                        120
+
+                                let httpClient = new HttpClient()
+                                httpClient.Timeout <- TimeSpan.FromSeconds(float refreshTimeoutSeconds + 1.0)
+
+                                let runtimeState =
+                                    { Endpoint = endpoint
+                                      RefreshInterval = TimeSpan.FromSeconds(float refreshIntervalSeconds)
+                                      RefreshTimeout = TimeSpan.FromSeconds(float refreshTimeoutSeconds)
+                                      StaticFallbackKeys = rs256SigningKeys
+                                      HttpClient = httpClient
+                                      RefreshLock = new Threading.SemaphoreSlim(1, 1)
+                                      ActiveKeys = rs256SigningKeys
+                                      LastRefreshAttemptAtUtc = None
+                                      LastRefreshSucceededAtUtc = None
+                                      LastRefreshError = None }
+
+                                match refreshOidcRemoteJwks runtimeState with
+                                | Ok _ -> Some runtimeState
+                                | Error err ->
+                                    if rs256SigningKeys.IsEmpty && hs256SecretOption.IsNone then
+                                        failwith $"Auth:Oidc:JwksUrl initial fetch failed: {err}"
+                                    else
+                                        Some runtimeState
+
+                    if hs256SecretOption.IsNone && rs256SigningKeys.IsEmpty && remoteJwksState.IsNone then
                         failwith
-                            "Auth:Oidc:Enabled=true requires at least one signing mode: Auth:Oidc:Hs256SharedSecret and/or Auth:Oidc:JwksJson."
+                            "Auth:Oidc:Enabled=true requires at least one signing mode: Auth:Oidc:Hs256SharedSecret, Auth:Oidc:JwksJson, and/or Auth:Oidc:JwksUrl."
 
                     let claimRoleMappings =
                         match parseOidcClaimRoleMappings roleMappingsRaw with
@@ -4809,7 +4973,8 @@ let main args =
                           Audience = audience
                           Hs256SharedSecret = hs256SecretOption
                           Rs256SigningKeys = rs256SigningKeys
-                          ClaimRoleMappings = claimRoleMappings }
+                          ClaimRoleMappings = claimRoleMappings
+                          RemoteJwksState = remoteJwksState }
 
         let samlIntegration =
             let enabled = builder.Configuration.["Auth:Saml:Enabled"] |> parseBoolean
@@ -4878,6 +5043,26 @@ let main args =
           SamlIntegration = samlIntegration }
 
     let app = builder.Build()
+
+    let oidcRemoteJwksTimer =
+        state.OidcTokenValidation
+        |> Option.bind (fun config -> config.RemoteJwksState)
+        |> Option.map startOidcRemoteJwksRefreshTimer
+
+    app.Lifetime.ApplicationStopping.Register(fun () ->
+        match oidcRemoteJwksTimer with
+        | Some timer -> timer.Dispose()
+        | None -> ()
+
+        match state.OidcTokenValidation with
+        | Some config ->
+            match config.RemoteJwksState with
+            | Some remoteState ->
+                remoteState.HttpClient.Dispose()
+                remoteState.RefreshLock.Dispose()
+            | None -> ()
+        | None -> ())
+    |> ignore
 
     app.MapGet(
         "/",

@@ -1,9 +1,13 @@
 module Tests
 
 open System
+open System.Net
+open System.Net.Http
 open System.Security.Cryptography
 open System.Text
 open System.Text.Json
+open System.Threading
+open System.Threading.Tasks
 open Artifortress.Domain
 open Xunit
 
@@ -108,6 +112,11 @@ let private buildRsaJwkJsonFragment (kid: string) (publicParameters: RSAParamete
     let e = toBase64Url publicParameters.Exponent
     $"{{\"kty\":\"RSA\",\"use\":\"sig\",\"alg\":\"RS256\",\"kid\":\"{kid}\",\"n\":\"{n}\",\"e\":\"{e}\"}}"
 
+type private StubHttpMessageHandler(responseFactory: HttpRequestMessage -> HttpResponseMessage) =
+    inherit HttpMessageHandler()
+    override _.SendAsync(request: HttpRequestMessage, _cancellationToken: CancellationToken) =
+        Task.FromResult(responseFactory request)
+
 [<Fact>]
 let ``OIDC token validation accepts HS256 token with matching issuer audience and scopes`` () =
     let config: Program.OidcTokenValidationConfig =
@@ -115,7 +124,8 @@ let ``OIDC token validation accepts HS256 token with matching issuer audience an
           Audience = OidcAudience
           Hs256SharedSecret = Some OidcSecret
           Rs256SigningKeys = []
-          ClaimRoleMappings = [] }
+          ClaimRoleMappings = []
+          RemoteJwksState = None }
 
     let subject = "oidc-user-01"
     let token = issueOidcToken subject [| "repo:*:admin"; "repo:core-libs:read" |] (DateTimeOffset.UtcNow.AddMinutes(5.0))
@@ -136,7 +146,8 @@ let ``OIDC token validation rejects token with mismatched issuer`` () =
           Audience = OidcAudience
           Hs256SharedSecret = Some OidcSecret
           Rs256SigningKeys = []
-          ClaimRoleMappings = [] }
+          ClaimRoleMappings = []
+          RemoteJwksState = None }
 
     let token = issueOidcToken "oidc-user-issuer-mismatch" [| "repo:*:admin" |] (DateTimeOffset.UtcNow.AddMinutes(5.0))
 
@@ -151,7 +162,8 @@ let ``OIDC token validation rejects expired token`` () =
           Audience = OidcAudience
           Hs256SharedSecret = Some OidcSecret
           Rs256SigningKeys = []
-          ClaimRoleMappings = [] }
+          ClaimRoleMappings = []
+          RemoteJwksState = None }
 
     let token = issueOidcToken "oidc-user-expired" [| "repo:*:read" |] (DateTimeOffset.UtcNow.AddMinutes(-5.0))
 
@@ -171,7 +183,8 @@ let ``OIDC token validation resolves claim-role mappings when scope claim is abs
           Audience = OidcAudience
           Hs256SharedSecret = Some OidcSecret
           Rs256SigningKeys = []
-          ClaimRoleMappings = mappings }
+          ClaimRoleMappings = mappings
+          RemoteJwksState = None }
 
     let token =
         issueOidcTokenWithGroups "oidc-groups-user" [| "af-admins" |] (DateTimeOffset.UtcNow.AddMinutes(5.0))
@@ -202,7 +215,8 @@ let ``OIDC token validation accepts RS256 token against configured JWKS`` () =
           Audience = OidcAudience
           Hs256SharedSecret = None
           Rs256SigningKeys = rs256Keys
-          ClaimRoleMappings = [] }
+          ClaimRoleMappings = []
+          RemoteJwksState = None }
 
     let token =
         issueOidcRs256Token
@@ -240,7 +254,8 @@ let ``OIDC token validation supports RS256 key rotation with matching kid`` () =
           Audience = OidcAudience
           Hs256SharedSecret = None
           Rs256SigningKeys = rs256Keys
-          ClaimRoleMappings = [] }
+          ClaimRoleMappings = []
+          RemoteJwksState = None }
 
     let tokenA =
         issueOidcRs256Token
@@ -265,6 +280,109 @@ let ``OIDC token validation supports RS256 key rotation with matching kid`` () =
     match Program.validateOidcBearerToken config tokenB with
     | Error err -> failwithf "Expected rotated key B token to validate but got: %s" err
     | Ok principal -> Assert.Equal("oidc-rs256-rotation-b", principal.Subject)
+
+[<Fact>]
+let ``OIDC merge signing keys keeps preferred order and deduplicates identical keys`` () =
+    use rsaA = RSA.Create(2048)
+    use rsaB = RSA.Create(2048)
+    let keyAJson = buildRsaJwkJsonFragment "kid-a" (rsaA.ExportParameters(false))
+    let keyBJson = buildRsaJwkJsonFragment "kid-b" (rsaB.ExportParameters(false))
+
+    let keyA =
+        Program.parseOidcJwksJson $"{{\"keys\":[{keyAJson}]}}"
+        |> Result.defaultWith failwith
+        |> List.head
+
+    let keyB =
+        Program.parseOidcJwksJson $"{{\"keys\":[{keyBJson}]}}"
+        |> Result.defaultWith failwith
+        |> List.head
+
+    let merged = Program.mergeOidcRs256SigningKeys [ keyB; keyA ] [ keyA ]
+    Assert.Equal(2, merged.Length)
+    Assert.Equal(Some "kid-b", merged.[0].Kid)
+    Assert.Equal(Some "kid-a", merged.[1].Kid)
+
+[<Fact>]
+let ``OIDC remote JWKS refresh updates active keys and keeps static fallback keys`` () =
+    use rsaA = RSA.Create(2048)
+    use rsaB = RSA.Create(2048)
+    let staticJwkJson = buildRsaJwkJsonFragment "kid-static" (rsaA.ExportParameters(false))
+    let remoteJwkJson = buildRsaJwkJsonFragment "kid-remote" (rsaB.ExportParameters(false))
+    let staticJwks = $"{{\"keys\":[{staticJwkJson}]}}"
+    let remoteJwks = $"{{\"keys\":[{remoteJwkJson}]}}"
+
+    let staticKeys =
+        Program.parseOidcJwksJson staticJwks |> Result.defaultWith failwith
+
+    use httpClient =
+        new HttpClient(
+            new StubHttpMessageHandler(fun _ ->
+                let response = new HttpResponseMessage(HttpStatusCode.OK)
+                response.Content <- new StringContent(remoteJwks)
+                response)
+        )
+
+    let remoteState: Program.OidcRemoteJwksState =
+        { Endpoint = Uri("https://jwks.example.com/.well-known/jwks.json")
+          RefreshInterval = TimeSpan.FromMinutes(5.0)
+          RefreshTimeout = TimeSpan.FromSeconds(5.0)
+          StaticFallbackKeys = staticKeys
+          HttpClient = httpClient
+          RefreshLock = new SemaphoreSlim(1, 1)
+          ActiveKeys = staticKeys
+          LastRefreshAttemptAtUtc = None
+          LastRefreshSucceededAtUtc = None
+          LastRefreshError = None }
+
+    match Program.refreshOidcRemoteJwks remoteState with
+    | Error err -> failwithf "Expected JWKS refresh to succeed but got: %s" err
+    | Ok keys ->
+        let kids = keys |> List.choose (fun key -> key.Kid) |> Set.ofList
+        Assert.True(Set.contains "kid-remote" kids)
+        Assert.True(Set.contains "kid-static" kids)
+        Assert.True(remoteState.LastRefreshSucceededAtUtc.IsSome)
+        Assert.True(remoteState.LastRefreshError.IsNone)
+
+    remoteState.RefreshLock.Dispose()
+
+[<Fact>]
+let ``OIDC remote JWKS refresh keeps prior active keys when payload is invalid`` () =
+    use rsaA = RSA.Create(2048)
+    let staticJwkJson = buildRsaJwkJsonFragment "kid-static" (rsaA.ExportParameters(false))
+    let staticJwks = $"{{\"keys\":[{staticJwkJson}]}}"
+
+    let staticKeys =
+        Program.parseOidcJwksJson staticJwks |> Result.defaultWith failwith
+
+    use httpClient =
+        new HttpClient(
+            new StubHttpMessageHandler(fun _ ->
+                let response = new HttpResponseMessage(HttpStatusCode.OK)
+                response.Content <- new StringContent("{\"keys\":[]}")
+                response)
+        )
+
+    let remoteState: Program.OidcRemoteJwksState =
+        { Endpoint = Uri("https://jwks.example.com/.well-known/jwks.json")
+          RefreshInterval = TimeSpan.FromMinutes(5.0)
+          RefreshTimeout = TimeSpan.FromSeconds(5.0)
+          StaticFallbackKeys = staticKeys
+          HttpClient = httpClient
+          RefreshLock = new SemaphoreSlim(1, 1)
+          ActiveKeys = staticKeys
+          LastRefreshAttemptAtUtc = None
+          LastRefreshSucceededAtUtc = None
+          LastRefreshError = None }
+
+    match Program.refreshOidcRemoteJwks remoteState with
+    | Ok _ -> failwith "Expected invalid JWKS payload to fail refresh."
+    | Error err -> Assert.Contains("invalid", err, StringComparison.OrdinalIgnoreCase)
+
+    Assert.Equal(staticKeys.Length, remoteState.ActiveKeys.Length)
+    Assert.Equal(staticKeys.Head.Kid, remoteState.ActiveKeys.Head.Kid)
+    Assert.True(remoteState.LastRefreshError.IsSome)
+    remoteState.RefreshLock.Dispose()
 
 [<Fact>]
 let ``ServiceName normalizes casing and trims spaces`` () =
