@@ -52,6 +52,9 @@ make phase7-demo
 - `OIDC_ISSUER` (default `https://phase7-idp.local`)
 - `OIDC_AUDIENCE` (default `artifortress-api`)
 - `OIDC_SHARED_SECRET` (default `phase7-demo-oidc-secret`)
+- `OIDC_JWKS_URL` (optional; if set, enables remote JWKS refresh mode)
+- `OIDC_JWKS_REFRESH_INTERVAL_SECONDS` (default `300`; used with `OIDC_JWKS_URL`)
+- `OIDC_JWKS_REFRESH_TIMEOUT_SECONDS` (default `10`; used with `OIDC_JWKS_URL`)
 - `OIDC_ROLE_MAPPINGS` (default `groups|af-admins|*|admin`)
 - `SAML_IDP_METADATA_URL` (default `https://phase7-idp.local/metadata`)
 - `SAML_EXPECTED_ISSUER` (default `https://phase7-idp.local/issuer`)
@@ -67,6 +70,10 @@ make phase7-demo
 - OIDC signing mode controls:
   - HS256: `Auth__Oidc__Hs256SharedSecret`
   - RS256: `Auth__Oidc__JwksJson`
+  - RS256 remote refresh: `Auth__Oidc__JwksUrl`
+  - remote cadence/timeout:
+    - `Auth__Oidc__JwksRefreshIntervalSeconds`
+    - `Auth__Oidc__JwksRefreshTimeoutSeconds`
 - OIDC claim mapping:
   - `Auth__Oidc__RoleMappings`
 - SAML enable/disable:

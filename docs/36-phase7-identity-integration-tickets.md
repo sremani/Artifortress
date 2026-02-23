@@ -17,6 +17,7 @@ Status key:
 | P7-05 | SAML federation contract + ACS/metadata scaffolding | P7-01 | done |
 | P7-06 | SAML assertion validation and role-mapping path | P7-05 | done |
 | P7-07 | Operational docs, rollout gates, and fallback controls | P7-02 through P7-06 | done |
+| P7-08 | OIDC remote JWKS refresh and key-rotation automation | P7-03, P7-07 | done |
 
 ## Completed Implementation Notes (2026-02-13)
 
@@ -59,11 +60,21 @@ Status key:
     - OIDC claim-role mapping,
     - SAML metadata and ACS exchange flow,
     - PAT compatibility fallback.
+- P7-08:
+  - Added optional remote JWKS endpoint integration:
+    - `Auth:Oidc:JwksUrl`
+    - `Auth:Oidc:JwksRefreshIntervalSeconds`
+    - `Auth:Oidc:JwksRefreshTimeoutSeconds`
+  - Added API-side JWKS runtime cache and refresh automation:
+    - startup remote fetch bootstrap,
+    - periodic background refresh timer,
+    - unknown-`kid` forced-refresh retry path during token validation.
+  - Added unit coverage for JWKS key merging and refresh success/failure behavior.
 
 ## Latest Local Verification
 
 - `make format`
-- `make test` (`99` passing non-integration tests)
+- `make test` (`109` passing non-integration tests)
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`81` passing integration tests)
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`180` total passing tests)
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`195` total passing tests)
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` (`11` passing Phase 7 tests)

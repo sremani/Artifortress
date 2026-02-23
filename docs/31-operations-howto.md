@@ -33,15 +33,19 @@ curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/ops
 
 1. Determine active signing mode:
    - HS256 (`Auth__Oidc__Hs256SharedSecret`)
-   - RS256 (`Auth__Oidc__JwksJson`)
+   - RS256 static (`Auth__Oidc__JwksJson`)
+   - RS256 remote (`Auth__Oidc__JwksUrl`)
 2. Rotate key material in secret store.
 3. Ensure issuer/audience values remain unchanged:
    - `Auth__Oidc__Issuer`
    - `Auth__Oidc__Audience`
-4. Roll API instances.
-5. Validate `/v1/auth/whoami` with newly issued OIDC tokens for each enabled signing mode.
-6. If claim-role mappings are enabled, also validate mapped-scope behavior for mapped claims.
-7. Keep overlap window short to avoid mixed-old/new token confusion.
+4. If using remote JWKS mode:
+   - publish old+new keys in IdP JWKS during overlap window.
+   - ensure `Auth__Oidc__JwksRefreshIntervalSeconds` and `Auth__Oidc__JwksRefreshTimeoutSeconds` are tuned for your rollout window.
+5. Roll API instances only if changing local config; remote JWKS key-only rotations can roll forward automatically without API restart.
+6. Validate `/v1/auth/whoami` with newly issued OIDC tokens for each enabled signing mode.
+7. If claim-role mappings are enabled, also validate mapped-scope behavior for mapped claims.
+8. Keep overlap window short to avoid mixed-old/new token confusion.
 
 ## 4. How To Toggle SAML Federation Safely
 

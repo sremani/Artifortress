@@ -11,8 +11,8 @@ This plan defines the execution sequence we will walk through, with every phase 
 - Phase 4 is complete through `P4-10`.
 - Phase 5 is complete through `P5-08`.
 - Phase 6 is complete through `P6-10`.
-- Phase 7 is complete through `P7-07`.
-- Next active delivery focus is post-Phase-7 hardening (OIDC JWKS refresh automation, signed SAML assertion cryptographic verification) and search read-model maturity.
+- Phase 7 is complete through `P7-08`.
+- Next active delivery focus is post-Phase-7 hardening (signed SAML assertion cryptographic verification) and search read-model maturity.
 
 ## 1. Full Feature Inventory
 

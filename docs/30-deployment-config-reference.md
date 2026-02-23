@@ -20,7 +20,10 @@ Template files:
 | `Auth__Oidc__Issuer` | none | when OIDC enabled | Exact `iss` claim value expected from incoming OIDC JWTs. |
 | `Auth__Oidc__Audience` | none | when OIDC enabled | Required `aud` value expected in OIDC JWTs. |
 | `Auth__Oidc__Hs256SharedSecret` | none | optional when OIDC enabled | Enables HS256 OIDC token validation mode. |
-| `Auth__Oidc__JwksJson` | none | optional when OIDC enabled | JWKS JSON for RS256 signature validation; supports multi-key rotation using `kid`. |
+| `Auth__Oidc__JwksJson` | none | optional when OIDC enabled | Static JWKS JSON for RS256 signature validation; supports multi-key rotation using `kid`. |
+| `Auth__Oidc__JwksUrl` | none | optional when OIDC enabled | Remote JWKS endpoint URL for automatic RS256 key refresh and rollover. |
+| `Auth__Oidc__JwksRefreshIntervalSeconds` | `300` | recommended when `Auth__Oidc__JwksUrl` is set | Background refresh cadence (range `30..86400`). |
+| `Auth__Oidc__JwksRefreshTimeoutSeconds` | `10` | recommended when `Auth__Oidc__JwksUrl` is set | Per-refresh HTTP timeout (range `1..120`). |
 | `Auth__Oidc__RoleMappings` | none | recommended | Semicolon-delimited claim-role entries: `claimName|claimValue|repoKey|role`. |
 | `Auth__Saml__Enabled` | `false` | recommended | Enables SAML metadata + ACS assertion exchange path. |
 | `Auth__Saml__IdpMetadataUrl` | none | when SAML enabled | IdP metadata URL emitted in SP metadata contract. |
@@ -65,6 +68,9 @@ Template files:
 | `CONNECTION_STRING` | local default | `scripts/phase6-demo.sh` | API DB connection for demo run. |
 | `BOOTSTRAP_TOKEN` | `phase6-demo-bootstrap` | `scripts/phase6-demo.sh` | Bootstrap token for demo PAT issue. |
 | `OIDC_ROLE_MAPPINGS` | `groups|af-admins|*|admin` | `scripts/phase7-demo.sh` | OIDC claim-role mapping demo input. |
+| `OIDC_JWKS_URL` | none | `scripts/phase7-demo.sh` | Optional remote JWKS endpoint for Phase 7 demo startup. |
+| `OIDC_JWKS_REFRESH_INTERVAL_SECONDS` | `300` | `scripts/phase7-demo.sh` | Remote JWKS refresh cadence for Phase 7 demo. |
+| `OIDC_JWKS_REFRESH_TIMEOUT_SECONDS` | `10` | `scripts/phase7-demo.sh` | Remote JWKS refresh timeout for Phase 7 demo. |
 | `SAML_EXPECTED_ISSUER` | `https://phase7-idp.local/issuer` | `scripts/phase7-demo.sh` | Expected issuer used in SAML demo assertion. |
 | `SAML_SP_ENTITY_ID` | `urn:artifortress:phase7:sp` | `scripts/phase7-demo.sh` | Service provider entity id for SAML demo audience checks. |
 | `SAML_ROLE_MAPPINGS` | `groups|af-admins|*|admin` | `scripts/phase7-demo.sh` | SAML claim-role mapping demo input. |
@@ -78,6 +84,8 @@ Template files:
 - OIDC requires at least one signing mode when enabled:
   - `Auth__Oidc__Hs256SharedSecret`
   - and/or `Auth__Oidc__JwksJson`
+  - and/or `Auth__Oidc__JwksUrl`
+- If `Auth__Oidc__JwksUrl` is used, keep `Auth__Oidc__JwksRefreshIntervalSeconds` and `Auth__Oidc__JwksRefreshTimeoutSeconds` explicitly configured per environment.
 - Use explicit federation toggles for rollout/fallback:
   - `Auth__Oidc__Enabled`
   - `Auth__Saml__Enabled`
@@ -90,5 +98,6 @@ Before startup:
 2. Object-storage endpoint/bucket credentials are valid.
 3. Bootstrap token is non-empty for bootstrapping workflows.
 4. Lifecycle and timeout values are within accepted ranges.
-5. OIDC enabled mode has valid signing config (`Hs256SharedSecret` and/or `JwksJson`).
-6. SAML enabled mode has valid issuer/audience anchors and role mappings.
+5. OIDC enabled mode has valid signing config (`Hs256SharedSecret`, `JwksJson`, and/or `JwksUrl`).
+6. OIDC remote-JWKS mode values are in range when used (`JwksRefreshIntervalSeconds`, `JwksRefreshTimeoutSeconds`).
+7. SAML enabled mode has valid issuer/audience anchors and role mappings.

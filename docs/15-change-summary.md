@@ -1,6 +1,6 @@
 # Consolidated Change Summary
 
-Last updated: 2026-02-12
+Last updated: 2026-02-23
 
 ## Scope of This Change Set
 
@@ -943,4 +943,50 @@ This change set combines:
 - `make test` passed (`102` non-integration tests).
 - `make test-integration` passed (`83` integration tests).
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`185` total tests).
+- `make format` passed.
+
+## OIDC Remote JWKS Refresh Automation Addendum (2026-02-13, latest)
+
+### Code changes
+
+- `src/Artifortress.Api/Program.fs`
+  - Added optional remote JWKS automation config:
+    - `Auth:Oidc:JwksUrl`
+    - `Auth:Oidc:JwksRefreshIntervalSeconds` (default `300`, range `30..86400`)
+    - `Auth:Oidc:JwksRefreshTimeoutSeconds` (default `10`, range `1..120`)
+  - Added JWKS runtime state and automation primitives:
+    - `OidcRemoteJwksState`
+    - `refreshOidcRemoteJwks`
+    - `startOidcRemoteJwksRefreshTimer`
+    - `mergeOidcRs256SigningKeys`
+  - Added startup bootstrap fetch behavior for remote JWKS mode with fallback to static keys when available.
+  - Added background periodic refresh timer and graceful shutdown disposal for JWKS refresh resources.
+  - Updated OIDC auth path to:
+    - validate against live cached RS256 keys,
+    - force one refresh and retry on unknown `kid` / missing-key validation failures.
+- `tests/Artifortress.Domain.Tests/Tests.fs`
+  - Added JWKS automation unit coverage:
+    - merge ordering + dedupe behavior.
+    - remote refresh success path (remote + static fallback merge).
+    - remote refresh failure path (invalid payload retains prior active keys).
+
+### Deployment and runbook updates
+
+- Updated:
+  - `deploy/staging-api.env.example`
+  - `deploy/production-api.env.example`
+  - `docs/30-deployment-config-reference.md`
+  - `docs/31-operations-howto.md`
+  - `docs/36-phase7-identity-integration-tickets.md`
+  - `docs/37-phase7-runbook.md`
+  - `docs/38-phase7-rollout-gates.md`
+  - `docs/26-deployment-plan.md`
+  - `docs/07-delivery-walkthrough-plan.md`
+  - `docs/05-implementation-plan.md`
+  - `docs/10-current-state.md`
+  - `README.md`
+
+### Validation evidence
+
+- `make test` passed (`109` non-integration tests).
 - `make format` passed.

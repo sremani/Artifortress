@@ -59,7 +59,10 @@ Operational fallback path:
 OIDC checks:
 - `Auth__Oidc__Issuer` and `Auth__Oidc__Audience` match token claims.
 - at least one signing mode configured:
-  - `Auth__Oidc__Hs256SharedSecret` and/or `Auth__Oidc__JwksJson`
+  - `Auth__Oidc__Hs256SharedSecret` and/or `Auth__Oidc__JwksJson` and/or `Auth__Oidc__JwksUrl`
+- if remote JWKS is enabled:
+  - `Auth__Oidc__JwksRefreshIntervalSeconds` in range `30..86400`
+  - `Auth__Oidc__JwksRefreshTimeoutSeconds` in range `1..120`
 - `Auth__Oidc__RoleMappings` syntax validates.
 
 SAML checks:

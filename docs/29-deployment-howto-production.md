@@ -47,6 +47,10 @@ API required values:
 - one or both OIDC signing mode inputs (when OIDC enabled):
   - `Auth__Oidc__Hs256SharedSecret`
   - `Auth__Oidc__JwksJson`
+  - `Auth__Oidc__JwksUrl`
+- when `Auth__Oidc__JwksUrl` is used:
+  - `Auth__Oidc__JwksRefreshIntervalSeconds`
+  - `Auth__Oidc__JwksRefreshTimeoutSeconds`
 - `Auth__Oidc__RoleMappings` (recommended for claim-to-role policy)
 - SAML values (when SAML enabled):
   - `Auth__Saml__IdpMetadataUrl`

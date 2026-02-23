@@ -20,7 +20,7 @@ In scope:
 - environment configuration and operational runbooks.
 
 Out of scope:
-- OIDC remote JWKS refresh automation and signed SAML assertion cryptographic validation hardening.
+- signed SAML assertion cryptographic validation hardening.
 - search query-serving read model (post-GA roadmap).
 
 ## 3. Baseline Topology

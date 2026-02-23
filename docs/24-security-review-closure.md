@@ -47,7 +47,7 @@ Open P0 blockers: `0`
 Open P1 blockers: `0`
 
 Residual risks (accepted for launch):
-- OIDC remote JWKS refresh automation and signed SAML assertion cryptographic validation remain post-Phase-7 hardening items.
+- Signed SAML assertion cryptographic validation remains a post-Phase-7 hardening item.
 - Search read-model query-serving remains scoped as post-GA maturity work.
 
 ## Sign-off

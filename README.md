@@ -13,7 +13,7 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
 - Phase 5: complete through P5-08 (tombstone lifecycle + GC dry-run/execute + reconcile summary + admin authz/audit + demo/runbook).
 - Phase 6: complete through P6-10 (dependency-backed readiness, ops summary, backup/restore + DR drill, security closure, upgrade/rollback runbooks, GA demo/report).
 - Worker PBT extraction waves W-PBT-01 through W-PBT-15: complete (pure helper extraction + property-based coverage expansion).
-- Current build-out focus: post-Phase 7 hardening (OIDC JWKS refresh automation + signed SAML assertion cryptographic verification), search read-model maturity wave 2 (relevance/ranking + operational rebuild hardening), and F# native mutation hardening (native runtime lane + non-blocking CI lane + score threshold reporting are active; next step is merge-gate promotion policy).
+- Current build-out focus: post-Phase 7 hardening (signed SAML assertion cryptographic verification), search read-model maturity wave 2 (relevance/ranking + operational rebuild hardening), and F# native mutation hardening (native runtime lane + non-blocking CI lane + score threshold reporting are active; next step is merge-gate promotion policy).
 
 ## Implemented Today
 

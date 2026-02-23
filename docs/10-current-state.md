@@ -1,6 +1,6 @@
 # Artifortress Current State
 
-Last updated: 2026-02-13
+Last updated: 2026-02-23
 
 ## 1. What Is Implemented
 
@@ -12,7 +12,7 @@ Runtime and tooling:
 API control-plane features:
 - PAT issuance with TTL bounds and scope parsing.
 - PAT revocation and active-token validation (revoked/expired denied).
-- OIDC bearer-token validation path (HS256 + JWKS/RS256, issuer/audience checks, claim-role mapping policy) behind configuration gate.
+- OIDC bearer-token validation path (HS256 + JWKS/RS256, issuer/audience checks, claim-role mapping policy) behind configuration gate, including optional remote JWKS refresh/key-rotation automation.
 - SAML metadata + ACS assertion exchange path with issuer/audience checks and claim-role mapping policy.
 - Repo CRUD with repo-scoped authorization checks.
 - Role binding upsert/list for subject-role assignment per repo.
@@ -71,9 +71,9 @@ Persistence:
 
 Automated checks currently passing:
 - `make format`.
-- `make test` (non-integration filter) with `106` passing tests.
+- `make test` (non-integration filter) with `109` passing tests.
 - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `86` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `192` passing tests.
+- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `195` passing tests.
 - property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
   - `91` FsCheck properties across domain, lifecycle/policy request validation, API, object storage config, and extracted worker internals (three extraction waves + post-GA search validation helpers).
 - `make phase2-load` baseline run:
@@ -151,7 +151,6 @@ Demonstration assets:
 
 Not implemented yet:
 - Search read-model relevance ranking tuning and richer query semantics beyond current deterministic baseline.
-- OIDC remote JWKS fetch/refresh and key rollover automation beyond static `Auth__Oidc__JwksJson`.
 - SAML signed-assertion cryptographic validation against IdP metadata (current path validates assertion structure/issuer/audience/claims).
 
 ## 5. Next Delivery Focus
@@ -174,7 +173,6 @@ Not implemented yet:
     - `docs/25-upgrade-rollback-runbook.md`
 - Next implementation targets:
   - Phase 7 post-completion hardening:
-    - OIDC remote JWKS refresh and operational key-rotation automation.
     - SAML signed-assertion cryptographic validation path.
     - ticket board: `docs/36-phase7-identity-integration-tickets.md`.
   - search read-model maturity wave 2:
