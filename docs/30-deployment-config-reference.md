@@ -1,6 +1,6 @@
 # Deployment Configuration Reference
 
-Last updated: 2026-02-13
+Last updated: 2026-04-01
 
 This reference lists runtime configuration for API, worker, and deployment scripts.
 
@@ -24,11 +24,16 @@ Template files:
 | `Auth__Oidc__JwksUrl` | none | optional when OIDC enabled | Remote JWKS endpoint URL for automatic RS256 key refresh and rollover. |
 | `Auth__Oidc__JwksRefreshIntervalSeconds` | `300` | recommended when `Auth__Oidc__JwksUrl` is set | Background refresh cadence (range `30..86400`). |
 | `Auth__Oidc__JwksRefreshTimeoutSeconds` | `10` | recommended when `Auth__Oidc__JwksUrl` is set | Per-refresh HTTP timeout (range `1..120`). |
+| `Auth__Oidc__JwksMaxStalenessSeconds` | `max(refresh*3,900)` | recommended when `Auth__Oidc__JwksUrl` is set | Maximum age before remote JWKS material is treated as stale and static fallback only is used. |
 | `Auth__Oidc__RoleMappings` | none | recommended | Semicolon-delimited claim-role entries: `claimName|claimValue|repoKey|role`. |
 | `Auth__Saml__Enabled` | `false` | recommended | Enables SAML metadata + ACS assertion exchange path. |
 | `Auth__Saml__IdpMetadataUrl` | none | when SAML enabled | IdP metadata URL emitted in SP metadata contract. |
+| `Auth__Saml__IdpMetadataXml` | none | optional when SAML enabled | Static IdP metadata fallback used for signing-certificate bootstrap and stale-cache fallback. |
 | `Auth__Saml__ExpectedIssuer` | none | when SAML enabled | Exact issuer expected in incoming SAML assertions. |
 | `Auth__Saml__ServiceProviderEntityId` | none | when SAML enabled | Service provider entity id and assertion audience target. |
+| `Auth__Saml__MetadataFetchTimeoutSeconds` | `10` | recommended when `Auth__Saml__IdpMetadataUrl` is set | Per-refresh metadata fetch timeout (range `1..120`). |
+| `Auth__Saml__MetadataRefreshIntervalSeconds` | `300` | recommended when `Auth__Saml__IdpMetadataUrl` is set | Background metadata refresh cadence (range `30..86400`). |
+| `Auth__Saml__MetadataMaxStalenessSeconds` | `max(refresh*3,900)` | recommended when `Auth__Saml__IdpMetadataUrl` is set | Maximum age before remote SAML metadata is treated as stale and static fallback only is used. |
 | `Auth__Saml__RoleMappings` | none | recommended when SAML enabled | Claim-role entries: `claimName|claimValue|repoKey|role`. |
 | `Auth__Saml__IssuedPatTtlMinutes` | `60` | recommended when SAML enabled | TTL for token issued by successful ACS exchange (range 5..1440). |
 | `ObjectStorage__Endpoint` | `http://localhost:9000` | yes | S3-compatible endpoint URL. |
@@ -51,6 +56,7 @@ Template files:
 | `Worker__PollSeconds` | `30` | recommended | Sweep interval. |
 | `Worker__BatchSize` | `100` | recommended | Rows claimed per sweep. |
 | `Worker__SearchJobMaxAttempts` | `5` | recommended | Retry ceiling for search jobs. |
+| `Worker__SearchJobLeaseSeconds` | `300` | recommended | Processing-lease timeout before a stuck job can be reclaimed after worker crash/restart. |
 
 ## 3. Script/Operational Configuration
 
@@ -74,7 +80,7 @@ Template files:
 | `SAML_EXPECTED_ISSUER` | `https://phase7-idp.local/issuer` | `scripts/phase7-demo.sh` | Expected issuer used in SAML demo assertion. |
 | `SAML_SP_ENTITY_ID` | `urn:artifortress:phase7:sp` | `scripts/phase7-demo.sh` | Service provider entity id for SAML demo audience checks. |
 | `SAML_ROLE_MAPPINGS` | `groups|af-admins|*|admin` | `scripts/phase7-demo.sh` | SAML claim-role mapping demo input. |
-| `REPORT_PATH` | script-specific report path | `phase6-*` and `scripts/phase7-demo.sh` | Markdown report output location. |
+| `REPORT_PATH` | script-specific report path | `phase6-*`, `scripts/reliability-drill.sh`, and `scripts/phase7-demo.sh` | Markdown report output location. |
 
 ## 4. Secret Handling Guidance
 
@@ -85,7 +91,8 @@ Template files:
   - `Auth__Oidc__Hs256SharedSecret`
   - and/or `Auth__Oidc__JwksJson`
   - and/or `Auth__Oidc__JwksUrl`
-- If `Auth__Oidc__JwksUrl` is used, keep `Auth__Oidc__JwksRefreshIntervalSeconds` and `Auth__Oidc__JwksRefreshTimeoutSeconds` explicitly configured per environment.
+- If `Auth__Oidc__JwksUrl` is used, keep `Auth__Oidc__JwksRefreshIntervalSeconds`, `Auth__Oidc__JwksRefreshTimeoutSeconds`, and `Auth__Oidc__JwksMaxStalenessSeconds` explicitly configured per environment.
+- If `Auth__Saml__IdpMetadataUrl` is used, set explicit metadata refresh, timeout, and max-staleness values so stale trust behavior is bounded.
 - Use explicit federation toggles for rollout/fallback:
   - `Auth__Oidc__Enabled`
   - `Auth__Saml__Enabled`
@@ -99,5 +106,5 @@ Before startup:
 3. Bootstrap token is non-empty for bootstrapping workflows.
 4. Lifecycle and timeout values are within accepted ranges.
 5. OIDC enabled mode has valid signing config (`Hs256SharedSecret`, `JwksJson`, and/or `JwksUrl`).
-6. OIDC remote-JWKS mode values are in range when used (`JwksRefreshIntervalSeconds`, `JwksRefreshTimeoutSeconds`).
-7. SAML enabled mode has valid issuer/audience anchors and role mappings.
+6. OIDC remote-JWKS mode values are in range when used (`JwksRefreshIntervalSeconds`, `JwksRefreshTimeoutSeconds`, `JwksMaxStalenessSeconds`).
+7. SAML enabled mode has valid issuer/audience anchors, role mappings, and bounded metadata refresh settings.

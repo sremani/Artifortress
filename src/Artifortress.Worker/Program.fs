@@ -1,6 +1,7 @@
 namespace Artifortress.Worker
 
 open System
+open System.Text.RegularExpressions
 open System.Threading
 open Npgsql
 
@@ -172,15 +173,22 @@ where event_id = @event_id
             Error $"search_index_outbox_sweep_failed: {ex.Message}"
 
 module SearchIndexJobProcessor =
-    let private claimJobs (batchSize: int) (maxAttempts: int) (conn: NpgsqlConnection) =
+    let private claimJobs (batchSize: int) (maxAttempts: int) (leaseSeconds: int) (conn: NpgsqlConnection) =
         use cmd =
             new NpgsqlCommand(
                 """
 with candidate as (
   select job_id, tenant_id, version_id, attempts
   from search_index_jobs
-  where status in ('pending', 'failed')
-    and available_at <= now()
+  where (
+      (
+      status in ('pending', 'failed')
+      and available_at <= now()
+      ) or (
+      status = 'processing'
+      and updated_at <= now() - make_interval(secs => @lease_seconds)
+      )
+    )
     and attempts < @max_attempts
   order by available_at, created_at
   limit @batch_size
@@ -202,6 +210,7 @@ from claimed;
 
         cmd.Parameters.AddWithValue("batch_size", WorkerDbParameters.normalizeBatchSize batchSize) |> ignore
         cmd.Parameters.AddWithValue("max_attempts", WorkerDbParameters.normalizeMaxAttempts maxAttempts) |> ignore
+        cmd.Parameters.AddWithValue("lease_seconds", max 30 leaseSeconds) |> ignore
 
         use reader = cmd.ExecuteReader()
         let jobs = ResizeArray<WorkerDataShapes.ClaimedSearchJob>()
@@ -384,12 +393,12 @@ where job_id = @job_id;
         cmd.Parameters.AddWithValue("available_at", availableAtUtc) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
-    let runSweep (connectionString: string) (batchSize: int) (maxAttempts: int) =
+    let runSweep (connectionString: string) (batchSize: int) (maxAttempts: int) (leaseSeconds: int) =
         try
             use conn = new NpgsqlConnection(connectionString)
             conn.Open()
 
-            let claimed = claimJobs batchSize maxAttempts conn
+            let claimed = claimJobs batchSize maxAttempts leaseSeconds conn
             let mutable metrics = WorkerSweepMetrics.zeroJobs
 
             for job in claimed do
@@ -448,7 +457,22 @@ module WorkerRuntime =
         Environment.GetEnvironmentVariable("Worker__SearchJobMaxAttempts")
         |> WorkerEnvParsing.parsePositiveIntOrDefault 5
 
+    let searchJobLeaseSecondsFromEnvironment () =
+        Environment.GetEnvironmentVariable("Worker__SearchJobLeaseSeconds")
+        |> WorkerEnvParsing.parsePositiveIntOrDefault 300
+
 module Program =
+    let private redactSensitiveText (value: string) =
+        if String.IsNullOrWhiteSpace value then
+            value
+        else
+            [ ("""(?i)(authorization\s*:\s*bearer\s+)([A-Za-z0-9\-\._~\+/=]+)""", "$1[REDACTED]")
+              ("""(?i)(bearer\s+)([A-Za-z0-9\-\._~\+/=]+)""", "$1[REDACTED]")
+              ("""(?i)(password\s*=\s*)([^;\s]+)""", "$1[REDACTED]")
+              ("""(?i)(secret\s*=\s*)([^;\s]+)""", "$1[REDACTED]")
+              ("""(?i)(token\s*=\s*)([^;\s]+)""", "$1[REDACTED]") ]
+            |> List.fold (fun current (pattern, replacement) -> Regex.Replace(current, pattern, replacement)) value
+
     [<EntryPoint>]
     let main args =
         use stopToken = new CancellationTokenSource()
@@ -463,14 +487,16 @@ module Program =
         let pollSeconds = WorkerRuntime.pollSecondsFromEnvironment ()
         let batchSize = WorkerRuntime.batchSizeFromEnvironment ()
         let maxSearchJobAttempts = WorkerRuntime.maxSearchJobAttemptsFromEnvironment ()
+        let searchJobLeaseSeconds = WorkerRuntime.searchJobLeaseSecondsFromEnvironment ()
 
         printfn "Artifortress worker started. Press Ctrl+C to stop."
         printfn
-            "worker_config batch_size=%d poll_seconds=%d run_once=%b search_job_max_attempts=%d"
+            "worker_config batch_size=%d poll_seconds=%d run_once=%b search_job_max_attempts=%d search_job_lease_seconds=%d"
             batchSize
             pollSeconds
             runOnce
             maxSearchJobAttempts
+            searchJobLeaseSeconds
 
         let runSweepAndLog () =
             match SearchIndexOutboxProducer.runSweep connectionString batchSize with
@@ -483,9 +509,9 @@ module Program =
                     outcome.DeliveredCount
                     outcome.RequeuedCount
             | Error err ->
-                printfn "worker_search_sweep_error_utc=%O error=\"%s\"" DateTimeOffset.UtcNow err
+                printfn "worker_search_sweep_error_utc=%O error=\"%s\"" DateTimeOffset.UtcNow (redactSensitiveText err)
 
-            match SearchIndexJobProcessor.runSweep connectionString batchSize maxSearchJobAttempts with
+            match SearchIndexJobProcessor.runSweep connectionString batchSize maxSearchJobAttempts searchJobLeaseSeconds with
             | Ok outcome ->
                 printfn
                     "worker_job_sweep_utc=%O claimed=%d completed=%d failed=%d"
@@ -494,7 +520,7 @@ module Program =
                     outcome.CompletedCount
                     outcome.FailedCount
             | Error err ->
-                printfn "worker_job_sweep_error_utc=%O error=\"%s\"" DateTimeOffset.UtcNow err
+                printfn "worker_job_sweep_error_utc=%O error=\"%s\"" DateTimeOffset.UtcNow (redactSensitiveText err)
 
         if runOnce then
             runSweepAndLog ()

@@ -172,6 +172,20 @@ let ``OIDC token validation rejects expired token`` () =
     | Error err -> Assert.Contains("expired", err)
 
 [<Fact>]
+let ``audit detail sanitization redacts secret-bearing keys and bearer values`` () =
+    let details =
+        Map.ofList
+            [ "subject", "alice"
+              "token", "super-secret-token-value"
+              "note", "Authorization: Bearer abc.def.ghi" ]
+
+    let sanitized = Program.sanitizeAuditDetails details
+
+    Assert.Equal("alice", sanitized["subject"])
+    Assert.Equal("[REDACTED]", sanitized["token"])
+    Assert.Equal("Authorization: Bearer [REDACTED]", sanitized["note"])
+
+[<Fact>]
 let ``OIDC token validation resolves claim-role mappings when scope claim is absent`` () =
     let mappings =
         match Program.parseOidcClaimRoleMappings "groups|af-admins|*|admin" with
@@ -327,9 +341,11 @@ let ``OIDC remote JWKS refresh updates active keys and keeps static fallback key
         { Endpoint = Uri("https://jwks.example.com/.well-known/jwks.json")
           RefreshInterval = TimeSpan.FromMinutes(5.0)
           RefreshTimeout = TimeSpan.FromSeconds(5.0)
+          MaxStaleness = TimeSpan.FromMinutes(20.0)
           StaticFallbackKeys = staticKeys
           HttpClient = httpClient
           RefreshLock = new SemaphoreSlim(1, 1)
+          ActiveRemoteKeys = []
           ActiveKeys = staticKeys
           LastRefreshAttemptAtUtc = None
           LastRefreshSucceededAtUtc = None
@@ -367,9 +383,11 @@ let ``OIDC remote JWKS refresh keeps prior active keys when payload is invalid``
         { Endpoint = Uri("https://jwks.example.com/.well-known/jwks.json")
           RefreshInterval = TimeSpan.FromMinutes(5.0)
           RefreshTimeout = TimeSpan.FromSeconds(5.0)
+          MaxStaleness = TimeSpan.FromMinutes(20.0)
           StaticFallbackKeys = staticKeys
           HttpClient = httpClient
           RefreshLock = new SemaphoreSlim(1, 1)
+          ActiveRemoteKeys = []
           ActiveKeys = staticKeys
           LastRefreshAttemptAtUtc = None
           LastRefreshSucceededAtUtc = None

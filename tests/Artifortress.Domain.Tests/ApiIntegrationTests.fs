@@ -10,9 +10,12 @@ open System.Net.Http.Headers
 open System.Net.Http.Json
 open System.Net.Sockets
 open System.Security.Cryptography
+open System.Security.Cryptography.X509Certificates
+open System.Security.Cryptography.Xml
 open System.Text
 open System.Text.Json
 open System.Threading
+open System.Xml
 open Artifortress.Worker
 open Npgsql
 open NpgsqlTypes
@@ -29,6 +32,17 @@ type PatIssueRequest = {
 [<CLIMutable>]
 type RevokePatRequest = {
     TokenId: Guid
+}
+
+[<CLIMutable>]
+type RevokePatSubjectRequest = {
+    Subject: string
+}
+
+[<CLIMutable>]
+type UpdatePatPolicyRequest = {
+    MaxTtlMinutes: int
+    AllowBootstrapIssuance: bool
 }
 
 [<CLIMutable>]
@@ -281,9 +295,12 @@ let private buildSamlResponseXml (issuer: string) (audience: string) (subject: s
         |> Array.map (fun group -> $"<saml:AttributeValue>{group}</saml:AttributeValue>")
         |> String.concat ""
 
-    $"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+    let responseId = $"response-{Guid.NewGuid():N}"
+    let assertionId = $"assertion-{Guid.NewGuid():N}"
+
+    $"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{responseId}">
 <saml:Issuer>{issuer}</saml:Issuer>
-<saml:Assertion>
+<saml:Assertion ID="{assertionId}">
   <saml:Issuer>{issuer}</saml:Issuer>
   <saml:Subject><saml:NameID>{subject}</saml:NameID></saml:Subject>
   <saml:Conditions>
@@ -294,6 +311,77 @@ let private buildSamlResponseXml (issuer: string) (audience: string) (subject: s
   </saml:AttributeStatement>
 </saml:Assertion>
 </samlp:Response>"""
+
+let private createSamlSigningCertificate () =
+    use rsa = RSA.Create(2048)
+    let request =
+        CertificateRequest(
+            "CN=artifortress-integration-idp",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1
+        )
+    request.CertificateExtensions.Add(X509BasicConstraintsExtension(false, false, 0, false))
+    request.CertificateExtensions.Add(X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, false))
+    request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1.0), DateTimeOffset.UtcNow.AddYears(1))
+
+let private integrationSamlSigningCertificate = createSamlSigningCertificate ()
+
+let private buildSamlIdpMetadataXml (entityId: string) (certificate: X509Certificate2) =
+    let certificateBase64 = Convert.ToBase64String(certificate.RawData)
+
+    $"""<?xml version="1.0" encoding="utf-8"?>
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{entityId}">
+  <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <md:KeyDescriptor use="signing">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:X509Data>
+          <ds:X509Certificate>{certificateBase64}</ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </md:KeyDescriptor>
+  </md:IDPSSODescriptor>
+</md:EntityDescriptor>"""
+
+let private signSamlResponseXml (xml: string) (certificate: X509Certificate2) =
+    let doc = XmlDocument(PreserveWhitespace = true)
+    doc.LoadXml(xml)
+
+    let assertion =
+        doc.SelectSingleNode("//*[local-name()='Assertion']")
+        :?> XmlElement
+
+    if isNull assertion then
+        failwith "Expected Assertion element in SAML response."
+
+    let assertionId = assertion.GetAttribute("ID")
+
+    if String.IsNullOrWhiteSpace assertionId then
+        failwith "Expected Assertion ID attribute for signing."
+
+    let signedXml = SignedXml(assertion)
+    signedXml.SigningKey <- certificate.GetRSAPrivateKey()
+    signedXml.SignedInfo.CanonicalizationMethod <- SignedXml.XmlDsigExcC14NTransformUrl
+    signedXml.SignedInfo.SignatureMethod <- SignedXml.XmlDsigRSASHA256Url
+
+    let reference = Reference(Uri = $"#{assertionId}")
+    reference.AddTransform(XmlDsigEnvelopedSignatureTransform())
+    reference.AddTransform(XmlDsigExcC14NTransform())
+    signedXml.AddReference(reference)
+
+    let keyInfo = KeyInfo()
+    let x509Data = KeyInfoX509Data(certificate)
+    keyInfo.AddClause(x509Data)
+    signedXml.KeyInfo <- keyInfo
+    signedXml.ComputeSignature()
+
+    let signatureElement = signedXml.GetXml()
+    assertion.AppendChild(doc.ImportNode(signatureElement, true)) |> ignore
+    doc.OuterXml
+
+let private buildSignedSamlResponseXml (issuer: string) (audience: string) (subject: string) (groups: string array) =
+    buildSamlResponseXml issuer audience subject groups
+    |> fun xml -> signSamlResponseXml xml integrationSamlSigningCertificate
 
 let private ensureTenantId (conn: NpgsqlConnection) =
     use cmd =
@@ -383,6 +471,7 @@ type ApiFixture() =
     let samlExpectedIssuer = "https://integration-idp.artifortress.local/issuer"
     let samlServiceProviderEntityId = "urn:artifortress:integration:sp"
     let samlRoleMappings = "groups|af-admins|*|admin"
+    let samlIdpMetadataXml = buildSamlIdpMetadataXml samlExpectedIssuer integrationSamlSigningCertificate
     let output = ConcurrentQueue<string>()
     let mutable client: HttpClient option = None
     let mutable apiProcessHandle: Process option = None
@@ -458,6 +547,7 @@ type ApiFixture() =
                     startInfo.Environment["Auth__Oidc__RoleMappings"] <- oidcRoleMappings
                     startInfo.Environment["Auth__Saml__Enabled"] <- "true"
                     startInfo.Environment["Auth__Saml__IdpMetadataUrl"] <- samlIdpMetadataUrl
+                    startInfo.Environment["Auth__Saml__IdpMetadataXml"] <- samlIdpMetadataXml
                     startInfo.Environment["Auth__Saml__ExpectedIssuer"] <- samlExpectedIssuer
                     startInfo.Environment["Auth__Saml__ServiceProviderEntityId"] <- samlServiceProviderEntityId
                     startInfo.Environment["Auth__Saml__RoleMappings"] <- samlRoleMappings
@@ -1361,7 +1451,14 @@ limit 1;
     member this.RunSearchIndexJobSweep(batchSize: int, maxAttempts: int) =
         this.RequireAvailable()
 
-        match SearchIndexJobProcessor.runSweep connectionString batchSize maxAttempts with
+        match SearchIndexJobProcessor.runSweep connectionString batchSize maxAttempts 300 with
+        | Ok outcome -> outcome
+        | Error err -> failwith $"Search job sweep failed in test fixture: {err}"
+
+    member this.RunSearchIndexJobSweep(batchSize: int, maxAttempts: int, leaseSeconds: int) =
+        this.RequireAvailable()
+
+        match SearchIndexJobProcessor.runSweep connectionString batchSize maxAttempts leaseSeconds with
         | Ok outcome -> outcome
         | Error err -> failwith $"Search job sweep failed in test fixture: {err}"
 
@@ -1445,6 +1542,30 @@ where version_id = @version_id;
         if rows <> 1 then
             failwith $"Could not make search_index_job available for version {versionId}."
 
+    member this.SetSearchIndexJobUpdatedAt(versionId: Guid, updatedAtUtc: DateTimeOffset) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+update search_index_jobs
+set updated_at = @updated_at
+where version_id = @version_id;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        cmd.Parameters.AddWithValue("updated_at", updatedAtUtc) |> ignore
+
+        let rows = cmd.ExecuteNonQuery()
+
+        if rows <> 1 then
+            failwith $"Could not update search_index_job timestamp for version {versionId}."
+
     interface IDisposable with
         member _.Dispose() =
             match client with
@@ -1505,6 +1626,39 @@ type Phase1ApiTests(fixture: ApiFixture) =
         request.Content <- JsonContent.Create({ TokenId = tokenId })
         use response = fixture.Client.Send(request)
         ensureStatus HttpStatusCode.OK response |> ignore
+
+    let updatePatPolicy (adminToken: string) (maxTtlMinutes: int) (allowBootstrapIssuance: bool) =
+        fixture.RequireAvailable()
+
+        use request = new HttpRequestMessage(HttpMethod.Put, "/v1/admin/auth/pat-policy")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+
+        request.Content <-
+            JsonContent.Create(
+                { MaxTtlMinutes = maxTtlMinutes
+                  AllowBootstrapIssuance = allowBootstrapIssuance }
+            )
+
+        fixture.Client.Send(request)
+
+    let listPats (adminToken: string) =
+        fixture.RequireAvailable()
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/auth/pats")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+        fixture.Client.Send(request)
+
+    let revokePatsBySubject (adminToken: string) (subject: string) =
+        fixture.RequireAvailable()
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/auth/pats/revoke-subject")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+        request.Content <- JsonContent.Create({ Subject = subject })
+        fixture.Client.Send(request)
+
+    let revokeAllPats (adminToken: string) =
+        fixture.RequireAvailable()
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/auth/pats/revoke-all")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+        fixture.Client.Send(request)
 
     let createRepoWithToken (token: string) (repoKey: string) =
         use request = new HttpRequestMessage(HttpMethod.Post, "/v1/repos")
@@ -2002,7 +2156,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
         fixture.RequireAvailable()
 
         let samlResponse =
-            buildSamlResponseXml
+            buildSignedSamlResponseXml
                 fixture.SamlExpectedIssuer
                 fixture.SamlServiceProviderEntityId
                 (makeSubject "p706-saml-user")
@@ -2059,10 +2213,30 @@ type Phase1ApiTests(fixture: ApiFixture) =
         fixture.RequireAvailable()
 
         let samlResponse =
-            buildSamlResponseXml
+            buildSignedSamlResponseXml
                 "https://wrong-idp.artifortress.local/issuer"
                 fixture.SamlServiceProviderEntityId
                 (makeSubject "p706-saml-bad-issuer")
+                [| "af-admins" |]
+            |> Encoding.UTF8.GetBytes
+            |> Convert.ToBase64String
+
+        let formValues = [ System.Collections.Generic.KeyValuePair("SAMLResponse", samlResponse) ]
+
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/saml/acs")
+        request.Content <- new FormUrlEncodedContent(formValues)
+        use response = fixture.Client.Send(request)
+        ensureStatus HttpStatusCode.Unauthorized response |> ignore
+
+    [<Fact>]
+    member _.``P7-06 saml acs exchange rejects unsigned assertion`` () =
+        fixture.RequireAvailable()
+
+        let samlResponse =
+            buildSamlResponseXml
+                fixture.SamlExpectedIssuer
+                fixture.SamlServiceProviderEntityId
+                (makeSubject "p706-saml-unsigned")
                 [| "af-admins" |]
             |> Encoding.UTF8.GetBytes
             |> Convert.ToBase64String
@@ -2111,6 +2285,90 @@ type Phase1ApiTests(fixture: ApiFixture) =
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", userToken)
         use response = fixture.Client.Send(request)
         ensureStatus HttpStatusCode.Unauthorized response |> ignore
+
+    [<Fact>]
+    member _.``ER-1-03 PAT policy enforces max TTL and bootstrap toggle`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er103-policy-admin") [| "repo:*:admin" |] 60
+        try
+            use updateResponse = updatePatPolicy adminToken 30 false
+            let updateBody = ensureStatus HttpStatusCode.OK updateResponse
+            use updateDoc = JsonDocument.Parse(updateBody)
+            Assert.Equal(30, updateDoc.RootElement.GetProperty("maxTtlMinutes").GetInt32())
+            Assert.False(updateDoc.RootElement.GetProperty("allowBootstrapIssuance").GetBoolean())
+
+            use overTtlRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/pats")
+            overTtlRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+
+            overTtlRequest.Content <-
+                JsonContent.Create(
+                    { Subject = makeSubject "er103-too-long"
+                      Scopes = [| "repo:*:read" |]
+                      TtlMinutes = 45 }
+                )
+
+            use overTtlResponse = fixture.Client.Send(overTtlRequest)
+            ensureStatus HttpStatusCode.BadRequest overTtlResponse |> ignore
+
+        finally
+            use resetResponse = updatePatPolicy adminToken 1440 true
+            ensureStatus HttpStatusCode.OK resetResponse |> ignore
+
+    [<Fact>]
+    member _.``ER-1-03 PAT inventory shows last-used timestamp and subject revocation`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er103-inventory-admin") [| "repo:*:admin" |] 60
+        let subject = makeSubject "er103-subject"
+        let userTokenA, _ = issuePat subject [| "repo:*:read" |] 60
+        let _, _ = issuePat subject [| "repo:*:write" |] 60
+
+        use whoamiRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        whoamiRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", userTokenA)
+        use whoamiResponse = fixture.Client.Send(whoamiRequest)
+        ensureStatus HttpStatusCode.OK whoamiResponse |> ignore
+
+        use inventoryResponse = listPats adminToken
+        let inventoryBody = ensureStatus HttpStatusCode.OK inventoryResponse
+        use inventoryDoc = JsonDocument.Parse(inventoryBody)
+
+        let subjectEntries =
+            inventoryDoc.RootElement.EnumerateArray()
+            |> Seq.filter (fun item -> item.GetProperty("subject").GetString() = subject)
+            |> Seq.toArray
+
+        Assert.Equal(2, subjectEntries.Length)
+        Assert.Contains(subjectEntries, fun item -> item.GetProperty("lastUsedAtUtc").ValueKind = JsonValueKind.String)
+
+        use revokeResponse = revokePatsBySubject adminToken subject
+        let revokeBody = ensureStatus HttpStatusCode.OK revokeResponse
+        use revokeDoc = JsonDocument.Parse(revokeBody)
+        Assert.Equal(2, revokeDoc.RootElement.GetProperty("revokedCount").GetInt32())
+
+        use deniedRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+        deniedRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", userTokenA)
+        use deniedResponse = fixture.Client.Send(deniedRequest)
+        ensureStatus HttpStatusCode.Unauthorized deniedResponse |> ignore
+
+    [<Fact>]
+    member _.``ER-1-03 PAT revoke-all invalidates every active token`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er103-revoke-all-admin") [| "repo:*:admin" |] 60
+        let userTokenA, _ = issuePat (makeSubject "er103-revoke-all-a") [| "repo:*:read" |] 60
+        let userTokenB, _ = issuePat (makeSubject "er103-revoke-all-b") [| "repo:*:write" |] 60
+
+        use revokeResponse = revokeAllPats adminToken
+        let revokeBody = ensureStatus HttpStatusCode.OK revokeResponse
+        use revokeDoc = JsonDocument.Parse(revokeBody)
+        Assert.True(revokeDoc.RootElement.GetProperty("revokedCount").GetInt32() >= 3)
+
+        for token in [ userTokenA; userTokenB ] do
+            use deniedRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/auth/whoami")
+            deniedRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+            use deniedResponse = fixture.Client.Send(deniedRequest)
+            ensureStatus HttpStatusCode.Unauthorized deniedResponse |> ignore
 
     [<Fact>]
     member _.``P1-11 repo CRUD covers authorized and denied paths`` () =
@@ -3065,6 +3323,70 @@ type Phase1ApiTests(fixture: ApiFixture) =
             Assert.Equal("completed", status)
             Assert.Equal(0, attempts)
             Assert.Equal(None, lastError)
+
+    [<Fact>]
+    member _.``ER-3-03 stale processing search job is reclaimed after lease expiry`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er303-lease-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er303-lease"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er303-lease-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"search-lease-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        fixture.PublishVersionForTest(versionId)
+        fixture.UpsertSearchIndexJobForVersionForTest(versionId, "processing", 0, DateTimeOffset.UtcNow.AddMinutes(-2.0), None)
+        fixture.SetSearchIndexJobUpdatedAt(versionId, DateTimeOffset.UtcNow.AddMinutes(-10.0))
+
+        let outcome = fixture.RunSearchIndexJobSweep(50, 5, 60)
+        Assert.Equal(1, outcome.ClaimedCount)
+        Assert.Equal(1, outcome.CompletedCount)
+        Assert.Equal(0, outcome.FailedCount)
+
+        match fixture.TryReadSearchIndexJobForVersion(versionId) with
+        | Some(status, _, _) -> Assert.Equal("completed", status)
+        | None -> failwith "Expected reclaimed processing job to remain present."
+
+    [<Fact>]
+    member _.``ER-3-03 fresh processing search job is not reclaimed before lease expiry`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er303-fresh-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er303-fresh"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er303-fresh-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"search-fresh-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        fixture.PublishVersionForTest(versionId)
+        fixture.UpsertSearchIndexJobForVersionForTest(versionId, "processing", 0, DateTimeOffset.UtcNow.AddMinutes(-1.0), None)
+        fixture.SetSearchIndexJobUpdatedAt(versionId, DateTimeOffset.UtcNow.AddSeconds(-10.0))
+
+        let outcome = fixture.RunSearchIndexJobSweep(50, 5, 60)
+        Assert.Equal(0, outcome.ClaimedCount)
+        Assert.Equal(0, outcome.CompletedCount)
+        Assert.Equal(0, outcome.FailedCount)
+
+        match fixture.TryReadSearchIndexJobForVersion(versionId) with
+        | Some(status, _, _) -> Assert.Equal("processing", status)
+        | None -> failwith "Expected fresh processing job to remain present."
 
     [<Fact>]
     member _.``P4-05 search job sweep fails unpublished version and honors max attempts`` () =

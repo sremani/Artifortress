@@ -1,8 +1,12 @@
 open System
 open System.Net.Http
 open System.Security.Cryptography
+open System.Security.Cryptography.X509Certificates
+open System.Security.Cryptography.Xml
 open System.Text
 open System.Text.Json
+open System.Text.RegularExpressions
+open System.Xml
 open System.Xml.Linq
 open Artifortress.Domain
 open ObjectStorage
@@ -23,6 +27,17 @@ type CreatePatRequest = {
 [<CLIMutable>]
 type RevokePatRequest = {
     TokenId: Guid
+}
+
+[<CLIMutable>]
+type RevokePatSubjectRequest = {
+    Subject: string
+}
+
+[<CLIMutable>]
+type UpdatePatPolicyRequest = {
+    MaxTtlMinutes: int
+    AllowBootstrapIssuance: bool
 }
 
 [<CLIMutable>]
@@ -349,10 +364,28 @@ and OidcRemoteJwksState = {
     Endpoint: Uri
     RefreshInterval: TimeSpan
     RefreshTimeout: TimeSpan
+    MaxStaleness: TimeSpan
     StaticFallbackKeys: OidcRs256SigningKey list
     HttpClient: HttpClient
     RefreshLock: Threading.SemaphoreSlim
+    mutable ActiveRemoteKeys: OidcRs256SigningKey list
     mutable ActiveKeys: OidcRs256SigningKey list
+    mutable LastRefreshAttemptAtUtc: DateTimeOffset option
+    mutable LastRefreshSucceededAtUtc: DateTimeOffset option
+    mutable LastRefreshError: string option
+}
+
+and SamlMetadataState = {
+    Endpoint: Uri
+    RefreshInterval: TimeSpan
+    RefreshTimeout: TimeSpan
+    MaxStaleness: TimeSpan
+    StaticFallbackMetadataXml: string option
+    StaticFallbackCertificates: X509Certificate2 list
+    HttpClient: HttpClient
+    RefreshLock: Threading.SemaphoreSlim
+    mutable ActiveRemoteMetadataXml: string option
+    mutable ActiveRemoteCertificates: X509Certificate2 list
     mutable LastRefreshAttemptAtUtc: DateTimeOffset option
     mutable LastRefreshSucceededAtUtc: DateTimeOffset option
     mutable LastRefreshError: string option
@@ -361,10 +394,14 @@ and OidcRemoteJwksState = {
 type SamlIntegrationConfig = {
     Enabled: bool
     IdpMetadataUrl: string option
+    IdpMetadataXml: string option
     ServiceProviderEntityId: string option
     ExpectedIssuer: string option
     RoleMappings: OidcClaimRoleMapping list
     IssuedPatTtlMinutes: int
+    MetadataFetchTimeout: TimeSpan
+    StaticMetadataCertificates: X509Certificate2 list
+    MetadataState: SamlMetadataState option
 }
 
 type AppState = {
@@ -381,7 +418,32 @@ type AppState = {
     SamlIntegration: SamlIntegrationConfig
 }
 
+type PatPolicyRecord = {
+    MaxTtlMinutes: int
+    AllowBootstrapIssuance: bool
+    UpdatedBySubject: string
+    UpdatedAtUtc: DateTimeOffset
+}
+
+type PatInventoryRecord = {
+    TokenId: Guid
+    Subject: string
+    Scopes: RepoScope list
+    ExpiresAtUtc: DateTimeOffset
+    RevokedAtUtc: DateTimeOffset option
+    CreatedBySubject: string
+    CreatedAtUtc: DateTimeOffset
+    LastUsedAtUtc: DateTimeOffset option
+    LastUsedAuthSource: string option
+}
+
 let nowUtc () = DateTimeOffset.UtcNow
+
+let defaultPatPolicy =
+    { MaxTtlMinutes = 1440
+      AllowBootstrapIssuance = true
+      UpdatedBySubject = "system-default"
+      UpdatedAtUtc = DateTimeOffset.MinValue }
 
 let toUtcDateTimeOffset (value: DateTime) =
     if value.Kind = DateTimeKind.Utc then
@@ -393,6 +455,41 @@ let toUtcDateTimeOffset (value: DateTime) =
 
 let normalizeText (value: string) =
     if String.IsNullOrWhiteSpace value then "" else value.Trim()
+
+let private sensitiveKeyMarkers =
+    [ "token"; "secret"; "password"; "authorization"; "assertion"; "privatekey"; "private_key"; "accesskey"; "access_key" ]
+
+let private nonSensitiveTokenLikeMarkers =
+    [ "tokenid"; "token_id"; "digest"; "checksum"; "hash"; "blobdigest"; "blob_digest" ]
+
+let private containsAnyMarker (markers: string list) (value: string) =
+    let normalized = normalizeText value |> fun text -> text.ToLowerInvariant()
+    markers |> List.exists normalized.Contains
+
+let redactSensitiveText (value: string) =
+    if String.IsNullOrWhiteSpace value then
+        value
+    else
+        let patterns =
+            [ ("""(?i)(authorization\s*:\s*bearer\s+)([A-Za-z0-9\-\._~\+/=]+)""", "$1[REDACTED]")
+              ("""(?i)(bearer\s+)([A-Za-z0-9\-\._~\+/=]+)""", "$1[REDACTED]")
+              ("""(?i)(password\s*=\s*)([^;\s]+)""", "$1[REDACTED]")
+              ("""(?i)(secret\s*=\s*)([^;\s]+)""", "$1[REDACTED]")
+              ("""(?i)(token\s*=\s*)([^;\s]+)""", "$1[REDACTED]")
+              ("""(?i)("(?:token|secret|password|authorization|samlresponse)"\s*:\s*")([^"]+)(")""", "$1[REDACTED]$3")
+              ("""(?is)(<(?:(?:\w+:)?(?:Assertion|EncryptedAssertion|EncryptedData|EncryptedKey))[^>]*>).*?(</(?:(?:\w+:)?(?:Assertion|EncryptedAssertion|EncryptedData|EncryptedKey))>)""",
+               "$1[REDACTED]$2") ]
+
+        patterns
+        |> List.fold (fun current (pattern, replacement) -> Regex.Replace(current, pattern, replacement)) value
+
+let sanitizeAuditDetails (details: Map<string, string>) =
+    details
+    |> Map.map (fun key value ->
+        if containsAnyMarker sensitiveKeyMarkers key && not (containsAnyMarker nonSensitiveTokenLikeMarkers key) then
+            "[REDACTED]"
+        else
+            redactSensitiveText value)
 
 let normalizeRepoKey (repoKey: string) = normalizeText repoKey |> fun value -> value.ToLowerInvariant()
 let normalizeSubject (subject: string) = normalizeText subject |> fun value -> value.ToLowerInvariant()
@@ -1141,6 +1238,18 @@ let parseOidcJwksJson (jwksJson: string) =
         with ex ->
             Error $"OIDC JWKS could not be parsed: {ex.Message}"
 
+let private isFreshWithin (maxStaleness: TimeSpan) (lastSucceededAtUtc: DateTimeOffset option) =
+    match lastSucceededAtUtc with
+    | Some refreshedAt -> nowUtc () - refreshedAt <= maxStaleness
+    | None -> false
+
+let private describeRefreshAge (lastSucceededAtUtc: DateTimeOffset option) =
+    match lastSucceededAtUtc with
+    | Some refreshedAt ->
+        let ageSeconds = max 0L (int64 ((nowUtc () - refreshedAt).TotalSeconds))
+        $"age_seconds={ageSeconds}"
+    | None -> "age_seconds=unknown"
+
 let refreshOidcRemoteJwks (remoteState: OidcRemoteJwksState) =
     if not (remoteState.RefreshLock.Wait(0)) then
         Error "OIDC JWKS refresh already in progress."
@@ -1168,6 +1277,7 @@ let refreshOidcRemoteJwks (remoteState: OidcRemoteJwksState) =
                         remoteState.LastRefreshError <- Some message
                         Error message
                     | Ok remoteKeys ->
+                        remoteState.ActiveRemoteKeys <- remoteKeys
                         let merged = mergeOidcRs256SigningKeys remoteKeys remoteState.StaticFallbackKeys
                         remoteState.ActiveKeys <- merged
                         remoteState.LastRefreshSucceededAtUtc <- Some attemptedAt
@@ -1186,7 +1296,11 @@ let startOidcRemoteJwksRefreshTimer (remoteState: OidcRemoteJwksState) =
 
 let private resolveOidcRs256SigningKeys (config: OidcTokenValidationConfig) =
     match config.RemoteJwksState with
-    | Some remoteState -> remoteState.ActiveKeys
+    | Some remoteState ->
+        if isFreshWithin remoteState.MaxStaleness remoteState.LastRefreshSucceededAtUtc then
+            mergeOidcRs256SigningKeys remoteState.ActiveRemoteKeys remoteState.StaticFallbackKeys
+        else
+            remoteState.StaticFallbackKeys
     | None -> config.Rs256SigningKeys
 
 let private oidcShouldRetryAfterRemoteJwksRefresh (validationError: string) =
@@ -1348,7 +1462,7 @@ let private buildSamlServiceProviderMetadataXml
 
     $"""<?xml version="1.0" encoding="utf-8"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{xmlEscape serviceProviderEntityId}">
-  <md:SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="false" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+  <md:SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
     {idpMetadataExtension}
     <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</md:NameIDFormat>
     <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{xmlEscape assertionConsumerServiceUrl}" index="0" isDefault="true" />
@@ -1401,6 +1515,180 @@ type SamlAssertionEnvelope = {
     Audience: string option
     Attributes: Map<string, string list>
 }
+
+let private loadSamlXmlDocument (payloadBytes: byte array) =
+    let xmlText = Encoding.UTF8.GetString(payloadBytes)
+    let doc = XmlDocument(PreserveWhitespace = true)
+    doc.LoadXml(xmlText)
+    doc
+
+let private tryGetElementId (element: XmlElement) =
+    [ "ID"; "Id"; "id" ]
+    |> List.tryPick (fun attributeName ->
+        let value = normalizeText (element.GetAttribute(attributeName))
+        if String.IsNullOrWhiteSpace value then None else Some value)
+
+let private loadSamlMetadataXml (config: SamlIntegrationConfig) =
+    match config.MetadataState with
+    | Some metadataState when isFreshWithin metadataState.MaxStaleness metadataState.LastRefreshSucceededAtUtc ->
+        match metadataState.ActiveRemoteMetadataXml with
+        | Some metadataXml when not (String.IsNullOrWhiteSpace metadataXml) -> Ok metadataXml
+        | _ ->
+            match metadataState.StaticFallbackMetadataXml with
+            | Some metadataXml when not (String.IsNullOrWhiteSpace metadataXml) -> Ok metadataXml
+            | _ -> Error "SAML IdP metadata cache is empty."
+    | Some metadataState ->
+        match metadataState.StaticFallbackMetadataXml with
+        | Some metadataXml when not (String.IsNullOrWhiteSpace metadataXml) -> Ok metadataXml
+        | _ -> Error "SAML IdP metadata is stale and no static fallback metadata is configured."
+    | None ->
+        match config.IdpMetadataXml with
+        | Some metadataXml when not (String.IsNullOrWhiteSpace metadataXml) -> Ok metadataXml
+        | _ -> Error "SAML IdP metadata is not configured."
+
+let private parseSamlMetadataSigningCertificates (metadataXml: string) =
+    try
+        let doc = XDocument.Parse(metadataXml, LoadOptions.PreserveWhitespace)
+
+        let certificates =
+            doc.Descendants()
+            |> Seq.filter (fun element -> String.Equals(element.Name.LocalName, "KeyDescriptor", StringComparison.Ordinal))
+            |> Seq.filter (fun keyDescriptor ->
+                let useAttribute = keyDescriptor.Attribute(XName.Get("use"))
+                isNull useAttribute || String.Equals(normalizeText useAttribute.Value, "signing", StringComparison.OrdinalIgnoreCase))
+            |> Seq.collect (fun keyDescriptor ->
+                keyDescriptor.Descendants()
+                |> Seq.filter (fun element -> String.Equals(element.Name.LocalName, "X509Certificate", StringComparison.Ordinal))
+                |> Seq.map (fun element -> normalizeText element.Value))
+            |> Seq.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+            |> Seq.distinct
+            |> Seq.map (fun base64Value -> Convert.FromBase64String(base64Value) |> X509CertificateLoader.LoadCertificate)
+            |> Seq.toList
+
+        if certificates.IsEmpty then
+            Error "SAML IdP metadata did not contain any signing certificates."
+        else
+            Ok certificates
+    with ex ->
+        Error $"SAML IdP metadata could not be parsed: {redactSensitiveText ex.Message}"
+
+let refreshSamlMetadata (metadataState: SamlMetadataState) =
+    if not (metadataState.RefreshLock.Wait(0)) then
+        Error "SAML metadata refresh already in progress."
+    else
+        try
+            try
+                let attemptedAt = nowUtc ()
+                metadataState.LastRefreshAttemptAtUtc <- Some attemptedAt
+                use timeoutCts = new Threading.CancellationTokenSource(metadataState.RefreshTimeout)
+                use response = metadataState.HttpClient.GetAsync(metadataState.Endpoint, timeoutCts.Token).Result
+
+                if not response.IsSuccessStatusCode then
+                    let message = $"SAML IdP metadata endpoint returned HTTP {int response.StatusCode}."
+                    metadataState.LastRefreshError <- Some message
+                    Error message
+                else
+                    let payload = response.Content.ReadAsStringAsync().Result
+
+                    if String.IsNullOrWhiteSpace payload then
+                        let message = "SAML IdP metadata endpoint returned an empty payload."
+                        metadataState.LastRefreshError <- Some message
+                        Error message
+                    else
+                        match parseSamlMetadataSigningCertificates payload with
+                        | Error err ->
+                            let message = $"SAML remote metadata payload is invalid: {err}"
+                            metadataState.LastRefreshError <- Some message
+                            Error message
+                        | Ok certificates ->
+                            metadataState.ActiveRemoteMetadataXml <- Some payload
+                            metadataState.ActiveRemoteCertificates <- certificates
+                            metadataState.LastRefreshSucceededAtUtc <- Some attemptedAt
+                            metadataState.LastRefreshError <- None
+                            Ok certificates
+            with ex ->
+                let message = $"SAML metadata refresh failed: {redactSensitiveText ex.Message}"
+                metadataState.LastRefreshError <- Some message
+                Error message
+        finally
+            metadataState.RefreshLock.Release() |> ignore
+
+let startSamlMetadataRefreshTimer (metadataState: SamlMetadataState) =
+    let callback = Threading.TimerCallback(fun _ -> refreshSamlMetadata metadataState |> ignore)
+    new Threading.Timer(callback, null, metadataState.RefreshInterval, metadataState.RefreshInterval)
+
+let private resolveSamlSigningCertificates (config: SamlIntegrationConfig) =
+    match config.MetadataState with
+    | Some metadataState when isFreshWithin metadataState.MaxStaleness metadataState.LastRefreshSucceededAtUtc ->
+        metadataState.ActiveRemoteCertificates @ metadataState.StaticFallbackCertificates
+        |> Seq.distinctBy (fun certificate -> certificate.Thumbprint)
+        |> Seq.toList
+    | Some metadataState -> metadataState.StaticFallbackCertificates
+    | None -> config.StaticMetadataCertificates
+
+let private validateSamlEnvelopeSignature (config: SamlIntegrationConfig) (payloadBytes: byte array) =
+    let certificates = resolveSamlSigningCertificates config
+
+    if certificates.IsEmpty then
+        Error "SAML IdP signing certificates are unavailable."
+    else
+        try
+            let xmlDocument = loadSamlXmlDocument payloadBytes
+            let responseElement = xmlDocument.DocumentElement
+
+            if isNull responseElement then
+                Error "SAMLResponse XML document did not contain a root element."
+            else
+                let signedTargets =
+                    [ responseElement
+                      responseElement.SelectSingleNode("//*[local-name()='Assertion']") :?> XmlElement ]
+                    |> List.choose (fun element -> if isNull element then None else Some element)
+
+                let signatureNodes =
+                    xmlDocument.SelectNodes("//*[local-name()='Signature']")
+                    |> Seq.cast<XmlNode>
+                    |> Seq.choose (fun node -> node :?> XmlElement |> Option.ofObj)
+                    |> Seq.toList
+
+                if signatureNodes.IsEmpty then
+                    Error "SAMLResponse did not contain an XML signature."
+                else
+                    let validSignatureExists =
+                        signatureNodes
+                        |> List.exists (fun signatureElement ->
+                            try
+                                let signedXml = SignedXml(xmlDocument)
+                                signedXml.LoadXml(signatureElement)
+
+                                let references =
+                                    signedXml.SignedInfo.References
+                                    |> Seq.cast<Reference>
+                                    |> Seq.choose (fun reference ->
+                                        let uri = normalizeText reference.Uri
+                                        if String.IsNullOrWhiteSpace uri || not (uri.StartsWith("#", StringComparison.Ordinal)) then
+                                            None
+                                        else
+                                            Some(uri.Substring(1)))
+                                    |> Set.ofSeq
+
+                                let signedTargetCovered =
+                                    signedTargets
+                                    |> List.exists (fun target ->
+                                        match tryGetElementId target with
+                                        | Some elementId -> Set.contains elementId references
+                                        | None -> false)
+
+                                signedTargetCovered
+                                && (certificates |> List.exists (fun certificate -> signedXml.CheckSignature(certificate, true)))
+                            with _ ->
+                                false)
+
+                    if validSignatureExists then
+                        Ok ()
+                    else
+                        Error "SAMLResponse signature validation failed against IdP metadata signing certificates."
+        with ex ->
+            Error $"SAMLResponse signature validation failed: {redactSensitiveText ex.Message}"
 
 let private tryReadFirstXmlValueByLocalName (doc: XDocument) (localName: string) =
     doc.Descendants()
@@ -1720,10 +2008,68 @@ let private checkObjectStorageReadiness (state: AppState) (cancellationToken: Th
                 if String.IsNullOrWhiteSpace ex.Message then
                     "Object storage readiness check failed."
                 else
-                    ex.Message
+                    redactSensitiveText ex.Message
 
             return false, Some message
     }
+
+let private checkOidcRemoteJwksReadiness (state: AppState) =
+    match state.OidcTokenValidation |> Option.bind (fun config -> config.RemoteJwksState) with
+    | None -> true, None
+    | Some remoteState ->
+        let fresh = isFreshWithin remoteState.MaxStaleness remoteState.LastRefreshSucceededAtUtc
+
+        match remoteState.LastRefreshError, remoteState.LastRefreshSucceededAtUtc, fresh with
+        | Some err, _, true -> true, Some(redactSensitiveText $"refresh_warning={err}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}")
+        | Some err, _, false when not remoteState.StaticFallbackKeys.IsEmpty ->
+            true,
+            Some(
+                redactSensitiveText
+                    $"fallback_only=true; refresh_error={err}; static_fallback_keys={remoteState.StaticFallbackKeys.Length}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}"
+            )
+        | Some err, _, false -> false, Some(redactSensitiveText err)
+        | None, _, true -> true, Some(describeRefreshAge remoteState.LastRefreshSucceededAtUtc)
+        | None, _, false when not remoteState.StaticFallbackKeys.IsEmpty ->
+            true,
+            Some(
+                $"fallback_only=true; static_fallback_keys={remoteState.StaticFallbackKeys.Length}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}"
+            )
+        | None, None, false -> false, Some "OIDC JWKS refresh has not completed successfully yet."
+        | None, Some refreshedAt, false ->
+            false, Some $"OIDC JWKS signing material is stale; last successful refresh was at {refreshedAt:O}."
+
+let private checkSamlMetadataReadiness (state: AppState) =
+    if not state.SamlIntegration.Enabled then
+        true, None
+    else
+        let certificates = resolveSamlSigningCertificates state.SamlIntegration
+
+        match state.SamlIntegration.MetadataState with
+        | Some metadataState ->
+            let fresh = isFreshWithin metadataState.MaxStaleness metadataState.LastRefreshSucceededAtUtc
+
+            match metadataState.LastRefreshError, fresh, certificates.IsEmpty with
+            | _, _, true -> false, Some "SAML metadata did not yield any signing certificates."
+            | Some err, true, false -> true, Some(redactSensitiveText $"refresh_warning={err}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}")
+            | Some err, false, false when not metadataState.StaticFallbackCertificates.IsEmpty ->
+                true,
+                Some(
+                    redactSensitiveText
+                        $"fallback_only=true; refresh_error={err}; static_fallback_certificates={metadataState.StaticFallbackCertificates.Length}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}"
+                )
+            | Some err, false, false -> false, Some(redactSensitiveText err)
+            | None, true, false -> true, Some(describeRefreshAge metadataState.LastRefreshSucceededAtUtc)
+            | None, false, false when not metadataState.StaticFallbackCertificates.IsEmpty ->
+                true,
+                Some(
+                    $"fallback_only=true; static_fallback_certificates={metadataState.StaticFallbackCertificates.Length}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}"
+                )
+            | None, false, false -> false, Some "SAML metadata cache is stale and no fresh signing certificates are available."
+        | None ->
+            if certificates.IsEmpty then
+                false, Some "SAML metadata did not yield any signing certificates."
+            else
+                true, Some "source=static"
 
 let ensureTenantId (state: AppState) (conn: NpgsqlConnection) =
     use cmd =
@@ -1761,11 +2107,17 @@ let tryReadPrincipalByTokenHash (tokenHash: string) (conn: NpgsqlConnection) =
     use cmd =
         new NpgsqlCommand(
             """
+with matched as (
+  update personal_access_tokens
+  set last_used_at = now(),
+      last_used_auth_source = 'pat'
+  where token_hash = @token_hash
+    and revoked_at is null
+    and expires_at > now()
+  returning token_id, tenant_id, subject, scopes
+)
 select token_id, tenant_id, subject, scopes
-from personal_access_tokens
-where token_hash = @token_hash
-  and revoked_at is null
-  and expires_at > now()
+from matched
 limit 1;
 """,
             conn
@@ -1794,6 +2146,128 @@ limit 1;
         | Error err -> Error $"Persisted scopes are invalid: {err}"
     else
         Ok None
+
+let readPatPolicy (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select max_ttl_minutes, allow_bootstrap_issuance, updated_by_subject, updated_at
+from pat_issuance_policies
+where tenant_id = @tenant_id
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { MaxTtlMinutes = reader.GetInt32(0)
+                  AllowBootstrapIssuance = reader.GetBoolean(1)
+                  UpdatedBySubject = reader.GetString(2)
+                  UpdatedAtUtc = reader.GetFieldValue<DateTimeOffset>(3) }
+        )
+    else
+        Ok None
+
+let effectivePatPolicyForTenant (tenantId: Guid) (conn: NpgsqlConnection) =
+    readPatPolicy tenantId conn |> Result.map (Option.defaultValue defaultPatPolicy)
+
+let upsertPatPolicy
+    (tenantId: Guid)
+    (maxTtlMinutes: int)
+    (allowBootstrapIssuance: bool)
+    (updatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into pat_issuance_policies
+  (tenant_id, max_ttl_minutes, allow_bootstrap_issuance, updated_by_subject, updated_at)
+values
+  (@tenant_id, @max_ttl_minutes, @allow_bootstrap_issuance, @updated_by_subject, now())
+on conflict (tenant_id)
+do update set
+  max_ttl_minutes = excluded.max_ttl_minutes,
+  allow_bootstrap_issuance = excluded.allow_bootstrap_issuance,
+  updated_by_subject = excluded.updated_by_subject,
+  updated_at = now()
+returning updated_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("max_ttl_minutes", maxTtlMinutes) |> ignore
+    cmd.Parameters.AddWithValue("allow_bootstrap_issuance", allowBootstrapIssuance) |> ignore
+    cmd.Parameters.AddWithValue("updated_by_subject", updatedBySubject) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    match scalar with
+    | :? DateTimeOffset as updatedAtUtc ->
+        Ok
+            { MaxTtlMinutes = maxTtlMinutes
+              AllowBootstrapIssuance = allowBootstrapIssuance
+              UpdatedBySubject = updatedBySubject
+              UpdatedAtUtc = updatedAtUtc }
+    | :? DateTime as updatedAt ->
+        Ok
+            { MaxTtlMinutes = maxTtlMinutes
+              AllowBootstrapIssuance = allowBootstrapIssuance
+              UpdatedBySubject = updatedBySubject
+              UpdatedAtUtc = toUtcDateTimeOffset updatedAt }
+    | _ -> Error "Unexpected timestamp type returned for PAT policy upsert."
+
+let readPatInventory (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select token_id, subject, scopes, expires_at, revoked_at, created_by_subject, created_at, last_used_at, last_used_auth_source
+from personal_access_tokens
+where tenant_id = @tenant_id
+order by revoked_at nulls first, expires_at desc, created_at desc;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let records = ResizeArray<PatInventoryRecord>()
+
+    let rec loop () =
+        if reader.Read() then
+            let rawScopes = reader.GetFieldValue<string[]>(2)
+
+            match parseScopes rawScopes with
+            | Error err -> Error $"Persisted scopes are invalid: {err}"
+            | Ok scopes ->
+                let revokedAtUtc = if reader.IsDBNull(4) then None else Some(reader.GetFieldValue<DateTimeOffset>(4))
+                let lastUsedAtUtc = if reader.IsDBNull(7) then None else Some(reader.GetFieldValue<DateTimeOffset>(7))
+                let lastUsedAuthSource = if reader.IsDBNull(8) then None else Some(reader.GetString(8))
+
+                records.Add(
+                    { TokenId = reader.GetGuid(0)
+                      Subject = reader.GetString(1)
+                      Scopes = scopes
+                      ExpiresAtUtc = reader.GetFieldValue<DateTimeOffset>(3)
+                      RevokedAtUtc = revokedAtUtc
+                      CreatedBySubject = reader.GetString(5)
+                      CreatedAtUtc = reader.GetFieldValue<DateTimeOffset>(6)
+                      LastUsedAtUtc = lastUsedAtUtc
+                      LastUsedAuthSource = lastUsedAuthSource }
+                )
+
+                loop ()
+        else
+            Ok(records |> Seq.toList)
+
+    loop ()
 
 let insertPat
     (tenantId: Guid)
@@ -1831,7 +2305,7 @@ values
     let rows = cmd.ExecuteNonQuery()
     if rows = 1 then Ok() else Error "Token insert did not affect expected rows."
 
-let revokePat (tenantId: Guid) (tokenId: Guid) (revokedBy: string) (conn: NpgsqlConnection) =
+let revokePat (tenantId: Guid) (tokenId: Guid) (revokedBy: string) (reason: string) (conn: NpgsqlConnection) =
     use tx = conn.BeginTransaction()
 
     use updateCmd =
@@ -1860,8 +2334,8 @@ returning token_id;
         use revocationCmd =
             new NpgsqlCommand(
                 """
-insert into token_revocations (tenant_id, token_id, revoked_by_subject)
-values (@tenant_id, @token_id, @revoked_by_subject);
+insert into token_revocations (tenant_id, token_id, revoked_by_subject, reason)
+values (@tenant_id, @token_id, @revoked_by_subject, @reason);
 """,
                 conn,
                 tx
@@ -1870,10 +2344,85 @@ values (@tenant_id, @token_id, @revoked_by_subject);
         revocationCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
         revocationCmd.Parameters.AddWithValue("token_id", tokenId) |> ignore
         revocationCmd.Parameters.AddWithValue("revoked_by_subject", revokedBy) |> ignore
+        revocationCmd.Parameters.AddWithValue("reason", reason) |> ignore
         revocationCmd.ExecuteNonQuery() |> ignore
 
         tx.Commit()
         Ok true
+
+let revokePatsBySubject (tenantId: Guid) (subject: string) (revokedBy: string) (reason: string) (conn: NpgsqlConnection) =
+    use tx = conn.BeginTransaction()
+
+    use cmd =
+        new NpgsqlCommand(
+            """
+with revoked as (
+  update personal_access_tokens
+  set revoked_at = now()
+  where tenant_id = @tenant_id
+    and subject = @subject
+    and revoked_at is null
+  returning token_id
+)
+insert into token_revocations (tenant_id, token_id, revoked_by_subject, reason)
+select @tenant_id, token_id, @revoked_by_subject, @reason
+from revoked
+returning token_id;
+""",
+            conn,
+            tx
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("subject", subject) |> ignore
+    cmd.Parameters.AddWithValue("revoked_by_subject", revokedBy) |> ignore
+    cmd.Parameters.AddWithValue("reason", reason) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let tokenIds = ResizeArray<Guid>()
+
+    while reader.Read() do
+        tokenIds.Add(reader.GetGuid(0))
+
+    reader.Close()
+    tx.Commit()
+    Ok(tokenIds |> Seq.toList)
+
+let revokeAllPats (tenantId: Guid) (revokedBy: string) (reason: string) (conn: NpgsqlConnection) =
+    use tx = conn.BeginTransaction()
+
+    use cmd =
+        new NpgsqlCommand(
+            """
+with revoked as (
+  update personal_access_tokens
+  set revoked_at = now()
+  where tenant_id = @tenant_id
+    and revoked_at is null
+  returning token_id
+)
+insert into token_revocations (tenant_id, token_id, revoked_by_subject, reason)
+select @tenant_id, token_id, @revoked_by_subject, @reason
+from revoked
+returning token_id;
+""",
+            conn,
+            tx
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("revoked_by_subject", revokedBy) |> ignore
+    cmd.Parameters.AddWithValue("reason", reason) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let tokenIds = ResizeArray<Guid>()
+
+    while reader.Read() do
+        tokenIds.Add(reader.GetGuid(0))
+
+    reader.Close()
+    tx.Commit()
+    Ok(tokenIds |> Seq.toList)
 
 let serializeRepoConfig (repo: RepoRecord) =
     match repo.RepoType with
@@ -4545,7 +5094,7 @@ let writeAudit
     (resourceId: string)
     (details: Map<string, string>)
     =
-    withConnection state (insertAuditRecord tenantId actor action resourceType resourceId details)
+    withConnection state (insertAuditRecord tenantId actor action resourceType resourceId (sanitizeAuditDetails details))
 
 let writeUploadAudit (state: AppState) (principal: Principal) (action: string) (uploadId: Guid) (details: Map<string, string>) =
     writeAudit
@@ -4936,6 +5485,14 @@ let main args =
                                         1
                                         120
 
+                                let maxStalenessSeconds =
+                                    parseBoundedPositiveInt
+                                        builder.Configuration
+                                        "Auth:Oidc:JwksMaxStalenessSeconds"
+                                        (max (refreshIntervalSeconds * 3) 900)
+                                        refreshIntervalSeconds
+                                        (7 * 24 * 3600)
+
                                 let httpClient = new HttpClient()
                                 httpClient.Timeout <- TimeSpan.FromSeconds(float refreshTimeoutSeconds + 1.0)
 
@@ -4943,9 +5500,11 @@ let main args =
                                     { Endpoint = endpoint
                                       RefreshInterval = TimeSpan.FromSeconds(float refreshIntervalSeconds)
                                       RefreshTimeout = TimeSpan.FromSeconds(float refreshTimeoutSeconds)
+                                      MaxStaleness = TimeSpan.FromSeconds(float maxStalenessSeconds)
                                       StaticFallbackKeys = rs256SigningKeys
                                       HttpClient = httpClient
                                       RefreshLock = new Threading.SemaphoreSlim(1, 1)
+                                      ActiveRemoteKeys = []
                                       ActiveKeys = rs256SigningKeys
                                       LastRefreshAttemptAtUtc = None
                                       LastRefreshSucceededAtUtc = None
@@ -4979,9 +5538,21 @@ let main args =
         let samlIntegration =
             let enabled = builder.Configuration.["Auth:Saml:Enabled"] |> parseBoolean
             let metadataUrl = normalizeText builder.Configuration.["Auth:Saml:IdpMetadataUrl"]
+            let metadataXml = builder.Configuration.["Auth:Saml:IdpMetadataXml"]
             let serviceProviderEntityId = normalizeText builder.Configuration.["Auth:Saml:ServiceProviderEntityId"]
             let expectedIssuer = normalizeText builder.Configuration.["Auth:Saml:ExpectedIssuer"]
             let roleMappingsRaw = normalizeText builder.Configuration.["Auth:Saml:RoleMappings"]
+            let metadataFetchTimeoutSeconds =
+                parseBoundedPositiveInt builder.Configuration "Auth:Saml:MetadataFetchTimeoutSeconds" 10 1 120
+            let metadataRefreshIntervalSeconds =
+                parseBoundedPositiveInt builder.Configuration "Auth:Saml:MetadataRefreshIntervalSeconds" 300 30 86400
+            let metadataMaxStalenessSeconds =
+                parseBoundedPositiveInt
+                    builder.Configuration
+                    "Auth:Saml:MetadataMaxStalenessSeconds"
+                    (max (metadataRefreshIntervalSeconds * 3) 900)
+                    metadataRefreshIntervalSeconds
+                    (7 * 24 * 3600)
 
             let issuedPatTtlMinutes =
                 let raw = builder.Configuration.["Auth:Saml:IssuedPatTtlMinutes"]
@@ -4998,21 +5569,64 @@ let main args =
                 | Ok mappings -> mappings
                 | Error err -> failwith $"Auth:Saml:RoleMappings is invalid: {err}"
 
+            let staticMetadataCertificates =
+                if String.IsNullOrWhiteSpace metadataXml then
+                    []
+                else
+                    match parseSamlMetadataSigningCertificates metadataXml with
+                    | Ok certificates -> certificates
+                    | Error err -> failwith err
+
+            let metadataState =
+                if String.IsNullOrWhiteSpace metadataUrl then
+                    None
+                else
+                    match Uri.TryCreate(metadataUrl, UriKind.Absolute) with
+                    | false, _ -> failwith "Auth:Saml:IdpMetadataUrl must be a valid absolute URI."
+                    | true, endpoint ->
+                        let httpClient = new HttpClient()
+                        httpClient.Timeout <- TimeSpan.FromSeconds(float metadataFetchTimeoutSeconds + 1.0)
+
+                        let runtimeState =
+                            { Endpoint = endpoint
+                              RefreshInterval = TimeSpan.FromSeconds(float metadataRefreshIntervalSeconds)
+                              RefreshTimeout = TimeSpan.FromSeconds(float metadataFetchTimeoutSeconds)
+                              MaxStaleness = TimeSpan.FromSeconds(float metadataMaxStalenessSeconds)
+                              StaticFallbackMetadataXml = optionalValue metadataXml
+                              StaticFallbackCertificates = staticMetadataCertificates
+                              HttpClient = httpClient
+                              RefreshLock = new Threading.SemaphoreSlim(1, 1)
+                              ActiveRemoteMetadataXml = None
+                              ActiveRemoteCertificates = []
+                              LastRefreshAttemptAtUtc = None
+                              LastRefreshSucceededAtUtc = None
+                              LastRefreshError = None }
+
+                        match refreshSamlMetadata runtimeState with
+                        | Ok _ -> Some runtimeState
+                        | Error err ->
+                            if staticMetadataCertificates.IsEmpty then
+                                failwith $"Auth:Saml:IdpMetadataUrl initial fetch failed: {err}"
+                            else
+                                Some runtimeState
+
             { Enabled = enabled
               IdpMetadataUrl = optionalValue metadataUrl
+              IdpMetadataXml = optionalValue metadataXml
               ServiceProviderEntityId = optionalValue serviceProviderEntityId
               ExpectedIssuer = optionalValue expectedIssuer
               RoleMappings = parsedRoleMappings
-              IssuedPatTtlMinutes = issuedPatTtlMinutes }
+              IssuedPatTtlMinutes = issuedPatTtlMinutes
+              MetadataFetchTimeout = TimeSpan.FromSeconds(float metadataFetchTimeoutSeconds)
+              StaticMetadataCertificates = staticMetadataCertificates
+              MetadataState = metadataState }
 
         if samlIntegration.Enabled then
-            let metadataUrlResult =
-                match samlIntegration.IdpMetadataUrl with
-                | None -> Error "Auth:Saml:IdpMetadataUrl is required when Auth:Saml:Enabled=true."
-                | Some url ->
-                    match Uri.TryCreate(url, UriKind.Absolute) with
-                    | true, _ -> Ok()
-                    | _ -> Error "Auth:Saml:IdpMetadataUrl must be a valid absolute URI."
+            let metadataSourceResult =
+                match samlIntegration.StaticMetadataCertificates.IsEmpty, samlIntegration.MetadataState with
+                | false, _ -> Ok()
+                | _, Some _ -> Ok()
+                | _ -> Error "Auth:Saml:IdpMetadataXml or Auth:Saml:IdpMetadataUrl is required when Auth:Saml:Enabled=true."
 
             let serviceProviderEntityIdResult =
                 match samlIntegration.ServiceProviderEntityId with
@@ -5024,7 +5638,7 @@ let main args =
                 | None -> Error "Auth:Saml:ExpectedIssuer is required when Auth:Saml:Enabled=true."
                 | Some _ -> Ok()
 
-            match metadataUrlResult, serviceProviderEntityIdResult, expectedIssuerResult with
+            match metadataSourceResult, serviceProviderEntityIdResult, expectedIssuerResult with
             | Error err, _, _ -> failwith err
             | _, Error err, _ -> failwith err
             | _, _, Error err -> failwith err
@@ -5049,8 +5663,15 @@ let main args =
         |> Option.bind (fun config -> config.RemoteJwksState)
         |> Option.map startOidcRemoteJwksRefreshTimer
 
+    let samlMetadataTimer =
+        state.SamlIntegration.MetadataState |> Option.map startSamlMetadataRefreshTimer
+
     app.Lifetime.ApplicationStopping.Register(fun () ->
         match oidcRemoteJwksTimer with
+        | Some timer -> timer.Dispose()
+        | None -> ()
+
+        match samlMetadataTimer with
         | Some timer -> timer.Dispose()
         | None -> ()
 
@@ -5061,6 +5682,12 @@ let main args =
                 remoteState.HttpClient.Dispose()
                 remoteState.RefreshLock.Dispose()
             | None -> ()
+        | None -> ()
+
+        match state.SamlIntegration.MetadataState with
+        | Some metadataState ->
+            metadataState.HttpClient.Dispose()
+            metadataState.RefreshLock.Dispose()
         | None -> ())
     |> ignore
 
@@ -5083,22 +5710,39 @@ let main args =
             task {
                 let postgresHealthy, postgresDetail = checkPostgresReadiness state
                 let! objectStorageHealthy, objectStorageDetail = checkObjectStorageReadiness state ctx.RequestAborted
+                let oidcHealthy, oidcDetail = checkOidcRemoteJwksReadiness state
+                let samlHealthy, samlDetail = checkSamlMetadataReadiness state
 
                 let dependencies =
                     [| {| name = "postgres"
                           healthy = postgresHealthy
+                          essential = true
+                          status = if postgresHealthy then "ready" else "not_ready"
                           detail = postgresDetail |}
                        {| name = "object_storage"
                           healthy = objectStorageHealthy
-                          detail = objectStorageDetail |} |]
+                          essential = true
+                          status = if objectStorageHealthy then "ready" else "not_ready"
+                          detail = objectStorageDetail |}
+                       {| name = "oidc_jwks"
+                          healthy = oidcHealthy
+                          essential = false
+                          status = if oidcHealthy then "ready" else "degraded"
+                          detail = oidcDetail |}
+                       {| name = "saml_metadata"
+                          healthy = samlHealthy
+                          essential = false
+                          status = if samlHealthy then "ready" else "degraded"
+                          detail = samlDetail |} |]
 
                 if postgresHealthy && objectStorageHealthy then
-                    return
-                        Results.Ok(
-                            {| status = "ready"
-                               checkedAtUtc = nowUtc ()
-                               dependencies = dependencies |}
-                        )
+                    let overallStatus =
+                        if oidcHealthy && samlHealthy then
+                            "ready"
+                        else
+                            "degraded"
+
+                    return Results.Ok({| status = overallStatus; checkedAtUtc = nowUtc (); dependencies = dependencies |})
                 else
                     return
                         Results.Json(
@@ -5161,53 +5805,56 @@ let main args =
                     match validateSamlAcsPayload samlResponse with
                     | Error err -> badRequest err
                     | Ok payloadBytes ->
-                        match readSamlAssertionEnvelope payloadBytes with
-                        | Error err -> badRequest err
-                        | Ok envelope ->
-                            match validateSamlAssertion state.SamlIntegration envelope with
-                            | Error err -> unauthorized err
-                            | Ok(subject, scopes) ->
-                                let normalizedSubject = normalizeSubject subject
+                        match validateSamlEnvelopeSignature state.SamlIntegration payloadBytes with
+                        | Error err -> unauthorized err
+                        | Ok () ->
+                            match readSamlAssertionEnvelope payloadBytes with
+                            | Error err -> badRequest err
+                            | Ok envelope ->
+                                match validateSamlAssertion state.SamlIntegration envelope with
+                                | Error err -> unauthorized err
+                                | Ok(subject, scopes) ->
+                                    let normalizedSubject = normalizeSubject subject
 
-                                if String.IsNullOrWhiteSpace normalizedSubject then
-                                    badRequest "SAML assertion subject is invalid after normalization."
-                                else
-                                    let rawToken = createPlainToken ()
-                                    let tokenHash = toTokenHash rawToken
-                                    let tokenId = Guid.NewGuid()
-                                    let expiry = (nowUtc ()).AddMinutes(float state.SamlIntegration.IssuedPatTtlMinutes)
-                                    let actor = $"saml:{normalizedSubject}"
+                                    if String.IsNullOrWhiteSpace normalizedSubject then
+                                        badRequest "SAML assertion subject is invalid after normalization."
+                                    else
+                                        let rawToken = createPlainToken ()
+                                        let tokenHash = toTokenHash rawToken
+                                        let tokenId = Guid.NewGuid()
+                                        let expiry = (nowUtc ()).AddMinutes(float state.SamlIntegration.IssuedPatTtlMinutes)
+                                        let actor = $"saml:{normalizedSubject}"
 
-                                    match
-                                        withConnection state (fun conn ->
-                                            ensureTenantId state conn
-                                            |> Result.bind (fun tenantId ->
-                                                insertPat tenantId normalizedSubject tokenId tokenHash scopes expiry actor conn
-                                                |> Result.map (fun () -> tenantId)))
-                                    with
-                                    | Error err -> serviceUnavailable err
-                                    | Ok tenantId ->
                                         match
-                                            writeAudit
-                                                state
-                                                tenantId
-                                                actor
-                                                "auth.saml.exchange"
-                                                "token"
-                                                (tokenId.ToString())
-                                                (Map.ofList [ "subject", normalizedSubject; "relayState", relayState ])
+                                            withConnection state (fun conn ->
+                                                ensureTenantId state conn
+                                                |> Result.bind (fun tenantId ->
+                                                    insertPat tenantId normalizedSubject tokenId tokenHash scopes expiry actor conn
+                                                    |> Result.map (fun () -> tenantId)))
                                         with
                                         | Error err -> serviceUnavailable err
-                                        | Ok() ->
-                                            Results.Ok(
-                                                {| tokenId = tokenId
-                                                   token = rawToken
-                                                   subject = normalizedSubject
-                                                   scopes = scopes |> List.map RepoScope.value
-                                                   expiresAtUtc = expiry
-                                                   authSource = "saml"
-                                                   relayState = relayState |}
-                                            ))
+                                        | Ok tenantId ->
+                                            match
+                                                writeAudit
+                                                    state
+                                                    tenantId
+                                                    actor
+                                                    "auth.saml.exchange"
+                                                    "token"
+                                                    (tokenId.ToString())
+                                                    (Map.ofList [ "subject", normalizedSubject; "relayState", relayState ])
+                                            with
+                                            | Error err -> serviceUnavailable err
+                                            | Ok() ->
+                                                Results.Ok(
+                                                    {| tokenId = tokenId
+                                                       token = rawToken
+                                                       subject = normalizedSubject
+                                                       scopes = scopes |> List.map RepoScope.value
+                                                       expiresAtUtc = expiry
+                                                       authSource = "saml"
+                                                       relayState = relayState |}
+                                                ))
     )
     |> ignore
 
@@ -5231,9 +5878,12 @@ let main args =
                 match withConnection state (fun conn ->
                     ensureTenantId state conn
                     |> Result.bind (fun tenantId ->
-                        hasAnyTokensForTenant tenantId conn |> Result.map (fun hasTokens -> tenantId, hasTokens))) with
+                        hasAnyTokensForTenant tenantId conn
+                        |> Result.bind (fun hasTokens ->
+                            effectivePatPolicyForTenant tenantId conn
+                            |> Result.map (fun policy -> tenantId, hasTokens, policy)))) with
                 | Error err -> serviceUnavailable err
-                | Ok(tenantId, hasTokens) ->
+                | Ok(tenantId, hasTokens, policy) ->
                     let allowIssuance = not hasTokens || isBootstrapAuthorized || callerIsAdmin
 
                     if not allowIssuance then
@@ -5251,6 +5901,8 @@ let main args =
 
                                 if ttlMinutes < 5 || ttlMinutes > 1440 then
                                     badRequest "ttlMinutes must be between 5 and 1440."
+                                elif ttlMinutes > policy.MaxTtlMinutes then
+                                    badRequest $"ttlMinutes exceeds configured max TTL of {policy.MaxTtlMinutes}."
                                 else
                                     let requestedScopes = if isNull request.Scopes then [||] else request.Scopes
                                     let effectiveScopeInputResult =
@@ -5284,14 +5936,17 @@ let main args =
                                                 | Error err -> serviceUnavailable err
                                                 | Ok() ->
                                                     match
-                                                        writeAudit
-                                                            state
-                                                            tenantId
-                                                            actor
-                                                            "auth.pat.issued"
+                                                                writeAudit
+                                                                    state
+                                                                    tenantId
+                                                                    actor
+                                                                    "auth.pat.issued"
                                                             "token"
                                                             (tokenId.ToString())
-                                                            (Map.ofList [ "subject", subject; "ttlMinutes", ttlMinutes.ToString() ])
+                                                            (Map.ofList
+                                                                [ "subject", subject
+                                                                  "ttlMinutes", ttlMinutes.ToString()
+                                                                  "policyMaxTtlMinutes", policy.MaxTtlMinutes.ToString() ])
                                                     with
                                                     | Error err -> serviceUnavailable err
                                                     | Ok() ->
@@ -5314,7 +5969,7 @@ let main args =
                 match readJsonBody<RevokePatRequest> ctx with
                 | Error err -> badRequest err
                 | Ok request ->
-                    match withConnection state (revokePat principal.TenantId request.TokenId principal.Subject) with
+                    match withConnection state (revokePat principal.TenantId request.TokenId principal.Subject "manual_revocation") with
                     | Error err -> serviceUnavailable err
                     | Ok false -> Results.NotFound({| error = "not_found"; message = "Token id was not found." |})
                     | Ok true ->
@@ -5330,6 +5985,151 @@ let main args =
                         with
                         | Error err -> serviceUnavailable err
                         | Ok() -> Results.Ok({| tokenId = request.TokenId; status = "revoked" |}))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/auth/pat-policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (effectivePatPolicyForTenant principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok policy -> Results.Ok(policy))
+    )
+    |> ignore
+
+    app.MapPut(
+        "/v1/admin/auth/pat-policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match readJsonBody<UpdatePatPolicyRequest> ctx with
+                | Error err -> badRequest err
+                | Ok request ->
+                    if request.MaxTtlMinutes < 5 || request.MaxTtlMinutes > 10080 then
+                        badRequest "maxTtlMinutes must be between 5 and 10080."
+                    else
+                        match
+                            withConnection
+                                state
+                                (upsertPatPolicy
+                                    principal.TenantId
+                                    request.MaxTtlMinutes
+                                    request.AllowBootstrapIssuance
+                                    principal.Subject)
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok policy ->
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    "auth.pat.policy.updated"
+                                    "pat_policy"
+                                    (principal.TenantId.ToString())
+                                    (Map.ofList
+                                        [ "maxTtlMinutes", policy.MaxTtlMinutes.ToString()
+                                          "allowBootstrapIssuance", policy.AllowBootstrapIssuance.ToString() ])
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok() -> Results.Ok(policy))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/auth/pats",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (readPatInventory principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok records ->
+                    Results.Ok(
+                        records
+                        |> List.map (fun record ->
+                            {| tokenId = record.TokenId
+                               subject = record.Subject
+                               scopes = record.Scopes |> List.map RepoScope.value
+                               expiresAtUtc = record.ExpiresAtUtc
+                               revokedAtUtc = record.RevokedAtUtc
+                               createdBySubject = record.CreatedBySubject
+                               createdAtUtc = record.CreatedAtUtc
+                               lastUsedAtUtc = record.LastUsedAtUtc
+                               lastUsedAuthSource = record.LastUsedAuthSource |})
+                    ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/auth/pats/revoke-subject",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match readJsonBody<RevokePatSubjectRequest> ctx with
+                | Error err -> badRequest err
+                | Ok request ->
+                    let normalizedSubject = normalizeSubject request.Subject
+
+                    if String.IsNullOrWhiteSpace normalizedSubject then
+                        badRequest "Subject is required."
+                    else
+                        match
+                            withConnection
+                                state
+                                (revokePatsBySubject
+                                    principal.TenantId
+                                    normalizedSubject
+                                    principal.Subject
+                                    "subject_revocation")
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok tokenIds ->
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    "auth.pat.revoked_subject"
+                                    "token"
+                                    normalizedSubject
+                                    (Map.ofList [ "revokedCount", tokenIds.Length.ToString() ])
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok() ->
+                                Results.Ok(
+                                    {| subject = normalizedSubject
+                                       revokedCount = tokenIds.Length
+                                       tokenIds = tokenIds |}))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/auth/pats/revoke-all",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (revokeAllPats principal.TenantId principal.Subject "tenant_wide_revocation") with
+                | Error err -> serviceUnavailable err
+                | Ok tokenIds ->
+                    match
+                        writeAudit
+                            state
+                            principal.TenantId
+                            principal.Subject
+                            "auth.pat.revoked_all"
+                            "token"
+                            (principal.TenantId.ToString())
+                            (Map.ofList [ "revokedCount", tokenIds.Length.ToString() ])
+                    with
+                    | Error err -> serviceUnavailable err
+                    | Ok() -> Results.Ok({| revokedCount = tokenIds.Length; tokenIds = tokenIds |}))
     )
     |> ignore
 
@@ -7051,6 +7851,9 @@ let main args =
                 match withConnection state (readOpsSummary principal.TenantId) with
                 | Error err -> serviceUnavailable err
                 | Ok summary ->
+                    let oidcHealthy, oidcDetail = checkOidcRemoteJwksReadiness state
+                    let samlHealthy, samlDetail = checkSamlMetadataReadiness state
+
                     match
                         writeAudit
                             state
@@ -7066,10 +7869,28 @@ let main args =
                                   "failedSearchJobs", summary.failedSearchJobs.ToString()
                                   "pendingSearchJobs", summary.pendingSearchJobs.ToString()
                                   "incompleteGcRuns", summary.incompleteGcRuns.ToString()
-                                  "recentPolicyTimeouts24h", summary.recentPolicyTimeouts24h.ToString() ])
+                                  "recentPolicyTimeouts24h", summary.recentPolicyTimeouts24h.ToString()
+                                  "oidcTrustHealthy", oidcHealthy.ToString()
+                                  "samlTrustHealthy", samlHealthy.ToString() ])
                     with
                     | Error err -> serviceUnavailable err
-                    | Ok () -> Results.Ok(summary))
+                    | Ok () ->
+                        Results.Ok(
+                            {| checkedAtUtc = summary.checkedAtUtc
+                               pendingOutboxEvents = summary.pendingOutboxEvents
+                               availableOutboxEvents = summary.availableOutboxEvents
+                               oldestPendingOutboxAgeSeconds = summary.oldestPendingOutboxAgeSeconds
+                               failedSearchJobs = summary.failedSearchJobs
+                               pendingSearchJobs = summary.pendingSearchJobs
+                               incompleteGcRuns = summary.incompleteGcRuns
+                               recentPolicyTimeouts24h = summary.recentPolicyTimeouts24h
+                               trustMaterial =
+                                {| oidc =
+                                    {| healthy = oidcHealthy
+                                       detail = oidcDetail |}
+                                   saml =
+                                    {| healthy = samlHealthy
+                                       detail = samlDetail |} |} |}))
     )
     |> ignore
 
