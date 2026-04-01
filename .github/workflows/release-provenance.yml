@@ -1,0 +1,82 @@
+name: release-provenance
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Artifortress.sln
+
+      - name: Build
+        run: dotnet build Artifortress.sln -c Release --no-restore
+
+      - name: Publish API
+        run: dotnet publish src/Artifortress.Api/Artifortress.Api.fsproj -c Release -o out/api --no-build
+
+      - name: Publish Worker
+        run: dotnet publish src/Artifortress.Worker/Artifortress.Worker.fsproj -c Release -o out/worker --no-build
+
+      - name: Create release bundles
+        run: |
+          mkdir -p dist
+          tar -C out/api -czf dist/artifortress-api-linux-x64.tar.gz .
+          tar -C out/worker -czf dist/artifortress-worker-linux-x64.tar.gz .
+          sha256sum dist/artifortress-api-linux-x64.tar.gz dist/artifortress-worker-linux-x64.tar.gz > dist/SHA256SUMS
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOMs
+        run: |
+          syft packages dir:out/api -o cyclonedx-json > dist/artifortress-api.sbom.cdx.json
+          syft packages dir:out/worker -o cyclonedx-json > dist/artifortress-worker.sbom.cdx.json
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release bundles
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign-blob --yes dist/artifortress-api-linux-x64.tar.gz --output-signature dist/artifortress-api-linux-x64.tar.gz.sig --output-certificate dist/artifortress-api-linux-x64.tar.gz.crt
+          cosign sign-blob --yes dist/artifortress-worker-linux-x64.tar.gz --output-signature dist/artifortress-worker-linux-x64.tar.gz.sig --output-certificate dist/artifortress-worker-linux-x64.tar.gz.crt
+          cosign sign-blob --yes dist/artifortress-api.sbom.cdx.json --output-signature dist/artifortress-api.sbom.cdx.json.sig --output-certificate dist/artifortress-api.sbom.cdx.json.crt
+          cosign sign-blob --yes dist/artifortress-worker.sbom.cdx.json --output-signature dist/artifortress-worker.sbom.cdx.json.sig --output-certificate dist/artifortress-worker.sbom.cdx.json.crt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/artifortress-api-linux-x64.tar.gz
+            dist/artifortress-api-linux-x64.tar.gz.sig
+            dist/artifortress-api-linux-x64.tar.gz.crt
+            dist/artifortress-worker-linux-x64.tar.gz
+            dist/artifortress-worker-linux-x64.tar.gz.sig
+            dist/artifortress-worker-linux-x64.tar.gz.crt
+            dist/artifortress-api.sbom.cdx.json
+            dist/artifortress-api.sbom.cdx.json.sig
+            dist/artifortress-api.sbom.cdx.json.crt
+            dist/artifortress-worker.sbom.cdx.json
+            dist/artifortress-worker.sbom.cdx.json.sig
+            dist/artifortress-worker.sbom.cdx.json.crt
+            dist/SHA256SUMS

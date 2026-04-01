@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: artifortress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 512m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - artifortress.example.com
+      secretName: artifortress-tls
+  rules:
+    - host: artifortress.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: artifortress-api
+                port:
+                  name: http
