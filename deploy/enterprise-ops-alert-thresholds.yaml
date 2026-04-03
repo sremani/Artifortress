@@ -1,0 +1,66 @@
+enterprise_ops_alert_thresholds:
+  source_endpoints:
+    readiness: /health/ready
+    ops_summary: /v1/admin/ops/summary
+  readiness_checks:
+    - field: status
+      severity: critical
+      comparator: "!="
+      threshold: ready
+      rationale: "non-ready status blocks safe traffic and rollout progression"
+    - field: dependencies[?name=='oidc_jwks'].status
+      severity: warning
+      comparator: "=="
+      threshold: degraded
+      rationale: "OIDC trust material fallback should be triaged before rollover windows"
+    - field: dependencies[?name=='saml_metadata'].status
+      severity: warning
+      comparator: "=="
+      threshold: degraded
+      rationale: "SAML metadata fallback should be triaged before IdP certificate rotation windows"
+  ops_summary_checks:
+    - metric: pendingOutboxEvents
+      severity: warning
+      comparator: ">"
+      threshold: 50
+      rationale: "outbox backlog should remain low in steady state"
+    - metric: pendingOutboxEvents
+      severity: critical
+      comparator: ">"
+      threshold: 200
+      rationale: "outbox backlog at this level delays downstream indexing"
+    - metric: oldestPendingOutboxAgeSeconds
+      severity: warning
+      comparator: ">"
+      threshold: 300
+      rationale: "old pending events indicate worker lag"
+    - metric: oldestPendingOutboxAgeSeconds
+      severity: critical
+      comparator: ">"
+      threshold: 900
+      rationale: "pending events older than 15 minutes require operator action"
+    - metric: pendingSearchJobs
+      severity: warning
+      comparator: ">"
+      threshold: 100
+      rationale: "search backlog should not accumulate without active indexing"
+    - metric: failedSearchJobs
+      severity: warning
+      comparator: ">"
+      threshold: 5
+      rationale: "failed search jobs indicate reliability loss in async projection"
+    - metric: failedSearchJobs
+      severity: critical
+      comparator: ">"
+      threshold: 20
+      rationale: "high failed search volume risks stale or missing search results"
+    - metric: incompleteGcRuns
+      severity: warning
+      comparator: ">"
+      threshold: 0
+      rationale: "stuck GC runs should be investigated before next retention window"
+    - metric: recentPolicyTimeouts24h
+      severity: warning
+      comparator: ">"
+      threshold: 0
+      rationale: "policy engine timeouts must remain rare and understood"

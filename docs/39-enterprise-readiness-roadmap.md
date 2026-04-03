@@ -50,8 +50,8 @@ This plan assumes the current repository baseline described in:
 | ER-1-02 | OIDC/SAML trust material rotation and fail-safe controls | ER-1-01 | done |
 | ER-1-03 | PAT governance, revocation blast-radius, and usage visibility | ER-1-01 | done |
 | ER-1-04 | Secret redaction and sensitive-field logging audit | ER-1-01 | done |
-| ER-1-05 | Signed release artifacts, SBOM, and supply-chain verification lane | ER-1-01 | in_progress |
-| ER-1-06 | Security review closure v2 and threat-model refresh | ER-1-02 through ER-1-05 | todo |
+| ER-1-05 | Signed release artifacts, SBOM, and supply-chain verification lane | ER-1-01 | done |
+| ER-1-06 | Security review closure v2 and threat-model refresh | ER-1-02 through ER-1-05 | done |
 | ER-2-01 | Formal tenant isolation invariants across API and worker paths | ER-1-06 | todo |
 | ER-2-02 | Cross-tenant negative integration and stress coverage | ER-2-01 | todo |
 | ER-2-03 | Tenant quotas and admission controls | ER-2-01 | todo |
@@ -59,7 +59,7 @@ This plan assumes the current repository baseline described in:
 | ER-3-01 | Background job idempotency and replay-safety hardening | ER-2-02 | todo |
 | ER-3-02 | Dependency failure-mode matrix and deterministic readiness/degradation semantics | ER-3-01 | in_progress |
 | ER-3-03 | Worker/API crash, restart, and duplicate-delivery drill automation | ER-3-01 | done |
-| ER-3-04 | HA deployment topology and failure-domain runbook | ER-3-02, ER-3-03 | todo |
+| ER-3-04 | HA deployment topology and failure-domain runbook | ER-3-02, ER-3-03 | done |
 | ER-4-01 | Search relevance/ranking maturity and deterministic query semantics | ER-3-01 | todo |
 | ER-4-02 | Search rebuild control plane: pause/resume/cancel/status | ER-4-01 | todo |
 | ER-4-03 | Search lag, freshness, and stuck-job observability | ER-4-02 | todo |
@@ -68,10 +68,10 @@ This plan assumes the current repository baseline described in:
 | ER-5-02 | Repository/org policy inheritance and protected-artifact rules | ER-5-01 | todo |
 | ER-5-03 | Dual-control workflows for high-risk admin actions | ER-5-01 | todo |
 | ER-5-04 | Compliance evidence pack and retention/legal-hold controls | ER-5-02, ER-5-03 | todo |
-| ER-6-01 | Production Helm/manifests hardening and config closure | ER-3-04 | in_progress |
-| ER-6-02 | Zero-downtime or bounded-downtime migration policy | ER-6-01 | todo |
+| ER-6-01 | Production Helm/manifests hardening and config closure | ER-3-04 | done |
+| ER-6-02 | Zero-downtime or bounded-downtime migration policy | ER-6-01 | done |
 | ER-6-03 | Multi-version upgrade compatibility and rollback matrix | ER-6-02 | todo |
-| ER-6-04 | Operations dashboard, alerts, and incident drill bundle | ER-6-01 | todo |
+| ER-6-04 | Operations dashboard, alerts, and incident drill bundle | ER-6-01 | done |
 | ER-7-01 | Performance baseline suite for upload/download/publish/search | ER-6-01 | todo |
 | ER-7-02 | Soak, concurrency, and noisy-neighbor test tracks | ER-7-01, ER-2-03 | todo |
 | ER-7-03 | Capacity-planning guide and supported scale profiles | ER-7-01, ER-7-02 | todo |
