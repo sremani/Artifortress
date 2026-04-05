@@ -148,6 +148,13 @@ type SamlAcsJsonRequest = {
     RelayState: string
 }
 
+[<CLIMutable>]
+type UpdateTenantAdmissionPolicyRequest = {
+    MaxLogicalStorageBytes: int64
+    MaxConcurrentUploadSessions: int
+    MaxPendingSearchJobs: int
+}
+
 type PatRecord = {
     TokenId: Guid
     Subject: string
@@ -404,6 +411,14 @@ type SamlIntegrationConfig = {
     MetadataState: SamlMetadataState option
 }
 
+type TenantAdmissionPolicyRecord = {
+    MaxLogicalStorageBytes: int64
+    MaxConcurrentUploadSessions: int
+    MaxPendingSearchJobs: int
+    UpdatedBySubject: string
+    UpdatedAtUtc: DateTimeOffset
+}
+
 type AppState = {
     ConnectionString: string
     TenantSlug: string
@@ -414,6 +429,7 @@ type AppState = {
     DefaultTombstoneRetentionDays: int
     DefaultGcRetentionGraceHours: int
     DefaultGcBatchSize: int
+    DefaultTenantAdmissionPolicy: TenantAdmissionPolicyRecord
     OidcTokenValidation: OidcTokenValidationConfig option
     SamlIntegration: SamlIntegrationConfig
 }
@@ -424,6 +440,16 @@ type PatPolicyRecord = {
     UpdatedBySubject: string
     UpdatedAtUtc: DateTimeOffset
 }
+
+type TenantAdmissionUsageRecord = {
+    LogicalStorageBytes: int64
+    ActiveUploadSessions: int
+    PendingSearchJobs: int
+}
+
+type SearchRebuildEnqueueOutcome =
+    | SearchRebuildEnqueued of enqueuedCount: int64 * effectiveBatchSize: int * pendingJobsAfterEnqueue: int
+    | SearchRebuildQuotaExceeded of pendingJobs: int
 
 type PatInventoryRecord = {
     TokenId: Guid
@@ -442,6 +468,13 @@ let nowUtc () = DateTimeOffset.UtcNow
 let defaultPatPolicy =
     { MaxTtlMinutes = 1440
       AllowBootstrapIssuance = true
+      UpdatedBySubject = "system-default"
+      UpdatedAtUtc = DateTimeOffset.MinValue }
+
+let defaultTenantAdmissionPolicy =
+    { MaxLogicalStorageBytes = 50L * 1024L * 1024L * 1024L
+      MaxConcurrentUploadSessions = 1000
+      MaxPendingSearchJobs = 5000
       UpdatedBySubject = "system-default"
       UpdatedAtUtc = DateTimeOffset.MinValue }
 
@@ -903,6 +936,19 @@ let private parseBoundedPositiveInt
     let rawValue = configuration.[key]
 
     match Int32.TryParse rawValue with
+    | true, value when value >= minValue && value <= maxValue -> value
+    | _ -> defaultValue
+
+let private parseBoundedPositiveInt64
+    (configuration: IConfiguration)
+    (key: string)
+    (defaultValue: int64)
+    (minValue: int64)
+    (maxValue: int64)
+    =
+    let rawValue = configuration.[key]
+
+    match Int64.TryParse rawValue with
     | true, value when value >= minValue && value <= maxValue -> value
     | _ -> defaultValue
 
@@ -1860,6 +1906,9 @@ let forbidden message =
 let conflict message =
     Results.Json({| error = "conflict"; message = message |}, statusCode = StatusCodes.Status409Conflict)
 
+let tooManyRequests message =
+    Results.Json({| error = "too_many_requests"; message = message |}, statusCode = StatusCodes.Status429TooManyRequests)
+
 let serviceUnavailable message =
     Results.Json(
         {| error = "service_unavailable"
@@ -2222,6 +2271,145 @@ returning updated_at;
               UpdatedBySubject = updatedBySubject
               UpdatedAtUtc = toUtcDateTimeOffset updatedAt }
     | _ -> Error "Unexpected timestamp type returned for PAT policy upsert."
+
+let readTenantAdmissionPolicy (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select max_logical_storage_bytes, max_concurrent_upload_sessions, max_pending_search_jobs, updated_by_subject, updated_at
+from tenant_admission_policies
+where tenant_id = @tenant_id
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { MaxLogicalStorageBytes = reader.GetInt64(0)
+                  MaxConcurrentUploadSessions = reader.GetInt32(1)
+                  MaxPendingSearchJobs = reader.GetInt32(2)
+                  UpdatedBySubject = reader.GetString(3)
+                  UpdatedAtUtc = reader.GetFieldValue<DateTimeOffset>(4) }
+        )
+    else
+        Ok None
+
+let effectiveTenantAdmissionPolicyForTenant (state: AppState) (tenantId: Guid) (conn: NpgsqlConnection) =
+    readTenantAdmissionPolicy tenantId conn
+    |> Result.map (Option.defaultValue state.DefaultTenantAdmissionPolicy)
+
+let upsertTenantAdmissionPolicy
+    (tenantId: Guid)
+    (maxLogicalStorageBytes: int64)
+    (maxConcurrentUploadSessions: int)
+    (maxPendingSearchJobs: int)
+    (updatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into tenant_admission_policies
+  (tenant_id, max_logical_storage_bytes, max_concurrent_upload_sessions, max_pending_search_jobs, updated_by_subject, updated_at)
+values
+  (@tenant_id, @max_logical_storage_bytes, @max_concurrent_upload_sessions, @max_pending_search_jobs, @updated_by_subject, now())
+on conflict (tenant_id)
+do update set
+  max_logical_storage_bytes = excluded.max_logical_storage_bytes,
+  max_concurrent_upload_sessions = excluded.max_concurrent_upload_sessions,
+  max_pending_search_jobs = excluded.max_pending_search_jobs,
+  updated_by_subject = excluded.updated_by_subject,
+  updated_at = now()
+returning updated_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("max_logical_storage_bytes", maxLogicalStorageBytes) |> ignore
+    cmd.Parameters.AddWithValue("max_concurrent_upload_sessions", maxConcurrentUploadSessions) |> ignore
+    cmd.Parameters.AddWithValue("max_pending_search_jobs", maxPendingSearchJobs) |> ignore
+    cmd.Parameters.AddWithValue("updated_by_subject", updatedBySubject) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    let toRecord updatedAtUtc =
+        { MaxLogicalStorageBytes = maxLogicalStorageBytes
+          MaxConcurrentUploadSessions = maxConcurrentUploadSessions
+          MaxPendingSearchJobs = maxPendingSearchJobs
+          UpdatedBySubject = updatedBySubject
+          UpdatedAtUtc = updatedAtUtc }
+
+    match scalar with
+    | :? DateTimeOffset as updatedAtUtc -> Ok(toRecord updatedAtUtc)
+    | :? DateTime as updatedAt -> Ok(toRecord (toUtcDateTimeOffset updatedAt))
+    | _ -> Error "Unexpected timestamp type returned for tenant admission policy upsert."
+
+let readTenantAdmissionUsage (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select
+  coalesce((
+    select sum(expected_length)
+    from upload_sessions
+    where tenant_id = @tenant_id
+      and (
+        (state = 'committed' and committed_blob_digest is not null)
+        or state in ('initiated', 'parts_uploading', 'pending_commit')
+      )
+  ), 0) as logical_storage_bytes,
+  coalesce((
+    select count(*)
+    from upload_sessions
+    where tenant_id = @tenant_id
+      and state in ('initiated', 'parts_uploading', 'pending_commit')
+  ), 0) as active_upload_sessions,
+  coalesce((
+    select count(*)
+    from search_index_jobs
+    where tenant_id = @tenant_id
+      and status in ('pending', 'processing')
+  ), 0) as pending_search_jobs;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let logicalStorageBytes =
+            match reader.GetValue(0) with
+            | :? int64 as value -> value
+            | :? int32 as value -> int64 value
+            | :? decimal as value -> int64 value
+            | _ -> 0L
+
+        let activeUploadSessions =
+            match reader.GetValue(1) with
+            | :? int64 as value -> int value
+            | :? int32 as value -> value
+            | _ -> 0
+
+        let pendingSearchJobs =
+            match reader.GetValue(2) with
+            | :? int64 as value -> int value
+            | :? int32 as value -> value
+            | _ -> 0
+
+        Ok
+            { LogicalStorageBytes = logicalStorageBytes
+              ActiveUploadSessions = activeUploadSessions
+              PendingSearchJobs = pendingSearchJobs }
+    else
+        Error "Could not read tenant admission usage."
 
 let readPatInventory (tenantId: Guid) (conn: NpgsqlConnection) =
     use cmd =
@@ -4194,11 +4382,23 @@ let enqueueSearchRebuildJobs
     (tenantId: Guid)
     (repoKey: string option)
     (batchSize: int)
+    (maxPendingSearchJobs: int)
     (conn: NpgsqlConnection)
     =
-    use cmd =
-        new NpgsqlCommand(
-            """
+    let usageResult = readTenantAdmissionUsage tenantId conn
+
+    usageResult
+    |> Result.bind (fun usage ->
+        let availableCapacity = maxPendingSearchJobs - usage.PendingSearchJobs
+
+        if availableCapacity <= 0 then
+            Ok(SearchRebuildQuotaExceeded usage.PendingSearchJobs)
+        else
+            let effectiveBatchSize = min batchSize availableCapacity
+
+            use cmd =
+                new NpgsqlCommand(
+                    """
 with candidates as (
   select pv.tenant_id, pv.version_id
   from package_versions pv
@@ -4235,18 +4435,18 @@ upserted as (
 )
 select count(*) from upserted;
 """,
-            conn
-        )
+                    conn
+                )
 
-    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
-    let repoKeyParam = cmd.Parameters.Add("repo_key", NpgsqlDbType.Text)
-    repoKeyParam.Value <- (match repoKey with | Some value -> box value | None -> box DBNull.Value)
-    cmd.Parameters.AddWithValue("batch_size", batchSize) |> ignore
+            cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+            let repoKeyParam = cmd.Parameters.Add("repo_key", NpgsqlDbType.Text)
+            repoKeyParam.Value <- (match repoKey with | Some value -> box value | None -> box DBNull.Value)
+            cmd.Parameters.AddWithValue("batch_size", effectiveBatchSize) |> ignore
 
-    match cmd.ExecuteScalar() with
-    | :? int64 as count -> Ok count
-    | :? int32 as count -> Ok(int64 count)
-    | _ -> Error "Unexpected row count type returned during search rebuild enqueue."
+            match cmd.ExecuteScalar() with
+            | :? int64 as count -> Ok(SearchRebuildEnqueued(count, effectiveBatchSize, usage.PendingSearchJobs + effectiveBatchSize))
+            | :? int32 as count -> Ok(SearchRebuildEnqueued(int64 count, effectiveBatchSize, usage.PendingSearchJobs + effectiveBatchSize))
+            | _ -> Error "Unexpected row count type returned during search rebuild enqueue.")
 
 let evaluatePolicyForVersion
     (tenantId: Guid)
@@ -5433,6 +5633,31 @@ let main args =
             | true, value when value >= 1 && value <= 5000 -> value
             | _ -> 200
 
+        let configuredDefaultTenantAdmissionPolicy =
+            { MaxLogicalStorageBytes =
+                parseBoundedPositiveInt64
+                    builder.Configuration
+                    "TenantAdmission:DefaultMaxLogicalStorageBytes"
+                    defaultTenantAdmissionPolicy.MaxLogicalStorageBytes
+                    (10L * 1024L * 1024L)
+                    (10L * 1024L * 1024L * 1024L * 1024L)
+              MaxConcurrentUploadSessions =
+                parseBoundedPositiveInt
+                    builder.Configuration
+                    "TenantAdmission:DefaultMaxConcurrentUploadSessions"
+                    defaultTenantAdmissionPolicy.MaxConcurrentUploadSessions
+                    1
+                    1000
+              MaxPendingSearchJobs =
+                parseBoundedPositiveInt
+                    builder.Configuration
+                    "TenantAdmission:DefaultMaxPendingSearchJobs"
+                    defaultTenantAdmissionPolicy.MaxPendingSearchJobs
+                    1
+                    50000
+              UpdatedBySubject = "system-default"
+              UpdatedAtUtc = DateTimeOffset.MinValue }
+
         let oidcTokenValidation =
             let enabled = builder.Configuration.["Auth:Oidc:Enabled"] |> parseBoolean
 
@@ -5653,6 +5878,7 @@ let main args =
           DefaultTombstoneRetentionDays = defaultTombstoneRetentionDays
           DefaultGcRetentionGraceHours = defaultGcRetentionGraceHours
           DefaultGcBatchSize = defaultGcBatchSize
+          DefaultTenantAdmissionPolicy = configuredDefaultTenantAdmissionPolicy
           OidcTokenValidation = oidcTokenValidation
           SamlIntegration = samlIntegration }
 
@@ -5997,6 +6223,84 @@ let main args =
                 match withConnection state (effectivePatPolicyForTenant principal.TenantId) with
                 | Error err -> serviceUnavailable err
                 | Ok policy -> Results.Ok(policy))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/tenant-admission-policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (effectiveTenantAdmissionPolicyForTenant state principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok policy ->
+                    match withConnection state (readTenantAdmissionUsage principal.TenantId) with
+                    | Error err -> serviceUnavailable err
+                    | Ok usage ->
+                        Results.Ok(
+                            {| maxLogicalStorageBytes = policy.MaxLogicalStorageBytes
+                               maxConcurrentUploadSessions = policy.MaxConcurrentUploadSessions
+                               maxPendingSearchJobs = policy.MaxPendingSearchJobs
+                               updatedBySubject = policy.UpdatedBySubject
+                               updatedAtUtc = policy.UpdatedAtUtc
+                               usage =
+                                {| logicalStorageBytes = usage.LogicalStorageBytes
+                                   activeUploadSessions = usage.ActiveUploadSessions
+                                   pendingSearchJobs = usage.PendingSearchJobs |} |}))
+    )
+    |> ignore
+
+    app.MapPut(
+        "/v1/admin/tenant-admission-policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireRole state ctx "*" RepoRole.Admin with
+            | Error result -> result
+            | Ok principal ->
+                match readJsonBody<UpdateTenantAdmissionPolicyRequest> ctx with
+                | Error err -> badRequest err
+                | Ok request ->
+                    if request.MaxLogicalStorageBytes < 10L * 1024L * 1024L then
+                        badRequest "maxLogicalStorageBytes must be at least 10485760."
+                    elif request.MaxConcurrentUploadSessions < 1 || request.MaxConcurrentUploadSessions > 1000 then
+                        badRequest "maxConcurrentUploadSessions must be between 1 and 1000."
+                    elif request.MaxPendingSearchJobs < 1 || request.MaxPendingSearchJobs > 50000 then
+                        badRequest "maxPendingSearchJobs must be between 1 and 50000."
+                    else
+                        match
+                            withConnection
+                                state
+                                (upsertTenantAdmissionPolicy
+                                    principal.TenantId
+                                    request.MaxLogicalStorageBytes
+                                    request.MaxConcurrentUploadSessions
+                                    request.MaxPendingSearchJobs
+                                    principal.Subject)
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok policy ->
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    "tenant.admission.policy.updated"
+                                    "tenant_admission_policy"
+                                    (principal.TenantId.ToString())
+                                    (Map.ofList
+                                        [ "maxLogicalStorageBytes", policy.MaxLogicalStorageBytes.ToString()
+                                          "maxConcurrentUploadSessions", policy.MaxConcurrentUploadSessions.ToString()
+                                          "maxPendingSearchJobs", policy.MaxPendingSearchJobs.ToString() ])
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok() ->
+                                Results.Ok(
+                                    {| maxLogicalStorageBytes = policy.MaxLogicalStorageBytes
+                                       maxConcurrentUploadSessions = policy.MaxConcurrentUploadSessions
+                                       maxPendingSearchJobs = policy.MaxPendingSearchJobs
+                                       updatedBySubject = policy.UpdatedBySubject
+                                       updatedAtUtc = policy.UpdatedAtUtc |}
+                                ))
     )
     |> ignore
 
@@ -7108,59 +7412,27 @@ let main args =
                             | Error err -> badRequest err
                             | Ok(digest, expectedLength) ->
                                 let expiresAtUtc = (nowUtc ()).AddMinutes(60.0)
+                                let admissionResult =
+                                    withConnection state (fun conn ->
+                                        effectiveTenantAdmissionPolicyForTenant state principal.TenantId conn
+                                        |> Result.bind (fun policy ->
+                                            readTenantAdmissionUsage principal.TenantId conn
+                                            |> Result.map (fun usage -> policy, usage)))
 
-                                match withConnection state (tryReadBlobLengthByDigest digest) with
+                                match admissionResult with
                                 | Error err -> serviceUnavailable err
-                                | Ok(Some existingLength) when existingLength <> expectedLength ->
-                                    conflict "Digest already exists with a different length."
-                                | Ok(Some _) ->
-                                    match
-                                        withConnection
-                                            state
-                                            (insertUploadSessionForRepo
-                                                principal.TenantId
-                                                repoKey
-                                                digest
-                                                expectedLength
-                                                "committed"
-                                                None
-                                                None
-                                                (Some digest)
-                                                principal.Subject
-                                                expiresAtUtc)
-                                    with
+                                | Ok(policy, usage) when usage.ActiveUploadSessions >= policy.MaxConcurrentUploadSessions ->
+                                    tooManyRequests
+                                        $"Tenant upload-session capacity exceeded. Active upload sessions: {usage.ActiveUploadSessions}; limit: {policy.MaxConcurrentUploadSessions}."
+                                | Ok(policy, usage) when usage.LogicalStorageBytes + expectedLength > policy.MaxLogicalStorageBytes ->
+                                    tooManyRequests
+                                        $"Tenant logical storage quota exceeded. Requested bytes: {expectedLength}; current logical usage: {usage.LogicalStorageBytes}; limit: {policy.MaxLogicalStorageBytes}."
+                                | Ok _ ->
+                                    match withConnection state (tryReadBlobLengthByDigest digest) with
                                     | Error err -> serviceUnavailable err
-                                    | Ok None ->
-                                        Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
-                                    | Ok(Some session) ->
-                                        match
-                                            writeUploadAudit
-                                                state
-                                                principal
-                                                "upload.session.created"
-                                                session.UploadId
-                                                (Map.ofList [ "repoKey", repoKey; "state", session.State; "deduped", "true" ])
-                                        with
-                                        | Error err -> serviceUnavailable err
-                                        | Ok() ->
-                                            Results.Ok(
-                                                {| uploadId = session.UploadId
-                                                   repoKey = repoKey
-                                                   expectedDigest = session.ExpectedDigest
-                                                   expectedLength = session.ExpectedLength
-                                                   state = session.State
-                                                   deduped = true
-                                                   expiresAtUtc = session.ExpiresAtUtc |}
-                                            )
-                                | Ok None ->
-                                    let uploadId = Guid.NewGuid()
-                                    let objectStagingKey = buildStagingObjectKey principal.TenantId repoKey uploadId
-
-                                    match
-                                        state.ObjectStorageClient.StartMultipartUpload(objectStagingKey, ctx.RequestAborted).Result
-                                    with
-                                    | Error storageErr -> mapObjectStorageErrorToResult storageErr
-                                    | Ok storageSession ->
+                                    | Ok(Some existingLength) when existingLength <> expectedLength ->
+                                        conflict "Digest already exists with a different length."
+                                    | Ok(Some _) ->
                                         match
                                             withConnection
                                                 state
@@ -7169,28 +7441,15 @@ let main args =
                                                     repoKey
                                                     digest
                                                     expectedLength
-                                                    "initiated"
-                                                    (Some objectStagingKey)
-                                                    (Some storageSession.UploadId)
+                                                    "committed"
                                                     None
+                                                    None
+                                                    (Some digest)
                                                     principal.Subject
                                                     expiresAtUtc)
                                         with
-                                        | Error err ->
-                                            abortMultipartUploadBestEffort
-                                                state
-                                                objectStagingKey
-                                                storageSession.UploadId
-                                                ctx.RequestAborted
-
-                                            serviceUnavailable err
+                                        | Error err -> serviceUnavailable err
                                         | Ok None ->
-                                            abortMultipartUploadBestEffort
-                                                state
-                                                objectStagingKey
-                                                storageSession.UploadId
-                                                ctx.RequestAborted
-
                                             Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
                                         | Ok(Some session) ->
                                             match
@@ -7199,22 +7458,82 @@ let main args =
                                                     principal
                                                     "upload.session.created"
                                                     session.UploadId
-                                                    (Map.ofList [ "repoKey", repoKey; "state", session.State; "deduped", "false" ])
+                                                    (Map.ofList [ "repoKey", repoKey; "state", session.State; "deduped", "true" ])
                                             with
                                             | Error err -> serviceUnavailable err
                                             | Ok() ->
-                                                Results.Created(
-                                                    $"/v1/repos/{repoKey}/uploads/{session.UploadId}",
+                                                Results.Ok(
                                                     {| uploadId = session.UploadId
                                                        repoKey = repoKey
                                                        expectedDigest = session.ExpectedDigest
                                                        expectedLength = session.ExpectedLength
                                                        state = session.State
-                                                       deduped = false
-                                                       expiresAtUtc = session.ExpiresAtUtc
-                                                       objectStagingKey = session.ObjectStagingKey
-                                                       storageUploadId = session.StorageUploadId |}
-                                                ))
+                                                       deduped = true
+                                                       expiresAtUtc = session.ExpiresAtUtc |}
+                                                )
+                                    | Ok None ->
+                                        let uploadId = Guid.NewGuid()
+                                        let objectStagingKey = buildStagingObjectKey principal.TenantId repoKey uploadId
+
+                                        match
+                                            state.ObjectStorageClient.StartMultipartUpload(objectStagingKey, ctx.RequestAborted).Result
+                                        with
+                                        | Error storageErr -> mapObjectStorageErrorToResult storageErr
+                                        | Ok storageSession ->
+                                            match
+                                                withConnection
+                                                    state
+                                                    (insertUploadSessionForRepo
+                                                        principal.TenantId
+                                                        repoKey
+                                                        digest
+                                                        expectedLength
+                                                        "initiated"
+                                                        (Some objectStagingKey)
+                                                        (Some storageSession.UploadId)
+                                                        None
+                                                        principal.Subject
+                                                        expiresAtUtc)
+                                            with
+                                            | Error err ->
+                                                abortMultipartUploadBestEffort
+                                                    state
+                                                    objectStagingKey
+                                                    storageSession.UploadId
+                                                    ctx.RequestAborted
+
+                                                serviceUnavailable err
+                                            | Ok None ->
+                                                abortMultipartUploadBestEffort
+                                                    state
+                                                    objectStagingKey
+                                                    storageSession.UploadId
+                                                    ctx.RequestAborted
+
+                                                Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                                            | Ok(Some session) ->
+                                                match
+                                                    writeUploadAudit
+                                                        state
+                                                        principal
+                                                        "upload.session.created"
+                                                        session.UploadId
+                                                        (Map.ofList [ "repoKey", repoKey; "state", session.State; "deduped", "false" ])
+                                                with
+                                                | Error err -> serviceUnavailable err
+                                                | Ok() ->
+                                                    Results.Created(
+                                                        $"/v1/repos/{repoKey}/uploads/{session.UploadId}",
+                                                        {| uploadId = session.UploadId
+                                                           repoKey = repoKey
+                                                           expectedDigest = session.ExpectedDigest
+                                                           expectedLength = session.ExpectedLength
+                                                           state = session.State
+                                                           deduped = false
+                                                           expiresAtUtc = session.ExpiresAtUtc
+                                                           objectStagingKey = session.ObjectStagingKey
+                                                           storageUploadId = session.StorageUploadId |}
+                                                    ))
     )
     |> ignore
 
@@ -7810,10 +8129,23 @@ let main args =
                             Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
                         | Ok true ->
                             match
-                                withConnection state (enqueueSearchRebuildJobs principal.TenantId repoKeyOption batchSize)
+                                withConnection
+                                    state
+                                    (fun conn ->
+                                        effectiveTenantAdmissionPolicyForTenant state principal.TenantId conn
+                                        |> Result.bind (fun policy ->
+                                            enqueueSearchRebuildJobs
+                                                principal.TenantId
+                                                repoKeyOption
+                                                batchSize
+                                                policy.MaxPendingSearchJobs
+                                                conn))
                             with
                             | Error err -> serviceUnavailable err
-                            | Ok enqueuedCount ->
+                            | Ok(SearchRebuildQuotaExceeded pendingJobs) ->
+                                tooManyRequests
+                                    $"Tenant search rebuild quota exceeded. Pending search jobs: {pendingJobs}."
+                            | Ok(SearchRebuildEnqueued(enqueuedCount, effectiveBatchSize, pendingJobsAfterEnqueue)) ->
                                 let resourceId =
                                     match repoKeyOption with
                                     | Some repoKey -> repoKey
@@ -7829,15 +8161,19 @@ let main args =
                                         resourceId
                                         (Map.ofList
                                             [ "repoKey", repoKeyOption |> Option.defaultValue "*"
-                                              "batchSize", batchSize.ToString()
-                                              "enqueuedCount", enqueuedCount.ToString() ])
+                                              "requestedBatchSize", batchSize.ToString()
+                                              "effectiveBatchSize", effectiveBatchSize.ToString()
+                                              "enqueuedCount", enqueuedCount.ToString()
+                                              "pendingJobsAfterEnqueue", pendingJobsAfterEnqueue.ToString() ])
                                 with
                                 | Error err -> serviceUnavailable err
                                 | Ok () ->
                                     Results.Ok(
                                         {| repoKey = repoKeyOption
-                                           batchSize = batchSize
-                                           enqueuedCount = enqueuedCount |}
+                                           requestedBatchSize = batchSize
+                                           effectiveBatchSize = effectiveBatchSize
+                                           enqueuedCount = enqueuedCount
+                                           pendingJobsAfterEnqueue = pendingJobsAfterEnqueue |}
                                     ))
     )
     |> ignore

@@ -46,6 +46,13 @@ type UpdatePatPolicyRequest = {
 }
 
 [<CLIMutable>]
+type UpdateTenantAdmissionPolicyRequest = {
+    MaxLogicalStorageBytes: int64
+    MaxConcurrentUploadSessions: int
+    MaxPendingSearchJobs: int
+}
+
+[<CLIMutable>]
 type CreateRepoRequest = {
     RepoKey: string
     RepoType: string
@@ -383,17 +390,20 @@ let private buildSignedSamlResponseXml (issuer: string) (audience: string) (subj
     buildSamlResponseXml issuer audience subject groups
     |> fun xml -> signSamlResponseXml xml integrationSamlSigningCertificate
 
-let private ensureTenantId (conn: NpgsqlConnection) =
+let private ensureTenantIdForSlug (slug: string) (name: string) (conn: NpgsqlConnection) =
     use cmd =
         new NpgsqlCommand(
             """
 insert into tenants (slug, name)
-values ('default', 'Default Tenant')
+values (@slug, @name)
 on conflict (slug) do update set name = excluded.name
 returning tenant_id;
 """,
             conn
         )
+
+    cmd.Parameters.AddWithValue("slug", slug) |> ignore
+    cmd.Parameters.AddWithValue("name", name) |> ignore
 
     let scalar = cmd.ExecuteScalar()
 
@@ -401,6 +411,9 @@ returning tenant_id;
         failwith "Could not resolve tenant id in test fixture."
     else
         scalar :?> Guid
+
+let private ensureTenantId (conn: NpgsqlConnection) =
+    ensureTenantIdForSlug "default" "Default Tenant" conn
 
 let private ensureMigrationTable (conn: NpgsqlConnection) =
     use cmd =
@@ -610,12 +623,19 @@ type ApiFixture() =
     member _.SamlExpectedIssuer = samlExpectedIssuer
     member _.SamlServiceProviderEntityId = samlServiceProviderEntityId
 
-    member this.InsertTokenDirect (subject: string) (scopes: string array) (expiresAtUtc: DateTimeOffset) (revokedAtUtc: DateTimeOffset option) =
+    member this.InsertTokenDirectForTenant
+        (tenantSlug: string)
+        (tenantName: string)
+        (subject: string)
+        (scopes: string array)
+        (expiresAtUtc: DateTimeOffset)
+        (revokedAtUtc: DateTimeOffset option)
+        =
         this.RequireAvailable()
 
         use conn = new NpgsqlConnection(connectionString)
         conn.Open()
-        let tenantId = ensureTenantId conn
+        let tenantId = ensureTenantIdForSlug tenantSlug tenantName conn
         let tokenId = Guid.NewGuid()
         let rawToken = Guid.NewGuid().ToString("N")
         let tokenHash = tokenHashFor rawToken
@@ -661,6 +681,35 @@ where token_id = @token_id;
         | None -> ()
 
         rawToken, tokenId
+
+    member this.InsertTokenDirect (subject: string) (scopes: string array) (expiresAtUtc: DateTimeOffset) (revokedAtUtc: DateTimeOffset option) =
+        this.InsertTokenDirectForTenant "default" "Default Tenant" subject scopes expiresAtUtc revokedAtUtc
+
+    member this.CountPendingSearchJobsForTenant(tenantSlug: string) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let tenantId = ensureTenantIdForSlug tenantSlug $"{tenantSlug} tenant" conn
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from search_index_jobs
+where tenant_id = @tenant_id
+  and status in ('pending', 'processing');
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> int count
+        | :? int32 as count -> count
+        | _ -> failwith $"Unexpected pending search job count scalar for tenant {tenantSlug}."
 
     member this.ExpireUploadSession(uploadId: Guid) =
         this.RequireAvailable()
@@ -744,6 +793,72 @@ values
         conn.Open()
         let tenantId = ensureTenantId conn
 
+        let seedForTenant (tenantId: Guid) =
+            use repoCmd =
+                new NpgsqlCommand(
+                    """
+select repo_id
+from repos
+where tenant_id = @tenant_id
+  and repo_key = @repo_key
+limit 1;
+""",
+                    conn
+                )
+
+            repoCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+            repoCmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+            let repoScalar = repoCmd.ExecuteScalar()
+
+            let repoId =
+                match repoScalar with
+                | :? Guid as value -> value
+                | _ -> failwith $"Could not resolve repo id for {repoKey}."
+
+            let storageKey = $"integration/{repoKey}/{digest}"
+
+            use upsertBlobCmd =
+                new NpgsqlCommand(
+                    """
+insert into blobs (digest, length_bytes, storage_key)
+values (@digest, @length_bytes, @storage_key)
+on conflict (digest)
+do update set storage_key = excluded.storage_key;
+""",
+                    conn
+                )
+
+            upsertBlobCmd.Parameters.AddWithValue("digest", digest) |> ignore
+            upsertBlobCmd.Parameters.AddWithValue("length_bytes", lengthBytes) |> ignore
+            upsertBlobCmd.Parameters.AddWithValue("storage_key", storageKey) |> ignore
+            upsertBlobCmd.ExecuteNonQuery() |> ignore
+
+            use uploadCmd =
+                new NpgsqlCommand(
+                    """
+insert into upload_sessions
+  (upload_id, tenant_id, repo_id, expected_digest, expected_length, state, committed_blob_digest, created_by_subject, expires_at, committed_at)
+values
+  (gen_random_uuid(), @tenant_id, @repo_id, @digest, @length_bytes, 'committed', @digest, 'integration-tests', now() + interval '1 hour', now());
+""",
+                    conn
+                )
+
+            uploadCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+            uploadCmd.Parameters.AddWithValue("repo_id", repoId) |> ignore
+            uploadCmd.Parameters.AddWithValue("digest", digest) |> ignore
+            uploadCmd.Parameters.AddWithValue("length_bytes", lengthBytes) |> ignore
+            uploadCmd.ExecuteNonQuery() |> ignore
+
+        seedForTenant tenantId
+
+    member this.SeedCommittedBlobForTenantRepo(tenantSlug: string, tenantName: string, repoKey: string, digest: string, lengthBytes: int64) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+        let tenantId = ensureTenantIdForSlug tenantSlug tenantName conn
+
         use repoCmd =
             new NpgsqlCommand(
                 """
@@ -763,9 +878,9 @@ limit 1;
         let repoId =
             match repoScalar with
             | :? Guid as value -> value
-            | _ -> failwith $"Could not resolve repo id for {repoKey}."
+            | _ -> failwith $"Could not resolve repo id for {repoKey} in tenant {tenantSlug}."
 
-        let storageKey = $"integration/{repoKey}/{digest}"
+        let storageKey = $"integration/{tenantSlug}/{repoKey}/{digest}"
 
         use upsertBlobCmd =
             new NpgsqlCommand(
@@ -1641,6 +1756,32 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         fixture.Client.Send(request)
 
+    let getTenantAdmissionPolicy (adminToken: string) =
+        fixture.RequireAvailable()
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/tenant-admission-policy")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+        fixture.Client.Send(request)
+
+    let updateTenantAdmissionPolicy
+        (adminToken: string)
+        (maxLogicalStorageBytes: int64)
+        (maxConcurrentUploadSessions: int)
+        (maxPendingSearchJobs: int)
+        =
+        fixture.RequireAvailable()
+
+        use request = new HttpRequestMessage(HttpMethod.Put, "/v1/admin/tenant-admission-policy")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+
+        request.Content <-
+            JsonContent.Create(
+                { MaxLogicalStorageBytes = maxLogicalStorageBytes
+                  MaxConcurrentUploadSessions = maxConcurrentUploadSessions
+                  MaxPendingSearchJobs = maxPendingSearchJobs }
+            )
+
+        fixture.Client.Send(request)
+
     let listPats (adminToken: string) =
         fixture.RequireAvailable()
         use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/auth/pats")
@@ -1802,6 +1943,42 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         let digest = tokenHashFor $"p5-digest-{Guid.NewGuid():N}"
         fixture.SeedCommittedBlobForRepo(repoKey, digest, 512L)
+
+        let entries =
+            [| { RelativePath = "lib/package.nupkg"
+                 BlobDigest = digest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = digest
+                 SizeBytes = 512L } |]
+
+        use entriesResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entries
+        ensureStatus HttpStatusCode.OK entriesResponse |> ignore
+
+        use manifestDoc = JsonDocument.Parse("""{"id":"phase5.package","version":"1.0.0"}""")
+        let manifest = manifestDoc.RootElement.Clone()
+        use manifestResponse = upsertManifestWithToken writeToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.OK manifestResponse |> ignore
+
+        use publishResponse = publishVersionWithToken promoteToken repoKey versionId
+        ensureStatus HttpStatusCode.OK publishResponse |> ignore
+
+        versionId, digest
+
+    let createPublishedVersionWithBlobForTenant
+        (tenantSlug: string)
+        (tenantName: string)
+        (repoKey: string)
+        (writeToken: string)
+        (promoteToken: string)
+        (packageName: string)
+        =
+        use draftResponse = createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+        let draftBody = ensureStatus HttpStatusCode.Created draftResponse
+        use draftDoc = JsonDocument.Parse(draftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let digest = tokenHashFor $"tenant-digest-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForTenantRepo(tenantSlug, tenantName, repoKey, digest, 512L)
 
         let entries =
             [| { RelativePath = "lib/package.nupkg"
@@ -5543,6 +5720,235 @@ type Phase1ApiTests(fixture: ApiFixture) =
         let postRebuildSearchBody = ensureStatus HttpStatusCode.OK postRebuildSearchResponse
         use postRebuildSearchDoc = JsonDocument.Parse(postRebuildSearchBody)
         Assert.Equal(2L, postRebuildSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+    [<Fact>]
+    member _.``ER-201 tenant admission policy endpoint round-trips and reports usage`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er201-admin") [| "repo:*:admin" |] 60
+        try
+            use updateResponse = updateTenantAdmissionPolicy adminToken 10485760L 3 7
+            let updateBody = ensureStatus HttpStatusCode.OK updateResponse
+            use updateDoc = JsonDocument.Parse(updateBody)
+            Assert.Equal(10485760L, updateDoc.RootElement.GetProperty("maxLogicalStorageBytes").GetInt64())
+            Assert.Equal(3, updateDoc.RootElement.GetProperty("maxConcurrentUploadSessions").GetInt32())
+            Assert.Equal(7, updateDoc.RootElement.GetProperty("maxPendingSearchJobs").GetInt32())
+
+            use getResponse = getTenantAdmissionPolicy adminToken
+            let getBody = ensureStatus HttpStatusCode.OK getResponse
+            use getDoc = JsonDocument.Parse(getBody)
+            Assert.Equal(10485760L, getDoc.RootElement.GetProperty("maxLogicalStorageBytes").GetInt64())
+            Assert.Equal(3, getDoc.RootElement.GetProperty("maxConcurrentUploadSessions").GetInt32())
+            Assert.Equal(7, getDoc.RootElement.GetProperty("maxPendingSearchJobs").GetInt32())
+            let usage = getDoc.RootElement.GetProperty("usage")
+            Assert.True(usage.GetProperty("logicalStorageBytes").GetInt64() >= 0L)
+            Assert.True(usage.GetProperty("activeUploadSessions").GetInt32() >= 0)
+            Assert.True(usage.GetProperty("pendingSearchJobs").GetInt32() >= 0)
+        finally
+            use resetResponse = updateTenantAdmissionPolicy adminToken (50L * 1024L * 1024L * 1024L) 1000 5000
+            ensureStatus HttpStatusCode.OK resetResponse |> ignore
+
+    [<Fact>]
+    member _.``ER-202 same repo key across tenants stays isolated for search and admin operations`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let repoKey = makeRepoKey "er202-shared"
+        let repoKeyAOnly = makeRepoKey "er202-aonly"
+        let tenantBSlug = $"tenant-b-{Guid.NewGuid():N}".Substring(0, 18)
+
+        let tenantAAdmin, _ = issuePat (makeSubject "er202-a-admin") [| "repo:*:admin" |] 60
+        createRepoAsAdmin tenantAAdmin repoKey
+        createRepoAsAdmin tenantAAdmin repoKeyAOnly
+        let tenantARead, _ = issuePat (makeSubject "er202-a-read") [| $"repo:{repoKey}:read" |] 60
+        let tenantAWrite, _ = issuePat (makeSubject "er202-a-write") [| $"repo:{repoKey}:write" |] 60
+        let tenantAPromote, _ = issuePat (makeSubject "er202-a-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let tenantBAdmin, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant B"
+                (makeSubject "er202-b-admin")
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        createRepoAsAdmin tenantBAdmin repoKey
+
+        let tenantBRead, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant B"
+                (makeSubject "er202-b-read")
+                [| $"repo:{repoKey}:read" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let tenantBWrite, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant B"
+                (makeSubject "er202-b-write")
+                [| $"repo:{repoKey}:write" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let tenantBPromote, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant B"
+                (makeSubject "er202-b-promote")
+                [| $"repo:{repoKey}:promote" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let packageA = $"pkg-a-{Guid.NewGuid():N}"
+        let packageB = $"pkg-b-{Guid.NewGuid():N}"
+        let _, _ = createPublishedVersionWithBlob repoKey tenantAWrite tenantAPromote packageA
+        let _, _ = createPublishedVersionWithBlobForTenant tenantBSlug "Tenant B" repoKey tenantBWrite tenantBPromote packageB
+
+        use rebuildAResponse = rebuildSearchIndexWithToken tenantAAdmin (Some repoKey) (Some 20)
+        ensureStatus HttpStatusCode.OK rebuildAResponse |> ignore
+        use rebuildBResponse = rebuildSearchIndexWithToken tenantBAdmin (Some repoKey) (Some 20)
+        ensureStatus HttpStatusCode.OK rebuildBResponse |> ignore
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+        Assert.True(jobOutcome.CompletedCount >= 2)
+
+        use tenantASearchA = searchPackagesWithToken tenantARead repoKey (Some packageA) None None
+        let tenantASearchABody = ensureStatus HttpStatusCode.OK tenantASearchA
+        use tenantASearchADoc = JsonDocument.Parse(tenantASearchABody)
+        Assert.Equal(1L, tenantASearchADoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use tenantASearchB = searchPackagesWithToken tenantARead repoKey (Some packageB) None None
+        let tenantASearchBBody = ensureStatus HttpStatusCode.OK tenantASearchB
+        use tenantASearchBDoc = JsonDocument.Parse(tenantASearchBBody)
+        Assert.Equal(0L, tenantASearchBDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use tenantBSearchB = searchPackagesWithToken tenantBRead repoKey (Some packageB) None None
+        let tenantBSearchBBody = ensureStatus HttpStatusCode.OK tenantBSearchB
+        use tenantBSearchBDoc = JsonDocument.Parse(tenantBSearchBBody)
+        Assert.Equal(1L, tenantBSearchBDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use tenantBSearchA = searchPackagesWithToken tenantBRead repoKey (Some packageA) None None
+        let tenantBSearchABody = ensureStatus HttpStatusCode.OK tenantBSearchA
+        use tenantBSearchADoc = JsonDocument.Parse(tenantBSearchABody)
+        Assert.Equal(0L, tenantBSearchADoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use crossTenantRebuildResponse = rebuildSearchIndexWithToken tenantBAdmin (Some repoKeyAOnly) (Some 20)
+        ensureStatus HttpStatusCode.NotFound crossTenantRebuildResponse |> ignore
+
+    [<Fact>]
+    member _.``ER-203 upload admission policy enforces concurrent session limits`` () =
+        fixture.RequireAvailable()
+
+        let tenantSlug = $"tenant-upload-{Guid.NewGuid():N}".Substring(0, 21)
+        let adminToken, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantSlug
+                "Upload Tenant"
+                (makeSubject "er203-upload-admin")
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let repoKey = makeRepoKey "er203-upload"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantSlug
+                "Upload Tenant"
+                (makeSubject "er203-upload-writer")
+                [| $"repo:{repoKey}:write" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        use policyResponse = updateTenantAdmissionPolicy adminToken 10485760L 2 25
+        ensureStatus HttpStatusCode.OK policyResponse |> ignore
+
+        let storageReservedDigest = tokenHashFor (Guid.NewGuid().ToString("N"))
+        use firstCreateResponse = createUploadSessionWithToken writeToken repoKey storageReservedDigest 10485700L
+        let firstCreateBody = ensureStatus HttpStatusCode.Created firstCreateResponse
+        use firstCreateDoc = JsonDocument.Parse(firstCreateBody)
+        let firstUploadId = firstCreateDoc.RootElement.GetProperty("uploadId").GetGuid()
+
+        use concurrentPolicyResponse = updateTenantAdmissionPolicy adminToken 10485760L 1 25
+        ensureStatus HttpStatusCode.OK concurrentPolicyResponse |> ignore
+
+        let concurrentDigest = tokenHashFor (Guid.NewGuid().ToString("N"))
+        use concurrentCreateResponse = createUploadSessionWithToken writeToken repoKey concurrentDigest 16L
+        let concurrentCreateBody = ensureStatus HttpStatusCode.Created concurrentCreateResponse
+        use concurrentCreateDoc = JsonDocument.Parse(concurrentCreateBody)
+        let concurrentUploadId = concurrentCreateDoc.RootElement.GetProperty("uploadId").GetGuid()
+
+        let secondDigest = tokenHashFor (Guid.NewGuid().ToString("N"))
+        use concurrentLimitedResponse = createUploadSessionWithToken writeToken repoKey secondDigest 8L
+        ensureStatus HttpStatusCode.TooManyRequests concurrentLimitedResponse |> ignore
+
+        use abortReservedResponse = abortUploadWithToken writeToken repoKey firstUploadId "cleanup"
+        ensureStatus HttpStatusCode.OK abortReservedResponse |> ignore
+
+        use abortConcurrentResponse = abortUploadWithToken writeToken repoKey concurrentUploadId "cleanup"
+        ensureStatus HttpStatusCode.OK abortConcurrentResponse |> ignore
+
+    [<Fact>]
+    member _.``ER-203 search rebuild quota limits pending jobs per tenant`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let tenantSlug = $"tenant-search-{Guid.NewGuid():N}".Substring(0, 21)
+        let adminToken, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantSlug
+                "Search Tenant"
+                (makeSubject "er203-search-admin")
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let repoKey = makeRepoKey "er203-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantSlug
+                "Search Tenant"
+                (makeSubject "er203-search-writer")
+                [| $"repo:{repoKey}:write" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let promoteToken, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantSlug
+                "Search Tenant"
+                (makeSubject "er203-search-promote")
+                [| $"repo:{repoKey}:promote" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let versionA, _ = createPublishedVersionWithBlobForTenant tenantSlug "Search Tenant" repoKey writeToken promoteToken $"er203-a-{Guid.NewGuid():N}"
+        let versionB, _ = createPublishedVersionWithBlobForTenant tenantSlug "Search Tenant" repoKey writeToken promoteToken $"er203-b-{Guid.NewGuid():N}"
+
+        fixture.ResetSearchPipelineStateGlobal()
+
+        use policyResponse = updateTenantAdmissionPolicy adminToken (1024L * 1024L * 1024L) 25 1
+        ensureStatus HttpStatusCode.OK policyResponse |> ignore
+
+        use firstRebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 100)
+        let firstRebuildBody = ensureStatus HttpStatusCode.OK firstRebuildResponse
+        use firstRebuildDoc = JsonDocument.Parse(firstRebuildBody)
+        Assert.Equal(1L, firstRebuildDoc.RootElement.GetProperty("enqueuedCount").GetInt64())
+        Assert.Equal(1, firstRebuildDoc.RootElement.GetProperty("effectiveBatchSize").GetInt32())
+        Assert.Equal(1, fixture.CountPendingSearchJobsForTenant(tenantSlug))
+
+        use secondRebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 100)
+        ensureStatus HttpStatusCode.TooManyRequests secondRebuildResponse |> ignore
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+        Assert.True(jobOutcome.CompletedCount >= 1)
+        Assert.True(fixture.CountSearchDocumentsForVersion(versionA) + fixture.CountSearchDocumentsForVersion(versionB) >= 1L)
 
     [<Fact>]
     member _.``P2-03 upload session create API covers unauthorized, forbidden, and authorized paths`` () =

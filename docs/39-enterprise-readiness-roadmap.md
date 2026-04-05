@@ -52,9 +52,9 @@ This plan assumes the current repository baseline described in:
 | ER-1-04 | Secret redaction and sensitive-field logging audit | ER-1-01 | done |
 | ER-1-05 | Signed release artifacts, SBOM, and supply-chain verification lane | ER-1-01 | done |
 | ER-1-06 | Security review closure v2 and threat-model refresh | ER-1-02 through ER-1-05 | done |
-| ER-2-01 | Formal tenant isolation invariants across API and worker paths | ER-1-06 | todo |
-| ER-2-02 | Cross-tenant negative integration and stress coverage | ER-2-01 | todo |
-| ER-2-03 | Tenant quotas and admission controls | ER-2-01 | todo |
+| ER-2-01 | Formal tenant isolation invariants across API and worker paths | ER-1-06 | done |
+| ER-2-02 | Cross-tenant negative integration and stress coverage | ER-2-01 | done |
+| ER-2-03 | Tenant quotas and admission controls | ER-2-01 | done |
 | ER-2-04 | Delegated administration and tenant-scoped operational roles | ER-2-01 | todo |
 | ER-3-01 | Background job idempotency and replay-safety hardening | ER-2-02 | todo |
 | ER-3-02 | Dependency failure-mode matrix and deterministic readiness/degradation semantics | ER-3-01 | in_progress |
