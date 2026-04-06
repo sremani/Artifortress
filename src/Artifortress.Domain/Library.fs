@@ -25,6 +25,40 @@ type RepoRole =
     | Admin
     | Promote
 
+type TenantRole =
+    | TenantAdmin
+    | TenantAuditor
+    | TenantOperator
+
+module TenantRole =
+    let tryParse (value: string) =
+        if String.IsNullOrWhiteSpace value then
+            Error "Tenant role cannot be empty."
+        else
+            let normalized = value.Trim().ToLowerInvariant()
+
+            match normalized with
+            | "admin"
+            | "tenant_admin" -> Ok TenantAdmin
+            | "auditor"
+            | "tenant_auditor" -> Ok TenantAuditor
+            | "operator"
+            | "tenant_operator" -> Ok TenantOperator
+            | _ -> Error $"Unsupported tenant role '{value}'."
+
+    let value role =
+        match role with
+        | TenantAdmin -> "admin"
+        | TenantAuditor -> "auditor"
+        | TenantOperator -> "operator"
+
+    let implies assigned required =
+        match assigned, required with
+        | TenantAdmin, _ -> true
+        | TenantOperator, TenantOperator
+        | TenantAuditor, TenantAuditor -> true
+        | _ -> false
+
 module RepoRole =
     let tryParse (value: string) =
         if String.IsNullOrWhiteSpace value then
@@ -100,3 +134,6 @@ module RepoScope =
 module Authorization =
     let hasRole (scopes: seq<RepoScope>) (repoKey: string) (requiredRole: RepoRole) =
         scopes |> Seq.exists (fun scope -> RepoScope.allows repoKey requiredRole scope)
+
+    let hasTenantRole (roles: seq<TenantRole>) (requiredRole: TenantRole) =
+        roles |> Seq.exists (fun role -> TenantRole.implies role requiredRole)

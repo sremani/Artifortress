@@ -1825,6 +1825,17 @@ type Phase1ApiTests(fixture: ApiFixture) =
         request.Content <- JsonContent.Create({ Roles = roles })
         fixture.Client.Send(request)
 
+    let putTenantRoleBinding (token: string) (subject: string) (roles: string array) =
+        use request = new HttpRequestMessage(HttpMethod.Put, $"/v1/admin/tenant-role-bindings/{subject}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <- JsonContent.Create({ Roles = roles })
+        fixture.Client.Send(request)
+
+    let getTenantRoleBindings (token: string) =
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/tenant-role-bindings")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
     let createUploadSessionWithToken (token: string) (repoKey: string) (expectedDigest: string) (expectedLength: int64) =
         use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/uploads")
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
@@ -2119,6 +2130,11 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
     let getAuditWithToken (token: string) (limit: int) =
         use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/audit?limit={limit}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let getAuditExportWithToken (token: string) (limit: int) =
+        use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/audit/export?limit={limit}")
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
         fixture.Client.Send(request)
 
@@ -2641,6 +2657,69 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.True(foundBinding, $"Expected binding subject {bindingSubject} in role binding list.")
 
     [<Fact>]
+    member _.``ER-204 tenant role bindings delegate auditor and operator access`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er204-admin") [| "repo:*:admin" |] 60
+        let auditorSubject = makeSubject "er204-auditor"
+        let operatorSubject = makeSubject "er204-operator"
+
+        use unauthorizedPutRequest = new HttpRequestMessage(HttpMethod.Put, $"/v1/admin/tenant-role-bindings/{auditorSubject}")
+        unauthorizedPutRequest.Content <- JsonContent.Create({ Roles = [| "auditor" |] })
+        use unauthorizedPutResponse = fixture.Client.Send(unauthorizedPutRequest)
+        ensureStatus HttpStatusCode.Unauthorized unauthorizedPutResponse |> ignore
+
+        use auditorPutResponse = putTenantRoleBinding adminToken auditorSubject [| "auditor" |]
+        ensureStatus HttpStatusCode.OK auditorPutResponse |> ignore
+
+        use operatorPutResponse = putTenantRoleBinding adminToken operatorSubject [| "operator" |]
+        ensureStatus HttpStatusCode.OK operatorPutResponse |> ignore
+
+        let auditorToken, _ = issuePat auditorSubject [||] 60
+        let operatorToken, _ = issuePat operatorSubject [||] 60
+
+        use tenantRoleBindingsResponse = getTenantRoleBindings adminToken
+        let tenantRoleBindingsBody = ensureStatus HttpStatusCode.OK tenantRoleBindingsResponse
+        use tenantRoleBindingsDoc = JsonDocument.Parse(tenantRoleBindingsBody)
+
+        let hasAuditorBinding =
+            tenantRoleBindingsDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun element ->
+                element.GetProperty("subject").GetString() = auditorSubject
+                && (element.GetProperty("roles").EnumerateArray() |> Seq.exists (fun role -> role.GetString() = "auditor")))
+
+        Assert.True(hasAuditorBinding, $"Expected tenant role binding for subject {auditorSubject}.")
+
+        use auditorOpsSummaryResponse = opsSummaryWithToken auditorToken
+        ensureStatus HttpStatusCode.OK auditorOpsSummaryResponse |> ignore
+
+        use auditorGcResponse =
+            runGcWithToken
+                auditorToken
+                (Some
+                    { DryRun = true
+                      RetentionGraceHours = 0
+                      BatchSize = 100 })
+
+        ensureStatus HttpStatusCode.Forbidden auditorGcResponse |> ignore
+
+        use operatorReconcileResponse = reconcileBlobsWithToken operatorToken 10
+        ensureStatus HttpStatusCode.Forbidden operatorReconcileResponse |> ignore
+
+        use operatorGcResponse =
+            runGcWithToken
+                operatorToken
+                (Some
+                    { DryRun = true
+                      RetentionGraceHours = 0
+                      BatchSize = 100 })
+
+        ensureStatus HttpStatusCode.OK operatorGcResponse |> ignore
+
+        use operatorAuditResponse = getAuditWithToken operatorToken 20
+        ensureStatus HttpStatusCode.Forbidden operatorAuditResponse |> ignore
+
+    [<Fact>]
     member _.``P1-11 create repo rejects repo keys containing colon`` () =
         fixture.RequireAvailable()
 
@@ -2653,6 +2732,45 @@ type Phase1ApiTests(fixture: ApiFixture) =
         use doc = JsonDocument.Parse(body)
         Assert.Equal("bad_request", doc.RootElement.GetProperty("error").GetString())
         Assert.Equal("repoKey cannot contain ':'.", doc.RootElement.GetProperty("message").GetString())
+
+    [<Fact>]
+    member _.``ER-501 audit export returns digest and preserves request correlation id`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er501-admin") [| "repo:*:admin" |] 60
+        let auditorSubject = makeSubject "er501-auditor"
+        use bindingResponse = putTenantRoleBinding adminToken auditorSubject [| "auditor" |]
+        ensureStatus HttpStatusCode.OK bindingResponse |> ignore
+
+        let auditorToken, _ = issuePat auditorSubject [||] 60
+        let correlationId = Guid.NewGuid()
+
+        use opsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/ops/summary")
+        opsRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", auditorToken)
+        opsRequest.Headers.Add("X-Correlation-Id", correlationId.ToString())
+        use opsResponse = fixture.Client.Send(opsRequest)
+        ensureStatus HttpStatusCode.OK opsResponse |> ignore
+        Assert.Equal(correlationId.ToString(), opsResponse.Headers.GetValues("X-Correlation-Id") |> Seq.head)
+
+        use auditResponse = getAuditWithToken auditorToken 200
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let matchingCorrelationPresent =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun entry ->
+                entry.GetProperty("action").GetString() = "ops.summary.read"
+                && entry.GetProperty("correlationId").GetGuid() = correlationId)
+
+        Assert.True(matchingCorrelationPresent, "Expected ops.summary.read audit entry to preserve the request correlation id.")
+
+        use exportResponse = getAuditExportWithToken auditorToken 200
+        let exportBody = ensureStatus HttpStatusCode.OK exportResponse
+        let exportDigest = exportResponse.Headers.GetValues("X-Artifortress-Export-SHA256") |> Seq.head
+
+        Assert.False(String.IsNullOrWhiteSpace exportDigest, "Expected export digest header.")
+        Assert.Contains("\"correlationId\"", exportBody)
+        Assert.Contains(correlationId.ToString(), exportBody)
 
     [<Fact>]
     member _.``P3-02 draft version create API enforces authz and reuses existing draft`` () =

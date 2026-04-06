@@ -54,6 +54,11 @@ type UpsertRoleBindingRequest = {
 }
 
 [<CLIMutable>]
+type UpsertTenantRoleBindingRequest = {
+    Roles: string array
+}
+
+[<CLIMutable>]
 type CreateDraftVersionRequest = {
     PackageType: string
     PackageNamespace: string
@@ -181,6 +186,12 @@ type RoleBindingRecord = {
     UpdatedAtUtc: DateTimeOffset
 }
 
+type TenantRoleBindingRecord = {
+    Subject: string
+    Roles: Set<TenantRole>
+    UpdatedAtUtc: DateTimeOffset
+}
+
 type PackageVersionRecord = {
     VersionId: Guid
     RepoKey: string
@@ -301,6 +312,7 @@ type UploadSessionRecord = {
 
 type AuditRecord = {
     AuditId: int64
+    CorrelationId: Guid
     TenantId: Guid
     Actor: string
     Action: string
@@ -343,6 +355,7 @@ type Principal = {
     TokenId: Guid
     Subject: string
     Scopes: RepoScope list
+    TenantRoles: Set<TenantRole>
     AuthSource: string
 }
 
@@ -1937,6 +1950,15 @@ let tryReadBearerToken (ctx: HttpContext) =
     else
         None
 
+let private currentAuditCorrelationId = Threading.AsyncLocal<Guid option>()
+
+let private tryParseCorrelationIdHeader (ctx: HttpContext) =
+    let rawValue = ctx.Request.Headers.["X-Correlation-Id"].ToString()
+
+    match Guid.TryParse(rawValue) with
+    | true, correlationId -> Some correlationId
+    | _ -> None
+
 let parseScopes (rawScopes: string array) =
     let values = if isNull rawScopes then [||] else rawScopes
 
@@ -1960,6 +1982,34 @@ let parseScopes (rawScopes: string array) =
         )
     else
         Error(String.concat "; " errors)
+
+let parseTenantRoles (rawRoles: string array) =
+    let values = if isNull rawRoles then [||] else rawRoles
+
+    if values.Length = 0 then
+        Ok Set.empty
+    else
+        let parsed =
+            values
+            |> Array.toList
+            |> List.map TenantRole.tryParse
+
+        let errors =
+            parsed
+            |> List.choose (function
+                | Error err -> Some err
+                | Ok _ -> None)
+
+        if errors.IsEmpty then
+            Ok(
+                parsed
+                |> List.choose (function
+                    | Ok role -> Some role
+                    | Error _ -> None)
+                |> Set.ofList
+            )
+        else
+            Error(String.concat "; " errors)
 
 let parseRoles (rawRoles: string array) =
     let values = if isNull rawRoles then [||] else rawRoles
@@ -2152,7 +2202,35 @@ let hasAnyTokensForTenant (tenantId: Guid) (conn: NpgsqlConnection) =
     | :? bool as existsValue -> Ok existsValue
     | _ -> Error "Could not determine token existence."
 
-let tryReadPrincipalByTokenHash (tokenHash: string) (conn: NpgsqlConnection) =
+let readTenantRolesForSubject (tenantId: Guid) (subject: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select roles
+from tenant_role_bindings
+where tenant_id = @tenant_id
+  and subject = @subject
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("subject", subject) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let rawRoles = reader.GetFieldValue<string[]>(0)
+        parseTenantRoles rawRoles
+    else
+        Ok Set.empty
+
+let withTenantRoles (subject: string) (principal: Principal) (conn: NpgsqlConnection) =
+    readTenantRolesForSubject principal.TenantId subject conn
+    |> Result.map (fun tenantRoles -> { principal with TenantRoles = tenantRoles })
+
+let tryReadPrincipalByTokenHash (tokenHash: string) (conn: NpgsqlConnection) : Result<Principal option, string> =
     use cmd =
         new NpgsqlCommand(
             """
@@ -2181,17 +2259,19 @@ limit 1;
         let tenantId = reader.GetGuid(1)
         let subject = reader.GetString(2)
         let rawScopes = reader.GetFieldValue<string[]>(3)
+        reader.Close()
 
         match parseScopes rawScopes with
         | Ok scopes ->
-            Ok(
-                Some
-                    { TenantId = tenantId
-                      TokenId = tokenId
-                      Subject = subject
-                      Scopes = scopes
-                      AuthSource = "pat" }
-            )
+            let principal =
+                { TenantId = tenantId
+                  TokenId = tokenId
+                  Subject = subject
+                  Scopes = scopes
+                  TenantRoles = Set.empty
+                  AuthSource = "pat" }
+
+            withTenantRoles subject principal conn |> Result.map Some
         | Error err -> Error $"Persisted scopes are invalid: {err}"
     else
         Ok None
@@ -5172,7 +5252,7 @@ returning upload_id;
             tx.Rollback()
             Ok false
 
-let private tryAuthenticateWithOidcToken (state: AppState) (rawToken: string) =
+let private tryAuthenticateWithOidcToken (state: AppState) (rawToken: string) : Result<Principal option, string> =
     match state.OidcTokenValidation with
     | None -> Ok None
     | Some oidcConfig ->
@@ -5199,15 +5279,18 @@ let private tryAuthenticateWithOidcToken (state: AppState) (rawToken: string) =
         | Ok oidcPrincipal ->
             withConnection state (fun conn ->
                 ensureTenantId state conn
-                |> Result.map (fun tenantId ->
-                    Some
+                |> Result.bind (fun tenantId ->
+                    let principal =
                         { TenantId = tenantId
                           TokenId = oidcPrincipal.TokenId
                           Subject = oidcPrincipal.Subject
                           Scopes = oidcPrincipal.Scopes
-                          AuthSource = "oidc" }))
+                          TenantRoles = Set.empty
+                          AuthSource = "oidc" }
 
-let tryAuthenticate (state: AppState) (ctx: HttpContext) =
+                    withTenantRoles oidcPrincipal.Subject principal conn |> Result.map Some))
+
+let tryAuthenticate (state: AppState) (ctx: HttpContext) : Result<Principal option, string> =
     match tryReadBearerToken ctx with
     | None -> Ok None
     | Some rawToken ->
@@ -5217,12 +5300,23 @@ let tryAuthenticate (state: AppState) (ctx: HttpContext) =
         | Ok(Some principal) -> Ok(Some principal)
         | Ok None -> tryAuthenticateWithOidcToken state rawToken
 
-let requireRole (state: AppState) (ctx: HttpContext) (repoKey: string) (requiredRole: RepoRole) =
+let requireRole (state: AppState) (ctx: HttpContext) (repoKey: string) (requiredRole: RepoRole) : Result<Principal, IResult> =
     match tryAuthenticate state ctx with
     | Error err -> Error(serviceUnavailable err)
     | Ok None -> Error(unauthorized "Missing or invalid bearer token.")
     | Ok(Some principal) when Authorization.hasRole principal.Scopes repoKey requiredRole -> Ok principal
     | Ok(Some _) -> Error(forbidden "Caller does not have the required repository role.")
+
+let private hasTenantRoleAccess (principal: Principal) (requiredRole: TenantRole) =
+    Authorization.hasRole principal.Scopes "*" RepoRole.Admin
+    || Authorization.hasTenantRole principal.TenantRoles requiredRole
+
+let requireTenantRole (state: AppState) (ctx: HttpContext) (requiredRole: TenantRole) : Result<Principal, IResult> =
+    match tryAuthenticate state ctx with
+    | Error err -> Error(serviceUnavailable err)
+    | Ok None -> Error(unauthorized "Missing or invalid bearer token.")
+    | Ok(Some principal) when hasTenantRoleAccess principal requiredRole -> Ok principal
+    | Ok(Some _) -> Error(forbidden "Caller does not have the required tenant role.")
 
 let serializeAuditDetails (details: Map<string, string>) =
     details |> Map.toSeq |> dict |> JsonSerializer.Serialize
@@ -5264,16 +5358,19 @@ let insertAuditRecord
     (details: Map<string, string>)
     (conn: NpgsqlConnection)
     =
+    let correlationId = currentAuditCorrelationId.Value |> Option.defaultValue (Guid.NewGuid())
+
     use cmd =
         new NpgsqlCommand(
             """
-insert into audit_log (tenant_id, actor_subject, action, resource_type, resource_id, details)
-values (@tenant_id, @actor_subject, @action, @resource_type, @resource_id, @details);
+insert into audit_log (tenant_id, correlation_id, actor_subject, action, resource_type, resource_id, details)
+values (@tenant_id, @correlation_id, @actor_subject, @action, @resource_type, @resource_id, @details);
 """,
             conn
         )
 
     cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("correlation_id", correlationId) |> ignore
     cmd.Parameters.AddWithValue("actor_subject", actor) |> ignore
     cmd.Parameters.AddWithValue("action", action) |> ignore
     cmd.Parameters.AddWithValue("resource_type", resourceType) |> ignore
@@ -5310,7 +5407,7 @@ let readAuditRecords (tenantId: Guid) (limit: int) (conn: NpgsqlConnection) =
     use cmd =
         new NpgsqlCommand(
             """
-select audit_id, tenant_id, actor_subject, action, resource_type, resource_id, details::text, occurred_at
+select audit_id, correlation_id, tenant_id, actor_subject, action, resource_type, resource_id, details::text, occurred_at
 from audit_log
 where tenant_id = @tenant_id
 order by occurred_at desc
@@ -5328,19 +5425,21 @@ limit @limit;
     let rec loop () =
         if reader.Read() then
             let auditId = reader.GetInt64(0)
-            let tenantIdValue = reader.GetGuid(1)
-            let actor = reader.GetString(2)
-            let action = reader.GetString(3)
-            let resourceType = reader.GetString(4)
-            let resourceId = reader.GetString(5)
-            let detailsJson = if reader.IsDBNull(6) then "{}" else reader.GetString(6)
-            let occurredAtUtc = reader.GetFieldValue<DateTime>(7) |> toUtcDateTimeOffset
+            let correlationId = reader.GetGuid(1)
+            let tenantIdValue = reader.GetGuid(2)
+            let actor = reader.GetString(3)
+            let action = reader.GetString(4)
+            let resourceType = reader.GetString(5)
+            let resourceId = reader.GetString(6)
+            let detailsJson = if reader.IsDBNull(7) then "{}" else reader.GetString(7)
+            let occurredAtUtc = reader.GetFieldValue<DateTime>(8) |> toUtcDateTimeOffset
 
             match tryParseAuditDetails detailsJson with
             | Error err -> Error err
             | Ok details ->
                 entries.Add(
                     { AuditId = auditId
+                      CorrelationId = correlationId
                       TenantId = tenantIdValue
                       Actor = actor
                       Action = action
@@ -5354,6 +5453,28 @@ limit @limit;
             Ok(entries |> Seq.toList)
 
     loop ()
+
+let private auditRecordToExportObject (record: AuditRecord) =
+    {| auditId = record.AuditId
+       correlationId = record.CorrelationId
+       tenantId = record.TenantId
+       actor = record.Actor
+       action = record.Action
+       resourceType = record.ResourceType
+       resourceId = record.ResourceId
+       occurredAtUtc = record.OccurredAtUtc
+       details = record.Details |}
+
+let createAuditExportPayload (records: AuditRecord list) =
+    let lines =
+        records
+        |> List.map (fun record -> JsonSerializer.Serialize(auditRecordToExportObject record))
+
+    let payload = String.concat "\n" lines
+    let bytes = Encoding.UTF8.GetBytes(payload)
+    let digestBytes = SHA256.HashData(bytes)
+    let digest = Convert.ToHexString(digestBytes).ToLowerInvariant()
+    payload, digest
 
 let readScopesFromBindings (tenantId: Guid) (subject: string) (conn: NpgsqlConnection) =
     use cmd =
@@ -5511,6 +5632,89 @@ order by rb.subject;
                 bindings.Add(
                     { RepoKey = repoKey
                       Subject = subject
+                      Roles = roles
+                      UpdatedAtUtc = updatedAt }
+                )
+                loop ()
+        else
+            Ok(bindings |> Seq.toList)
+
+    loop ()
+
+let upsertTenantRoleBinding
+    (tenantId: Guid)
+    (subject: string)
+    (roles: Set<TenantRole>)
+    (updatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into tenant_role_bindings (tenant_id, subject, roles, updated_by_subject, updated_at)
+values (@tenant_id, @subject, @roles, @updated_by_subject, now())
+on conflict (tenant_id, subject)
+do update set
+  roles = excluded.roles,
+  updated_by_subject = excluded.updated_by_subject,
+  updated_at = now()
+returning updated_at;
+""",
+            conn
+        )
+
+    let roleValues = roles |> Seq.map TenantRole.value |> Seq.toArray
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("subject", subject) |> ignore
+    cmd.Parameters.AddWithValue("updated_by_subject", updatedBySubject) |> ignore
+
+    let rolesParam = cmd.Parameters.Add("roles", NpgsqlDbType.Array ||| NpgsqlDbType.Text)
+    rolesParam.Value <- roleValues
+
+    let scalar = cmd.ExecuteScalar()
+
+    let updatedAtResult =
+        match scalar with
+        | :? DateTimeOffset as dto -> Ok dto
+        | :? DateTime as dt -> Ok(toUtcDateTimeOffset dt)
+        | _ -> Error "Unexpected timestamp type returned for tenant role binding upsert."
+
+    match updatedAtResult with
+    | Error err -> Error err
+    | Ok updatedAt ->
+        Ok
+            { Subject = subject
+              Roles = roles
+              UpdatedAtUtc = updatedAt }
+
+let readTenantRoleBindings (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select subject, roles, updated_at
+from tenant_role_bindings
+where tenant_id = @tenant_id
+order by subject;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let bindings = ResizeArray<TenantRoleBindingRecord>()
+
+    let rec loop () =
+        if reader.Read() then
+            let subject = reader.GetString(0)
+            let roleValues = reader.GetFieldValue<string[]>(1)
+            let updatedAt = reader.GetFieldValue<DateTime>(2) |> toUtcDateTimeOffset
+
+            match parseTenantRoles roleValues with
+            | Error err -> Error $"Invalid persisted tenant role binding value: {err}"
+            | Ok roles ->
+                bindings.Add(
+                    { Subject = subject
                       Roles = roles
                       UpdatedAtUtc = updatedAt }
                 )
@@ -5917,6 +6121,18 @@ let main args =
         | None -> ())
     |> ignore
 
+    app.Use(
+        Func<HttpContext, Func<Threading.Tasks.Task>, Threading.Tasks.Task>(fun ctx next ->
+            let correlationId = tryParseCorrelationIdHeader ctx |> Option.defaultValue (Guid.NewGuid())
+            currentAuditCorrelationId.Value <- Some correlationId
+            ctx.Response.Headers.["X-Correlation-Id"] <- correlationId.ToString()
+
+            let task = next.Invoke()
+
+            task.ContinueWith(fun (_: Threading.Tasks.Task) -> currentAuditCorrelationId.Value <- None))
+    )
+    |> ignore
+
     app.MapGet(
         "/",
         Func<IResult>(fun () ->
@@ -6098,7 +6314,7 @@ let main args =
             | Ok caller ->
                 let callerIsAdmin =
                     match caller with
-                    | Some principal -> Authorization.hasRole principal.Scopes "*" RepoRole.Admin
+                    | Some principal -> hasTenantRoleAccess principal TenantRole.TenantAdmin
                     | None -> false
 
                 match withConnection state (fun conn ->
@@ -6131,17 +6347,22 @@ let main args =
                                     badRequest $"ttlMinutes exceeds configured max TTL of {policy.MaxTtlMinutes}."
                                 else
                                     let requestedScopes = if isNull request.Scopes then [||] else request.Scopes
-                                    let effectiveScopeInputResult =
+                                    let effectiveAccessInputResult =
                                         if requestedScopes.Length = 0 then
-                                            withConnection state (readScopesFromBindings tenantId subject)
-                                            |> Result.map (fun derivedScopes -> derivedScopes |> List.map RepoScope.value |> List.toArray)
+                                            withConnection state (fun conn ->
+                                                readScopesFromBindings tenantId subject conn
+                                                |> Result.bind (fun derivedScopes ->
+                                                    readTenantRolesForSubject tenantId subject conn
+                                                    |> Result.map (fun tenantRoles ->
+                                                        let scopeValues = derivedScopes |> List.map RepoScope.value |> List.toArray
+                                                        scopeValues, tenantRoles)))
                                         else
-                                            Ok requestedScopes
+                                            Ok(requestedScopes, Set.empty)
 
-                                    match effectiveScopeInputResult with
+                                    match effectiveAccessInputResult with
                                     | Error err -> serviceUnavailable err
-                                    | Ok effectiveScopeInput ->
-                                        if effectiveScopeInput.Length = 0 then
+                                    | Ok(effectiveScopeInput, derivedTenantRoles) ->
+                                        if effectiveScopeInput.Length = 0 && Set.isEmpty derivedTenantRoles then
                                             badRequest "No scopes were provided and no role bindings were found for the subject."
                                         else
                                             match parseScopes effectiveScopeInput with
@@ -6189,7 +6410,7 @@ let main args =
     app.MapPost(
         "/v1/auth/pats/revoke",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match readJsonBody<RevokePatRequest> ctx with
@@ -6217,7 +6438,7 @@ let main args =
     app.MapGet(
         "/v1/admin/auth/pat-policy",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match withConnection state (effectivePatPolicyForTenant principal.TenantId) with
@@ -6229,7 +6450,7 @@ let main args =
     app.MapGet(
         "/v1/admin/tenant-admission-policy",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match withConnection state (effectiveTenantAdmissionPolicyForTenant state principal.TenantId) with
@@ -6254,7 +6475,7 @@ let main args =
     app.MapPut(
         "/v1/admin/tenant-admission-policy",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match readJsonBody<UpdateTenantAdmissionPolicyRequest> ctx with
@@ -6307,7 +6528,7 @@ let main args =
     app.MapPut(
         "/v1/admin/auth/pat-policy",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match readJsonBody<UpdatePatPolicyRequest> ctx with
@@ -6347,7 +6568,7 @@ let main args =
     app.MapGet(
         "/v1/admin/auth/pats",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match withConnection state (readPatInventory principal.TenantId) with
@@ -6372,7 +6593,7 @@ let main args =
     app.MapPost(
         "/v1/admin/auth/pats/revoke-subject",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match readJsonBody<RevokePatSubjectRequest> ctx with
@@ -6416,7 +6637,7 @@ let main args =
     app.MapPost(
         "/v1/admin/auth/pats/revoke-all",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
             | Error result -> result
             | Ok principal ->
                 match withConnection state (revokeAllPats principal.TenantId principal.Subject "tenant_wide_revocation") with
@@ -6434,6 +6655,68 @@ let main args =
                     with
                     | Error err -> serviceUnavailable err
                     | Ok() -> Results.Ok({| revokedCount = tokenIds.Length; tokenIds = tokenIds |}))
+    )
+    |> ignore
+
+    app.MapPut(
+        "/v1/admin/tenant-role-bindings/{subject}",
+        Func<HttpContext, IResult>(fun ctx ->
+            let subject = normalizeSubject (ctx.Request.RouteValues["subject"].ToString())
+
+            if String.IsNullOrWhiteSpace subject then
+                badRequest "subject route parameter is required."
+            else
+                match requireTenantRole state ctx TenantRole.TenantAdmin with
+                | Error result -> result
+                | Ok principal ->
+                    match readJsonBody<UpsertTenantRoleBindingRequest> ctx with
+                    | Error err -> badRequest err
+                    | Ok request ->
+                        match parseTenantRoles request.Roles with
+                        | Error err -> badRequest err
+                        | Ok roles when Set.isEmpty roles -> badRequest "At least one tenant role is required."
+                        | Ok roles ->
+                            match withConnection state (upsertTenantRoleBinding principal.TenantId subject roles principal.Subject) with
+                            | Error err -> serviceUnavailable err
+                            | Ok binding ->
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "tenant.role_binding.upserted"
+                                        "tenant_role_binding"
+                                        subject
+                                        (Map.ofList [ "roles", roles |> Seq.map TenantRole.value |> String.concat "," ])
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok () ->
+                                    Results.Ok(
+                                        {| subject = binding.Subject
+                                           roles = binding.Roles |> Seq.map TenantRole.value |> Seq.toArray
+                                           updatedAtUtc = binding.UpdatedAtUtc |}
+                                    ))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/tenant-role-bindings",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (readTenantRoleBindings principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok bindings ->
+                    Results.Ok(
+                        bindings
+                        |> List.map (fun binding ->
+                            {| subject = binding.Subject
+                               roles = binding.Roles |> Seq.map TenantRole.value |> Seq.toArray
+                               updatedAtUtc = binding.UpdatedAtUtc |}
+                        )
+                        |> List.toArray
+                    ))
     )
     |> ignore
 
@@ -8109,7 +8392,7 @@ let main args =
     app.MapPost(
         "/v1/admin/search/rebuild",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantOperator with
             | Error result -> result
             | Ok principal ->
                 match readOptionalJsonBody<SearchRebuildRequest> ctx with
@@ -8181,7 +8464,7 @@ let main args =
     app.MapGet(
         "/v1/admin/ops/summary",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAuditor with
             | Error result -> result
             | Ok principal ->
                 match withConnection state (readOpsSummary principal.TenantId) with
@@ -8233,7 +8516,7 @@ let main args =
     app.MapGet(
         "/v1/admin/reconcile/blobs",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAuditor with
             | Error result -> result
             | Ok principal ->
                 let sampleLimitRaw = ctx.Request.Query["limit"].ToString()
@@ -8268,7 +8551,7 @@ let main args =
     app.MapPost(
         "/v1/admin/gc/runs",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantOperator with
             | Error result -> result
             | Ok principal ->
                 match readOptionalJsonBody<RunGcRequest> ctx with
@@ -8341,7 +8624,7 @@ let main args =
     app.MapGet(
         "/v1/audit",
         Func<HttpContext, IResult>(fun ctx ->
-            match requireRole state ctx "*" RepoRole.Admin with
+            match requireTenantRole state ctx TenantRole.TenantAuditor with
             | Error result -> result
             | Ok principal ->
                 let rawLimit = ctx.Request.Query["limit"].ToString()
@@ -8354,6 +8637,29 @@ let main args =
                 match withConnection state (readAuditRecords principal.TenantId limit) with
                 | Error err -> serviceUnavailable err
                 | Ok entries -> Results.Ok(entries |> List.toArray))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/audit/export",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAuditor with
+            | Error result -> result
+            | Ok principal ->
+                let rawLimit = ctx.Request.Query["limit"].ToString()
+
+                let limit =
+                    match Int32.TryParse rawLimit with
+                    | true, parsed when parsed > 0 -> min parsed 5000
+                    | _ -> 1000
+
+                match withConnection state (readAuditRecords principal.TenantId limit) with
+                | Error err -> serviceUnavailable err
+                | Ok entries ->
+                    let payload, digest = createAuditExportPayload entries
+                    ctx.Response.Headers.["X-Artifortress-Export-SHA256"] <- digest
+                    ctx.Response.Headers.["Content-Disposition"] <- "attachment; filename=audit-export.ndjson"
+                    Results.Text(payload, "application/x-ndjson"))
     )
     |> ignore
 

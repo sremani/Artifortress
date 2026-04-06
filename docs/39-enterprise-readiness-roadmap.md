@@ -55,7 +55,7 @@ This plan assumes the current repository baseline described in:
 | ER-2-01 | Formal tenant isolation invariants across API and worker paths | ER-1-06 | done |
 | ER-2-02 | Cross-tenant negative integration and stress coverage | ER-2-01 | done |
 | ER-2-03 | Tenant quotas and admission controls | ER-2-01 | done |
-| ER-2-04 | Delegated administration and tenant-scoped operational roles | ER-2-01 | todo |
+| ER-2-04 | Delegated administration and tenant-scoped operational roles | ER-2-01 | done |
 | ER-3-01 | Background job idempotency and replay-safety hardening | ER-2-02 | todo |
 | ER-3-02 | Dependency failure-mode matrix and deterministic readiness/degradation semantics | ER-3-01 | in_progress |
 | ER-3-03 | Worker/API crash, restart, and duplicate-delivery drill automation | ER-3-01 | done |
@@ -64,7 +64,7 @@ This plan assumes the current repository baseline described in:
 | ER-4-02 | Search rebuild control plane: pause/resume/cancel/status | ER-4-01 | todo |
 | ER-4-03 | Search lag, freshness, and stuck-job observability | ER-4-02 | todo |
 | ER-4-04 | Large-index rebuild and backfill soak coverage | ER-4-02, ER-4-03 | todo |
-| ER-5-01 | Immutable audit export and correlation model | ER-3-02 | todo |
+| ER-5-01 | Immutable audit export and correlation model | ER-3-02 | done |
 | ER-5-02 | Repository/org policy inheritance and protected-artifact rules | ER-5-01 | todo |
 | ER-5-03 | Dual-control workflows for high-risk admin actions | ER-5-01 | todo |
 | ER-5-04 | Compliance evidence pack and retention/legal-hold controls | ER-5-02, ER-5-03 | todo |
