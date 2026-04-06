@@ -115,4 +115,4 @@ jobs:
           ObjectStorage__AccessKey: artifortress
           ObjectStorage__SecretKey: artifortress
           ObjectStorage__Bucket: artifortress-dev
-        run: make test-integration
+        run: make test-integration-full
