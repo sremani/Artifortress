@@ -160,6 +160,39 @@ type UpdateTenantAdmissionPolicyRequest = {
     MaxPendingSearchJobs: int
 }
 
+[<CLIMutable>]
+type UpdateTenantGovernancePolicyRequest = {
+    MinTombstoneRetentionDays: int
+    RequireDualControlForTombstone: bool
+    RequireDualControlForQuarantineResolution: bool
+}
+
+[<CLIMutable>]
+type UpdateRepoGovernancePolicyRequest = {
+    MinTombstoneRetentionDays: Nullable<int>
+    RequireDualControlForTombstone: Nullable<bool>
+    RequireDualControlForQuarantineResolution: Nullable<bool>
+}
+
+[<CLIMutable>]
+type UpsertArtifactProtectionRequest = {
+    Mode: string
+    Reason: string
+}
+
+[<CLIMutable>]
+type ReleaseArtifactProtectionRequest = {
+    Reason: string
+}
+
+[<CLIMutable>]
+type CreateGovernanceApprovalRequest = {
+    Action: string
+    ResourceType: string
+    ResourceId: string
+    Justification: string
+}
+
 type PatRecord = {
     TokenId: Guid
     Subject: string
@@ -190,6 +223,31 @@ type TenantRoleBindingRecord = {
     Subject: string
     Roles: Set<TenantRole>
     UpdatedAtUtc: DateTimeOffset
+}
+
+type TenantGovernancePolicyRecord = {
+    MinTombstoneRetentionDays: int
+    RequireDualControlForTombstone: bool
+    RequireDualControlForQuarantineResolution: bool
+    UpdatedBySubject: string
+    UpdatedAtUtc: DateTimeOffset
+}
+
+type RepoGovernancePolicyRecord = {
+    RepoKey: string
+    MinTombstoneRetentionDaysOverride: int option
+    RequireDualControlForTombstoneOverride: bool option
+    RequireDualControlForQuarantineResolutionOverride: bool option
+    UpdatedBySubject: string
+    UpdatedAtUtc: DateTimeOffset
+}
+
+type EffectiveGovernancePolicyRecord = {
+    RepoKey: string
+    MinTombstoneRetentionDays: int
+    RequireDualControlForTombstone: bool
+    RequireDualControlForQuarantineResolution: bool
+    Override: RepoGovernancePolicyRecord option
 }
 
 type PackageVersionRecord = {
@@ -350,6 +408,35 @@ type QuarantineResolveOutcome =
     | QuarantineAlreadyResolved of string
     | QuarantineMissing
 
+type ArtifactProtectionRecord = {
+    ProtectionId: Guid
+    RepoKey: string
+    VersionId: Guid
+    PackageName: string
+    Version: string
+    Mode: string
+    Reason: string
+    ProtectedBySubject: string
+    ProtectedAtUtc: DateTimeOffset
+    ReleasedAtUtc: DateTimeOffset option
+    ReleasedBySubject: string option
+    ReleaseReason: string option
+}
+
+type GovernanceApprovalRecord = {
+    ApprovalId: Guid
+    RepoKey: string
+    Action: string
+    ResourceType: string
+    ResourceId: string
+    Justification: string
+    RequestedBySubject: string
+    RequestedAtUtc: DateTimeOffset
+    ApprovedBySubject: string option
+    ApprovedAtUtc: DateTimeOffset option
+    Status: string
+}
+
 type Principal = {
     TenantId: Guid
     TokenId: Guid
@@ -453,6 +540,13 @@ type PatPolicyRecord = {
     UpdatedBySubject: string
     UpdatedAtUtc: DateTimeOffset
 }
+
+let private defaultTenantGovernancePolicy =
+    { MinTombstoneRetentionDays = 1
+      RequireDualControlForTombstone = false
+      RequireDualControlForQuarantineResolution = false
+      UpdatedBySubject = "system_default"
+      UpdatedAtUtc = DateTimeOffset.UnixEpoch }
 
 type TenantAdmissionUsageRecord = {
     LogicalStorageBytes: int64
@@ -701,6 +795,79 @@ let validateTombstoneRequest (defaultRetentionDays: int) (request: TombstoneVers
         Error "retentionDays must be between 1 and 3650."
     else
         Ok(reason, retentionDays)
+
+let validateTenantGovernancePolicyRequest (request: UpdateTenantGovernancePolicyRequest) =
+    if request.MinTombstoneRetentionDays < 1 || request.MinTombstoneRetentionDays > 3650 then
+        Error "minTombstoneRetentionDays must be between 1 and 3650."
+    else
+        Ok request
+
+let validateRepoGovernancePolicyRequest (request: UpdateRepoGovernancePolicyRequest) =
+    let minRetentionResult =
+        if request.MinTombstoneRetentionDays.HasValue then
+            let value = request.MinTombstoneRetentionDays.Value
+            if value < 1 || value > 3650 then
+                Error "minTombstoneRetentionDays override must be between 1 and 3650."
+            else
+                Ok(Some value)
+        else
+            Ok None
+
+    minRetentionResult
+    |> Result.map (fun minRetentionDays ->
+        let dualControlForTombstone =
+            if request.RequireDualControlForTombstone.HasValue then
+                Some request.RequireDualControlForTombstone.Value
+            else
+                None
+
+        let dualControlForQuarantine =
+            if request.RequireDualControlForQuarantineResolution.HasValue then
+                Some request.RequireDualControlForQuarantineResolution.Value
+            else
+                None
+
+        minRetentionDays, dualControlForTombstone, dualControlForQuarantine)
+
+let validateArtifactProtectionRequest (request: UpsertArtifactProtectionRequest) =
+    let mode = normalizeText request.Mode |> fun value -> value.ToLowerInvariant()
+    let reason = normalizeText request.Reason
+
+    if String.IsNullOrWhiteSpace reason then
+        Error "reason is required."
+    else
+        match mode with
+        | "protected"
+        | "legal_hold" -> Ok(mode, reason)
+        | _ -> Error "mode must be one of: protected, legal_hold."
+
+let validateReleaseArtifactProtectionRequest (request: ReleaseArtifactProtectionRequest) =
+    let reason = normalizeText request.Reason
+    if String.IsNullOrWhiteSpace reason then Error "reason is required." else Ok reason
+
+let validateGovernanceApprovalRequest (request: CreateGovernanceApprovalRequest) =
+    let action = normalizeText request.Action |> fun value -> value.ToLowerInvariant()
+    let resourceType = normalizeText request.ResourceType |> fun value -> value.ToLowerInvariant()
+    let resourceId = normalizeText request.ResourceId
+    let justification = normalizeText request.Justification
+
+    let validAction =
+        match action with
+        | "package.version.tombstone"
+        | "quarantine.release"
+        | "quarantine.reject" -> true
+        | _ -> false
+
+    if not validAction then
+        Error "action must be one of: package.version.tombstone, quarantine.release, quarantine.reject."
+    elif String.IsNullOrWhiteSpace resourceType then
+        Error "resourceType is required."
+    elif String.IsNullOrWhiteSpace resourceId then
+        Error "resourceId is required."
+    elif String.IsNullOrWhiteSpace justification then
+        Error "justification is required."
+    else
+        Ok(action, resourceType, resourceId, justification)
 
 let validateGcRequest
     (defaultRetentionGraceHours: int)
@@ -1959,6 +2126,13 @@ let private tryParseCorrelationIdHeader (ctx: HttpContext) =
     | true, correlationId -> Some correlationId
     | _ -> None
 
+let private tryReadGovernanceApprovalIdHeader (ctx: HttpContext) =
+    let rawValue = ctx.Request.Headers.["X-Governance-Approval-Id"].ToString()
+
+    match Guid.TryParse(rawValue) with
+    | true, approvalId -> Some approvalId
+    | _ -> None
+
 let parseScopes (rawScopes: string array) =
     let values = if isNull rawScopes then [||] else rawScopes
 
@@ -2382,6 +2556,228 @@ limit 1;
 let effectiveTenantAdmissionPolicyForTenant (state: AppState) (tenantId: Guid) (conn: NpgsqlConnection) =
     readTenantAdmissionPolicy tenantId conn
     |> Result.map (Option.defaultValue state.DefaultTenantAdmissionPolicy)
+
+let readTenantGovernancePolicy (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select min_tombstone_retention_days,
+       require_dual_control_for_tombstone,
+       require_dual_control_for_quarantine_resolution,
+       updated_by_subject,
+       updated_at
+from tenant_governance_policies
+where tenant_id = @tenant_id
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { MinTombstoneRetentionDays = reader.GetInt32(0)
+                  RequireDualControlForTombstone = reader.GetBoolean(1)
+                  RequireDualControlForQuarantineResolution = reader.GetBoolean(2)
+                  UpdatedBySubject = reader.GetString(3)
+                  UpdatedAtUtc = reader.GetFieldValue<DateTimeOffset>(4) }
+        )
+    else
+        Ok None
+
+let effectiveTenantGovernancePolicyForTenant (tenantId: Guid) (conn: NpgsqlConnection) =
+    readTenantGovernancePolicy tenantId conn |> Result.map (Option.defaultValue defaultTenantGovernancePolicy)
+
+let upsertTenantGovernancePolicy
+    (tenantId: Guid)
+    (minTombstoneRetentionDays: int)
+    (requireDualControlForTombstone: bool)
+    (requireDualControlForQuarantineResolution: bool)
+    (updatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into tenant_governance_policies
+  (tenant_id, min_tombstone_retention_days, require_dual_control_for_tombstone, require_dual_control_for_quarantine_resolution, updated_by_subject, updated_at)
+values
+  (@tenant_id, @min_tombstone_retention_days, @require_dual_control_for_tombstone, @require_dual_control_for_quarantine_resolution, @updated_by_subject, now())
+on conflict (tenant_id)
+do update set
+  min_tombstone_retention_days = excluded.min_tombstone_retention_days,
+  require_dual_control_for_tombstone = excluded.require_dual_control_for_tombstone,
+  require_dual_control_for_quarantine_resolution = excluded.require_dual_control_for_quarantine_resolution,
+  updated_by_subject = excluded.updated_by_subject,
+  updated_at = now()
+returning updated_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("min_tombstone_retention_days", minTombstoneRetentionDays) |> ignore
+    cmd.Parameters.AddWithValue("require_dual_control_for_tombstone", requireDualControlForTombstone) |> ignore
+    cmd.Parameters.AddWithValue("require_dual_control_for_quarantine_resolution", requireDualControlForQuarantineResolution) |> ignore
+    cmd.Parameters.AddWithValue("updated_by_subject", updatedBySubject) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    let updatedAtUtc =
+        match scalar with
+        | :? DateTimeOffset as dto -> Ok dto
+        | :? DateTime as dt -> Ok(toUtcDateTimeOffset dt)
+        | _ -> Error "Unexpected timestamp type returned for tenant governance policy upsert."
+
+    updatedAtUtc
+    |> Result.map (fun timestamp ->
+        { MinTombstoneRetentionDays = minTombstoneRetentionDays
+          RequireDualControlForTombstone = requireDualControlForTombstone
+          RequireDualControlForQuarantineResolution = requireDualControlForQuarantineResolution
+          UpdatedBySubject = updatedBySubject
+          UpdatedAtUtc = timestamp })
+
+let readRepoGovernancePolicy (tenantId: Guid) (repoKey: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select rgp.min_tombstone_retention_days,
+       rgp.require_dual_control_for_tombstone,
+       rgp.require_dual_control_for_quarantine_resolution,
+       rgp.updated_by_subject,
+       rgp.updated_at
+from repo_governance_policies rgp
+join repos r on r.repo_id = rgp.repo_id
+where rgp.tenant_id = @tenant_id
+  and r.repo_key = @repo_key
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { RepoKey = repoKey
+                  MinTombstoneRetentionDaysOverride = if reader.IsDBNull(0) then None else Some(reader.GetInt32(0))
+                  RequireDualControlForTombstoneOverride = if reader.IsDBNull(1) then None else Some(reader.GetBoolean(1))
+                  RequireDualControlForQuarantineResolutionOverride = if reader.IsDBNull(2) then None else Some(reader.GetBoolean(2))
+                  UpdatedBySubject = reader.GetString(3)
+                  UpdatedAtUtc = reader.GetFieldValue<DateTimeOffset>(4) }
+        )
+    else
+        Ok None
+
+let effectiveRepoGovernancePolicyForRepo (tenantId: Guid) (repoKey: string) (conn: NpgsqlConnection) =
+    effectiveTenantGovernancePolicyForTenant tenantId conn
+    |> Result.bind (fun tenantPolicy ->
+        readRepoGovernancePolicy tenantId repoKey conn
+        |> Result.map (fun repoOverride ->
+            let minRetention =
+                repoOverride
+                |> Option.bind (fun policy -> policy.MinTombstoneRetentionDaysOverride)
+                |> Option.defaultValue tenantPolicy.MinTombstoneRetentionDays
+
+            let dualControlForTombstone =
+                repoOverride
+                |> Option.bind (fun policy -> policy.RequireDualControlForTombstoneOverride)
+                |> Option.defaultValue tenantPolicy.RequireDualControlForTombstone
+
+            let dualControlForQuarantine =
+                repoOverride
+                |> Option.bind (fun policy -> policy.RequireDualControlForQuarantineResolutionOverride)
+                |> Option.defaultValue tenantPolicy.RequireDualControlForQuarantineResolution
+
+            { RepoKey = repoKey
+              MinTombstoneRetentionDays = minRetention
+              RequireDualControlForTombstone = dualControlForTombstone
+              RequireDualControlForQuarantineResolution = dualControlForQuarantine
+              Override = repoOverride }))
+
+let upsertRepoGovernancePolicy
+    (tenantId: Guid)
+    (repoKey: string)
+    (minTombstoneRetentionDays: int option)
+    (requireDualControlForTombstone: bool option)
+    (requireDualControlForQuarantineResolution: bool option)
+    (updatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+with target_repo as (
+  select repo_id
+  from repos
+  where tenant_id = @tenant_id
+    and repo_key = @repo_key
+)
+insert into repo_governance_policies
+  (tenant_id, repo_id, min_tombstone_retention_days, require_dual_control_for_tombstone, require_dual_control_for_quarantine_resolution, updated_by_subject, updated_at)
+select
+  @tenant_id,
+  target_repo.repo_id,
+  @min_tombstone_retention_days,
+  @require_dual_control_for_tombstone,
+  @require_dual_control_for_quarantine_resolution,
+  @updated_by_subject,
+  now()
+from target_repo
+on conflict (tenant_id, repo_id)
+do update set
+  min_tombstone_retention_days = excluded.min_tombstone_retention_days,
+  require_dual_control_for_tombstone = excluded.require_dual_control_for_tombstone,
+  require_dual_control_for_quarantine_resolution = excluded.require_dual_control_for_quarantine_resolution,
+  updated_by_subject = excluded.updated_by_subject,
+  updated_at = now()
+returning updated_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+
+    let addNullable name (valueOption: obj option) =
+        let param = cmd.Parameters.Add(name, NpgsqlDbType.Integer)
+        param.Value <- defaultArg valueOption (box DBNull.Value)
+
+    let addNullableBool name (valueOption: bool option) =
+        let param = cmd.Parameters.Add(name, NpgsqlDbType.Boolean)
+        param.Value <- (match valueOption with | Some value -> box value | None -> box DBNull.Value)
+
+    addNullable "min_tombstone_retention_days" (minTombstoneRetentionDays |> Option.map box)
+    addNullableBool "require_dual_control_for_tombstone" requireDualControlForTombstone
+    addNullableBool "require_dual_control_for_quarantine_resolution" requireDualControlForQuarantineResolution
+    cmd.Parameters.AddWithValue("updated_by_subject", updatedBySubject) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    if isNull scalar || scalar = box DBNull.Value then
+        Ok None
+    else
+        let updatedAtResult =
+            match scalar with
+            | :? DateTimeOffset as dto -> Ok dto
+            | :? DateTime as dt -> Ok(toUtcDateTimeOffset dt)
+            | _ -> Error "Unexpected timestamp type returned for repo governance policy upsert."
+
+        updatedAtResult
+        |> Result.map (fun updatedAt ->
+            Some
+                { RepoKey = repoKey
+                  MinTombstoneRetentionDaysOverride = minTombstoneRetentionDays
+                  RequireDualControlForTombstoneOverride = requireDualControlForTombstone
+                  RequireDualControlForQuarantineResolutionOverride = requireDualControlForQuarantineResolution
+                  UpdatedBySubject = updatedBySubject
+                  UpdatedAtUtc = updatedAt })
 
 let upsertTenantAdmissionPolicy
     (tenantId: Guid)
@@ -3106,6 +3502,221 @@ where pv.tenant_id = @tenant_id
 
 let tryReadPackageVersionTargetForRepo (tenantId: Guid) (repoKey: string) (versionId: Guid) (conn: NpgsqlConnection) =
     tryReadPackageVersionTargetForRepoInternal tenantId repoKey versionId false conn None
+
+let readActiveArtifactProtectionForVersion
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select ap.protection_id,
+       pv.version_id,
+       p.name,
+       pv.version,
+       ap.mode,
+       ap.reason,
+       ap.protected_by_subject,
+       ap.protected_at,
+       ap.released_at,
+       ap.released_by_subject,
+       ap.release_reason
+from artifact_protections ap
+join repos r on r.repo_id = ap.repo_id
+join package_versions pv on pv.version_id = ap.version_id
+join packages p on p.package_id = pv.package_id
+where ap.tenant_id = @tenant_id
+  and r.repo_key = @repo_key
+  and ap.version_id = @version_id
+  and ap.released_at is null
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { ProtectionId = reader.GetGuid(0)
+                  RepoKey = repoKey
+                  VersionId = reader.GetGuid(1)
+                  PackageName = reader.GetString(2)
+                  Version = reader.GetString(3)
+                  Mode = reader.GetString(4)
+                  Reason = reader.GetString(5)
+                  ProtectedBySubject = reader.GetString(6)
+                  ProtectedAtUtc = reader.GetFieldValue<DateTimeOffset>(7)
+                  ReleasedAtUtc = if reader.IsDBNull(8) then None else Some(reader.GetFieldValue<DateTimeOffset>(8))
+                  ReleasedBySubject = if reader.IsDBNull(9) then None else Some(reader.GetString(9))
+                  ReleaseReason = if reader.IsDBNull(10) then None else Some(reader.GetString(10)) }
+        )
+    else
+        Ok None
+
+let upsertArtifactProtectionForVersion
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (mode: string)
+    (reason: string)
+    (protectedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+with target_version as (
+  select pv.version_id, pv.repo_id, p.name, pv.version
+  from package_versions pv
+  join repos r on r.repo_id = pv.repo_id
+  join packages p on p.package_id = pv.package_id
+  where pv.tenant_id = @tenant_id
+    and r.repo_key = @repo_key
+    and pv.version_id = @version_id
+)
+insert into artifact_protections
+  (tenant_id, repo_id, version_id, mode, reason, protected_by_subject, protected_at, released_at, released_by_subject, release_reason)
+select
+  @tenant_id,
+  target_version.repo_id,
+  target_version.version_id,
+  @mode,
+  @reason,
+  @protected_by_subject,
+  now(),
+  null,
+  null,
+  null
+from target_version
+on conflict (tenant_id, version_id)
+do update set
+  mode = excluded.mode,
+  reason = excluded.reason,
+  protected_by_subject = excluded.protected_by_subject,
+  protected_at = now(),
+  released_at = null,
+  released_by_subject = null,
+  release_reason = null
+returning protection_id,
+          version_id,
+          (select name from target_version),
+          (select version from target_version),
+          mode,
+          reason,
+          protected_by_subject,
+          protected_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+    cmd.Parameters.AddWithValue("mode", mode) |> ignore
+    cmd.Parameters.AddWithValue("reason", reason) |> ignore
+    cmd.Parameters.AddWithValue("protected_by_subject", protectedBySubject) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { ProtectionId = reader.GetGuid(0)
+                  RepoKey = repoKey
+                  VersionId = reader.GetGuid(1)
+                  PackageName = reader.GetString(2)
+                  Version = reader.GetString(3)
+                  Mode = reader.GetString(4)
+                  Reason = reader.GetString(5)
+                  ProtectedBySubject = reader.GetString(6)
+                  ProtectedAtUtc = reader.GetFieldValue<DateTimeOffset>(7)
+                  ReleasedAtUtc = None
+                  ReleasedBySubject = None
+                  ReleaseReason = None }
+        )
+    else
+        Ok None
+
+let releaseArtifactProtectionForVersion
+    (tenantId: Guid)
+    (repoKey: string)
+    (versionId: Guid)
+    (reason: string)
+    (releasedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+update artifact_protections ap
+set released_at = now(),
+    released_by_subject = @released_by_subject,
+    release_reason = @release_reason
+from repos r
+where ap.tenant_id = @tenant_id
+  and r.repo_id = ap.repo_id
+  and r.repo_key = @repo_key
+  and ap.version_id = @version_id
+  and ap.released_at is null
+returning ap.protection_id,
+          ap.version_id,
+          ap.mode,
+          ap.reason,
+          ap.protected_by_subject,
+          ap.protected_at,
+          ap.released_at,
+          ap.released_by_subject,
+          ap.release_reason;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+    cmd.Parameters.AddWithValue("released_by_subject", releasedBySubject) |> ignore
+    cmd.Parameters.AddWithValue("release_reason", reason) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let protectionId = reader.GetGuid(0)
+        let protectedVersionId = reader.GetGuid(1)
+        let mode = reader.GetString(2)
+        let protectionReason = reader.GetString(3)
+        let protectedBySubject = reader.GetString(4)
+        let protectedAtUtc = reader.GetFieldValue<DateTimeOffset>(5)
+        let releasedAtUtc = if reader.IsDBNull(6) then None else Some(reader.GetFieldValue<DateTimeOffset>(6))
+        let releasedByValue = if reader.IsDBNull(7) then None else Some(reader.GetString(7))
+        let releaseReason = if reader.IsDBNull(8) then None else Some(reader.GetString(8))
+        reader.Close()
+
+        tryReadPackageVersionTargetForRepo tenantId repoKey protectedVersionId conn
+        |> Result.map (fun targetOption ->
+            targetOption
+            |> Option.map (fun target ->
+                { ProtectionId = protectionId
+                  RepoKey = repoKey
+                  VersionId = protectedVersionId
+                  PackageName = target.PackageName
+                  Version = target.Version
+                  Mode = mode
+                  Reason = protectionReason
+                  ProtectedBySubject = protectedBySubject
+                  ProtectedAtUtc = protectedAtUtc
+                  ReleasedAtUtc = releasedAtUtc
+                  ReleasedBySubject = releasedByValue
+                  ReleaseReason = releaseReason }))
+    else
+        Ok None
 
 let private tryReadLockedPackageVersionTargetForRepo
     (tenantId: Guid)
@@ -5318,6 +5929,61 @@ let requireTenantRole (state: AppState) (ctx: HttpContext) (requiredRole: Tenant
     | Ok(Some principal) when hasTenantRoleAccess principal requiredRole -> Ok principal
     | Ok(Some _) -> Error(forbidden "Caller does not have the required tenant role.")
 
+let tryConsumeApprovedGovernanceApproval
+    (tenantId: Guid)
+    (repoKey: string)
+    (approvalId: Guid)
+    (action: string)
+    (resourceType: string)
+    (resourceId: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+update governance_approvals ga
+set status = 'consumed'
+from repos r
+where ga.tenant_id = @tenant_id
+  and r.repo_id = ga.repo_id
+  and r.repo_key = @repo_key
+  and ga.approval_id = @approval_id
+  and ga.status = 'approved'
+  and ga.action = @action
+  and ga.resource_type = @resource_type
+  and ga.resource_id = @resource_id
+returning ga.approval_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("approval_id", approvalId) |> ignore
+    cmd.Parameters.AddWithValue("action", action) |> ignore
+    cmd.Parameters.AddWithValue("resource_type", resourceType) |> ignore
+    cmd.Parameters.AddWithValue("resource_id", resourceId) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+    Ok(not (isNull scalar || scalar = box DBNull.Value))
+
+let requireGovernanceApprovalForAction
+    (state: AppState)
+    (ctx: HttpContext)
+    (tenantId: Guid)
+    (repoKey: string)
+    (action: string)
+    (resourceType: string)
+    (resourceId: string)
+    =
+    match tryReadGovernanceApprovalIdHeader ctx with
+    | None -> Error(forbidden "Approved governance approval is required for this action.")
+    | Some approvalId ->
+        match withConnection state (tryConsumeApprovedGovernanceApproval tenantId repoKey approvalId action resourceType resourceId) with
+        | Error err -> Error(serviceUnavailable err)
+        | Ok true -> Ok approvalId
+        | Ok false -> Error(forbidden "Provided governance approval is missing, not approved, or does not match this action.")
+
 let serializeAuditDetails (details: Map<string, string>) =
     details |> Map.toSeq |> dict |> JsonSerializer.Serialize
 
@@ -5721,6 +6387,189 @@ order by subject;
                 loop ()
         else
             Ok(bindings |> Seq.toList)
+
+    loop ()
+
+let createGovernanceApproval
+    (tenantId: Guid)
+    (repoKey: string)
+    (action: string)
+    (resourceType: string)
+    (resourceId: string)
+    (justification: string)
+    (requestedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    let approvalId = Guid.NewGuid()
+
+    use cmd =
+        new NpgsqlCommand(
+            """
+with target_repo as (
+  select repo_id
+  from repos
+  where tenant_id = @tenant_id
+    and repo_key = @repo_key
+)
+insert into governance_approvals
+  (approval_id, tenant_id, repo_id, action, resource_type, resource_id, justification, requested_by_subject, requested_at, status)
+select
+  @approval_id,
+  @tenant_id,
+  target_repo.repo_id,
+  @action,
+  @resource_type,
+  @resource_id,
+  @justification,
+  @requested_by_subject,
+  now(),
+  'pending'
+from target_repo
+returning requested_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("approval_id", approvalId) |> ignore
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("action", action) |> ignore
+    cmd.Parameters.AddWithValue("resource_type", resourceType) |> ignore
+    cmd.Parameters.AddWithValue("resource_id", resourceId) |> ignore
+    cmd.Parameters.AddWithValue("justification", justification) |> ignore
+    cmd.Parameters.AddWithValue("requested_by_subject", requestedBySubject) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    if isNull scalar || scalar = box DBNull.Value then
+        Ok None
+    else
+        let requestedAtUtc =
+            match scalar with
+            | :? DateTimeOffset as dto -> Ok dto
+            | :? DateTime as dt -> Ok(toUtcDateTimeOffset dt)
+            | _ -> Error "Unexpected timestamp type returned for governance approval create."
+
+        requestedAtUtc
+        |> Result.map (fun requestedAt ->
+            Some
+                { ApprovalId = approvalId
+                  RepoKey = repoKey
+                  Action = action
+                  ResourceType = resourceType
+                  ResourceId = resourceId
+                  Justification = justification
+                  RequestedBySubject = requestedBySubject
+                  RequestedAtUtc = requestedAt
+                  ApprovedBySubject = None
+                  ApprovedAtUtc = None
+                  Status = "pending" })
+
+let approveGovernanceApproval
+    (tenantId: Guid)
+    (repoKey: string)
+    (approvalId: Guid)
+    (approvedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+update governance_approvals ga
+set status = 'approved',
+    approved_by_subject = @approved_by_subject,
+    approved_at = now()
+from repos r
+where ga.tenant_id = @tenant_id
+  and r.repo_id = ga.repo_id
+  and r.repo_key = @repo_key
+  and ga.approval_id = @approval_id
+  and ga.status = 'pending'
+  and ga.requested_by_subject <> @approved_by_subject
+returning ga.action,
+          ga.resource_type,
+          ga.resource_id,
+          ga.justification,
+          ga.requested_by_subject,
+          ga.requested_at,
+          ga.approved_by_subject,
+          ga.approved_at,
+          ga.status;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("approval_id", approvalId) |> ignore
+    cmd.Parameters.AddWithValue("approved_by_subject", approvedBySubject) |> ignore
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { ApprovalId = approvalId
+                  RepoKey = repoKey
+                  Action = reader.GetString(0)
+                  ResourceType = reader.GetString(1)
+                  ResourceId = reader.GetString(2)
+                  Justification = reader.GetString(3)
+                  RequestedBySubject = reader.GetString(4)
+                  RequestedAtUtc = reader.GetFieldValue<DateTimeOffset>(5)
+                  ApprovedBySubject = if reader.IsDBNull(6) then None else Some(reader.GetString(6))
+                  ApprovedAtUtc = if reader.IsDBNull(7) then None else Some(reader.GetFieldValue<DateTimeOffset>(7))
+                  Status = reader.GetString(8) }
+        )
+    else
+        Ok None
+
+let readGovernanceApprovalsForRepo (tenantId: Guid) (repoKey: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select ga.approval_id,
+       ga.action,
+       ga.resource_type,
+       ga.resource_id,
+       ga.justification,
+       ga.requested_by_subject,
+       ga.requested_at,
+       ga.approved_by_subject,
+       ga.approved_at,
+       ga.status
+from governance_approvals ga
+join repos r on r.repo_id = ga.repo_id
+where ga.tenant_id = @tenant_id
+  and r.repo_key = @repo_key
+order by ga.requested_at desc;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    use reader = cmd.ExecuteReader()
+    let approvals = ResizeArray<GovernanceApprovalRecord>()
+
+    let rec loop () =
+        if reader.Read() then
+            approvals.Add(
+                { ApprovalId = reader.GetGuid(0)
+                  RepoKey = repoKey
+                  Action = reader.GetString(1)
+                  ResourceType = reader.GetString(2)
+                  ResourceId = reader.GetString(3)
+                  Justification = reader.GetString(4)
+                  RequestedBySubject = reader.GetString(5)
+                  RequestedAtUtc = reader.GetFieldValue<DateTimeOffset>(6)
+                  ApprovedBySubject = if reader.IsDBNull(7) then None else Some(reader.GetString(7))
+                  ApprovedAtUtc = if reader.IsDBNull(8) then None else Some(reader.GetFieldValue<DateTimeOffset>(8))
+                  Status = reader.GetString(9) }
+            )
+            loop ()
+        else
+            Ok(approvals |> Seq.toList)
 
     loop ()
 
@@ -6525,6 +7374,75 @@ let main args =
     )
     |> ignore
 
+    app.MapGet(
+        "/v1/admin/governance/policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (effectiveTenantGovernancePolicyForTenant principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok policy ->
+                    Results.Ok(
+                        {| minTombstoneRetentionDays = policy.MinTombstoneRetentionDays
+                           requireDualControlForTombstone = policy.RequireDualControlForTombstone
+                           requireDualControlForQuarantineResolution = policy.RequireDualControlForQuarantineResolution
+                           updatedBySubject = policy.UpdatedBySubject
+                           updatedAtUtc = policy.UpdatedAtUtc |}
+                    ))
+    )
+    |> ignore
+
+    app.MapPut(
+        "/v1/admin/governance/policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
+            | Error result -> result
+            | Ok principal ->
+                match readJsonBody<UpdateTenantGovernancePolicyRequest> ctx with
+                | Error err -> badRequest err
+                | Ok request ->
+                    match validateTenantGovernancePolicyRequest request with
+                    | Error err -> badRequest err
+                    | Ok validated ->
+                        match
+                            withConnection
+                                state
+                                (upsertTenantGovernancePolicy
+                                    principal.TenantId
+                                    validated.MinTombstoneRetentionDays
+                                    validated.RequireDualControlForTombstone
+                                    validated.RequireDualControlForQuarantineResolution
+                                    principal.Subject)
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok policy ->
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    "tenant.governance.policy.updated"
+                                    "tenant_governance_policy"
+                                    (principal.TenantId.ToString())
+                                    (Map.ofList
+                                        [ "minTombstoneRetentionDays", policy.MinTombstoneRetentionDays.ToString()
+                                          "requireDualControlForTombstone", policy.RequireDualControlForTombstone.ToString()
+                                          "requireDualControlForQuarantineResolution",
+                                          policy.RequireDualControlForQuarantineResolution.ToString() ])
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok () ->
+                                Results.Ok(
+                                    {| minTombstoneRetentionDays = policy.MinTombstoneRetentionDays
+                                       requireDualControlForTombstone = policy.RequireDualControlForTombstone
+                                       requireDualControlForQuarantineResolution = policy.RequireDualControlForQuarantineResolution
+                                       updatedBySubject = policy.UpdatedBySubject
+                                       updatedAtUtc = policy.UpdatedAtUtc |}
+                                ))
+    )
+    |> ignore
+
     app.MapPut(
         "/v1/admin/auth/pat-policy",
         Func<HttpContext, IResult>(fun ctx ->
@@ -6896,6 +7814,269 @@ let main args =
     )
     |> ignore
 
+    app.MapGet(
+        "/v1/repos/{repoKey}/governance/policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match requireRole state ctx repoKey RepoRole.Admin with
+                | Error result -> result
+                | Ok principal ->
+                    match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                    | Error err -> serviceUnavailable err
+                    | Ok false -> Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                    | Ok true ->
+                        match
+                            withConnection state (fun conn ->
+                                effectiveTenantGovernancePolicyForTenant principal.TenantId conn
+                                |> Result.bind (fun tenantPolicy ->
+                                    effectiveRepoGovernancePolicyForRepo principal.TenantId repoKey conn
+                                    |> Result.map (fun effectivePolicy -> tenantPolicy, effectivePolicy)))
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok(tenantPolicy, policy) ->
+                            let overridePolicy = policy.Override
+
+                            Results.Ok(
+                                {| repoKey = repoKey
+                                   effective =
+                                    {| minTombstoneRetentionDays = policy.MinTombstoneRetentionDays
+                                       requireDualControlForTombstone = policy.RequireDualControlForTombstone
+                                       requireDualControlForQuarantineResolution = policy.RequireDualControlForQuarantineResolution |}
+                                   tenantDefault =
+                                    {| minTombstoneRetentionDays = tenantPolicy.MinTombstoneRetentionDays
+                                       requireDualControlForTombstone = tenantPolicy.RequireDualControlForTombstone
+                                       requireDualControlForQuarantineResolution = tenantPolicy.RequireDualControlForQuarantineResolution |}
+                                   policyOverride =
+                                    {| minTombstoneRetentionDays =
+                                        overridePolicy |> Option.bind (fun value -> value.MinTombstoneRetentionDaysOverride)
+                                       requireDualControlForTombstone =
+                                        overridePolicy |> Option.bind (fun value -> value.RequireDualControlForTombstoneOverride)
+                                       requireDualControlForQuarantineResolution =
+                                        overridePolicy |> Option.bind (fun value -> value.RequireDualControlForQuarantineResolutionOverride)
+                                       updatedBySubject = overridePolicy |> Option.map (fun value -> value.UpdatedBySubject)
+                                       updatedAtUtc = overridePolicy |> Option.map (fun value -> value.UpdatedAtUtc) |} |}
+                            ))
+    )
+    |> ignore
+
+    app.MapPut(
+        "/v1/repos/{repoKey}/governance/policy",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match requireRole state ctx repoKey RepoRole.Admin with
+                | Error result -> result
+                | Ok principal ->
+                    match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                    | Error err -> serviceUnavailable err
+                    | Ok false -> Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                    | Ok true ->
+                        match readJsonBody<UpdateRepoGovernancePolicyRequest> ctx with
+                        | Error err -> badRequest err
+                        | Ok request ->
+                            match validateRepoGovernancePolicyRequest request with
+                            | Error err -> badRequest err
+                            | Ok(minRetention, dualControlTombstone, dualControlQuarantine) ->
+                                match
+                                    withConnection
+                                        state
+                                        (upsertRepoGovernancePolicy
+                                            principal.TenantId
+                                            repoKey
+                                            minRetention
+                                            dualControlTombstone
+                                            dualControlQuarantine
+                                            principal.Subject)
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok None ->
+                                    Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                                | Ok(Some policy) ->
+                                    match
+                                        writeAudit
+                                            state
+                                            principal.TenantId
+                                            principal.Subject
+                                            "repo.governance.policy.updated"
+                                            "repo_governance_policy"
+                                            repoKey
+                                            (Map.ofList
+                                                [ "minTombstoneRetentionDays", policy.MinTombstoneRetentionDaysOverride |> Option.map string |> Option.defaultValue "inherit"
+                                                  "requireDualControlForTombstone", policy.RequireDualControlForTombstoneOverride |> Option.map string |> Option.defaultValue "inherit"
+                                                  "requireDualControlForQuarantineResolution",
+                                                  policy.RequireDualControlForQuarantineResolutionOverride |> Option.map string |> Option.defaultValue "inherit" ])
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok () ->
+                                        Results.Ok(
+                                            {| repoKey = repoKey
+                                               minTombstoneRetentionDays = policy.MinTombstoneRetentionDaysOverride
+                                               requireDualControlForTombstone = policy.RequireDualControlForTombstoneOverride
+                                               requireDualControlForQuarantineResolution =
+                                                policy.RequireDualControlForQuarantineResolutionOverride
+                                               updatedBySubject = policy.UpdatedBySubject
+                                               updatedAtUtc = policy.UpdatedAtUtc |}
+                                        ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/approvals",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match requireRole state ctx repoKey RepoRole.Promote with
+                | Error result -> result
+                | Ok principal ->
+                    match readJsonBody<CreateGovernanceApprovalRequest> ctx with
+                    | Error err -> badRequest err
+                    | Ok request ->
+                        match validateGovernanceApprovalRequest request with
+                        | Error err -> badRequest err
+                        | Ok(action, resourceType, resourceId, justification) ->
+                            match
+                                withConnection
+                                    state
+                                    (createGovernanceApproval
+                                        principal.TenantId
+                                        repoKey
+                                        action
+                                        resourceType
+                                        resourceId
+                                        justification
+                                        principal.Subject)
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok None ->
+                                Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                            | Ok(Some approval) ->
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "governance.approval.requested"
+                                        "governance_approval"
+                                        (approval.ApprovalId.ToString())
+                                        (Map.ofList
+                                            [ "repoKey", repoKey
+                                              "action", approval.Action
+                                              "resourceType", approval.ResourceType
+                                              "resourceId", approval.ResourceId ])
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok () ->
+                                    Results.Created(
+                                        $"/v1/repos/{repoKey}/approvals/{approval.ApprovalId}",
+                                        {| approvalId = approval.ApprovalId
+                                           repoKey = approval.RepoKey
+                                           action = approval.Action
+                                           resourceType = approval.ResourceType
+                                           resourceId = approval.ResourceId
+                                           justification = approval.Justification
+                                           requestedBySubject = approval.RequestedBySubject
+                                           requestedAtUtc = approval.RequestedAtUtc
+                                           status = approval.Status |}
+                                    ))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/repos/{repoKey}/approvals",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match requireRole state ctx repoKey RepoRole.Admin with
+                | Error result -> result
+                | Ok principal ->
+                    match withConnection state (readGovernanceApprovalsForRepo principal.TenantId repoKey) with
+                    | Error err -> serviceUnavailable err
+                    | Ok approvals ->
+                        Results.Ok(
+                            approvals
+                            |> List.map (fun approval ->
+                                {| approvalId = approval.ApprovalId
+                                   repoKey = approval.RepoKey
+                                   action = approval.Action
+                                   resourceType = approval.ResourceType
+                                   resourceId = approval.ResourceId
+                                   justification = approval.Justification
+                                   requestedBySubject = approval.RequestedBySubject
+                                   requestedAtUtc = approval.RequestedAtUtc
+                                   approvedBySubject = approval.ApprovedBySubject
+                                   approvedAtUtc = approval.ApprovedAtUtc
+                                   status = approval.Status |})
+                            |> List.toArray
+                        ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/approvals/{approvalId}/approve",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let approvalIdRaw = normalizeText (ctx.Request.RouteValues["approvalId"].ToString())
+
+            let parsedApprovalId =
+                match Guid.TryParse approvalIdRaw with
+                | true, approvalId -> Ok approvalId
+                | _ -> Error "approvalId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedApprovalId with
+                | Error err -> badRequest err
+                | Ok approvalId ->
+                    match requireRole state ctx repoKey RepoRole.Admin with
+                    | Error result -> result
+                    | Ok principal ->
+                        match withConnection state (approveGovernanceApproval principal.TenantId repoKey approvalId principal.Subject) with
+                        | Error err -> serviceUnavailable err
+                        | Ok None ->
+                            conflict "Governance approval was not found, is already approved, or requester and approver are the same."
+                        | Ok(Some approval) ->
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    "governance.approval.approved"
+                                    "governance_approval"
+                                    (approval.ApprovalId.ToString())
+                                    (Map.ofList [ "repoKey", repoKey; "action", approval.Action; "resourceId", approval.ResourceId ])
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok () ->
+                                Results.Ok(
+                                    {| approvalId = approval.ApprovalId
+                                       repoKey = approval.RepoKey
+                                       action = approval.Action
+                                       resourceType = approval.ResourceType
+                                       resourceId = approval.ResourceId
+                                       justification = approval.Justification
+                                       requestedBySubject = approval.RequestedBySubject
+                                       requestedAtUtc = approval.RequestedAtUtc
+                                       approvedBySubject = approval.ApprovedBySubject
+                                       approvedAtUtc = approval.ApprovedAtUtc
+                                       status = approval.Status |}
+                                ))
+    )
+    |> ignore
+
     app.MapPost(
         "/v1/repos/{repoKey}/packages/versions/drafts",
         Func<HttpContext, IResult>(fun ctx ->
@@ -7252,6 +8433,145 @@ let main args =
     |> ignore
 
     app.MapPost(
+        "/v1/repos/{repoKey}/packages/versions/{versionId}/protection",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let versionIdRaw = normalizeText (ctx.Request.RouteValues["versionId"].ToString())
+
+            let parsedVersionId =
+                match Guid.TryParse(versionIdRaw) with
+                | true, parsed -> Ok parsed
+                | _ -> Error "versionId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedVersionId with
+                | Error err -> badRequest err
+                | Ok versionId ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match readJsonBody<UpsertArtifactProtectionRequest> ctx with
+                        | Error err -> badRequest err
+                        | Ok request ->
+                            match validateArtifactProtectionRequest request with
+                            | Error err -> badRequest err
+                            | Ok(mode, reason) ->
+                                match
+                                    withConnection
+                                        state
+                                        (upsertArtifactProtectionForVersion
+                                            principal.TenantId
+                                            repoKey
+                                            versionId
+                                            mode
+                                            reason
+                                            principal.Subject)
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok None ->
+                                    Results.NotFound({| error = "not_found"; message = "Package version was not found in repository." |})
+                                | Ok(Some protection) ->
+                                    match
+                                        writeAudit
+                                            state
+                                            principal.TenantId
+                                            principal.Subject
+                                            "artifact.protection.upserted"
+                                            "artifact_protection"
+                                            (protection.ProtectionId.ToString())
+                                            (Map.ofList
+                                                [ "repoKey", repoKey
+                                                  "versionId", protection.VersionId.ToString()
+                                                  "mode", protection.Mode ])
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok () ->
+                                        Results.Ok(
+                                            {| protectionId = protection.ProtectionId
+                                               repoKey = protection.RepoKey
+                                               versionId = protection.VersionId
+                                               packageName = protection.PackageName
+                                               version = protection.Version
+                                               mode = protection.Mode
+                                               reason = protection.Reason
+                                               protectedBySubject = protection.ProtectedBySubject
+                                               protectedAtUtc = protection.ProtectedAtUtc |}
+                                        ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/repos/{repoKey}/packages/versions/{versionId}/protection/release",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let versionIdRaw = normalizeText (ctx.Request.RouteValues["versionId"].ToString())
+
+            let parsedVersionId =
+                match Guid.TryParse(versionIdRaw) with
+                | true, parsed -> Ok parsed
+                | _ -> Error "versionId route parameter must be a valid GUID."
+
+            if String.IsNullOrWhiteSpace repoKey then
+                badRequest "repoKey route parameter is required."
+            else
+                match parsedVersionId with
+                | Error err -> badRequest err
+                | Ok versionId ->
+                    match requireRole state ctx repoKey RepoRole.Promote with
+                    | Error result -> result
+                    | Ok principal ->
+                        match readJsonBody<ReleaseArtifactProtectionRequest> ctx with
+                        | Error err -> badRequest err
+                        | Ok request ->
+                            match validateReleaseArtifactProtectionRequest request with
+                            | Error err -> badRequest err
+                            | Ok reason ->
+                                match
+                                    withConnection
+                                        state
+                                        (releaseArtifactProtectionForVersion
+                                            principal.TenantId
+                                            repoKey
+                                            versionId
+                                            reason
+                                            principal.Subject)
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok None ->
+                                    Results.NotFound({| error = "not_found"; message = "Active artifact protection was not found." |})
+                                | Ok(Some protection) ->
+                                    match
+                                        writeAudit
+                                            state
+                                            principal.TenantId
+                                            principal.Subject
+                                            "artifact.protection.released"
+                                            "artifact_protection"
+                                            (protection.ProtectionId.ToString())
+                                            (Map.ofList
+                                                [ "repoKey", repoKey
+                                                  "versionId", protection.VersionId.ToString()
+                                                  "mode", protection.Mode ])
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok () ->
+                                        Results.Ok(
+                                            {| protectionId = protection.ProtectionId
+                                               repoKey = protection.RepoKey
+                                               versionId = protection.VersionId
+                                               packageName = protection.PackageName
+                                               version = protection.Version
+                                               mode = protection.Mode
+                                               releasedAtUtc = protection.ReleasedAtUtc
+                                               releasedBySubject = protection.ReleasedBySubject
+                                               releaseReason = protection.ReleaseReason |}
+                                        ))
+    )
+    |> ignore
+
+    app.MapPost(
         "/v1/repos/{repoKey}/packages/versions/{versionId}/tombstone",
         Func<HttpContext, IResult>(fun ctx ->
             let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
@@ -7280,44 +8600,87 @@ let main args =
                                 match
                                     withConnection
                                         state
-                                        (tombstoneVersionForRepo
-                                            principal.TenantId
-                                            repoKey
-                                            versionId
-                                            reason
-                                            retentionDays
-                                            principal.Subject)
+                                        (fun conn ->
+                                            effectiveRepoGovernancePolicyForRepo principal.TenantId repoKey conn
+                                            |> Result.bind (fun policy ->
+                                                if retentionDays < policy.MinTombstoneRetentionDays then
+                                                    Error
+                                                        $"retentionDays must be at least inherited governance minimum of {policy.MinTombstoneRetentionDays}."
+                                                else
+                                                    readActiveArtifactProtectionForVersion principal.TenantId repoKey versionId conn
+                                                    |> Result.map (fun protection -> policy, protection)))
                                 with
+                                | Error err when err.StartsWith("retentionDays") -> badRequest err
                                 | Error err -> serviceUnavailable err
-                                | Ok TombstoneVersionMissing ->
-                                    Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
-                                | Ok(TombstoneVersionStateConflict stateValue) ->
-                                    conflict $"Package version is in state '{stateValue}' and cannot be tombstoned."
-                                | Ok(TombstoneVersionAlreadyTombstoned(target, retentionUntilUtc)) ->
-                                    Results.Ok(
-                                        {| versionId = target.VersionId
-                                           repoKey = target.RepoKey
-                                           packageType = target.PackageType
-                                           packageNamespace = target.PackageNamespace
-                                           packageName = target.PackageName
-                                           version = target.Version
-                                           state = target.State
-                                           retentionUntilUtc = retentionUntilUtc
-                                           idempotent = true |}
+                                | Ok(_, Some protection) ->
+                                    Results.Json(
+                                        {| error = "artifact_protected"
+                                           message = $"Package version is protected by active mode '{protection.Mode}' and cannot be tombstoned."
+                                           protectionId = protection.ProtectionId
+                                           mode = protection.Mode |},
+                                        statusCode = StatusCodes.Status423Locked
                                     )
-                                | Ok(TombstoneVersionSuccess(target, tombstonedAtUtc, retentionUntilUtc)) ->
-                                    Results.Ok(
-                                        {| versionId = target.VersionId
-                                           repoKey = target.RepoKey
-                                           packageType = target.PackageType
-                                           packageNamespace = target.PackageNamespace
-                                           packageName = target.PackageName
-                                           version = target.Version
-                                           state = target.State
-                                           tombstonedAtUtc = tombstonedAtUtc
-                                           retentionUntilUtc = retentionUntilUtc
-                                           idempotent = false |}
-                                    ))
+                                | Ok(policy, None) ->
+                                    let approvalResult =
+                                        if policy.RequireDualControlForTombstone then
+                                            requireGovernanceApprovalForAction
+                                                state
+                                                ctx
+                                                principal.TenantId
+                                                repoKey
+                                                "package.version.tombstone"
+                                                "package_version"
+                                                (versionId.ToString())
+                                            |> Result.map Some
+                                        else
+                                            Ok None
+
+                                    match approvalResult with
+                                    | Error result -> result
+                                    | Ok approvalId ->
+                                        match
+                                            withConnection
+                                                state
+                                                (tombstoneVersionForRepo
+                                                    principal.TenantId
+                                                    repoKey
+                                                    versionId
+                                                    reason
+                                                    retentionDays
+                                                    principal.Subject)
+                                        with
+                                        | Error err -> serviceUnavailable err
+                                        | Ok TombstoneVersionMissing ->
+                                            Results.NotFound({| error = "not_found"; message = "Package version was not found." |})
+                                        | Ok(TombstoneVersionStateConflict stateValue) ->
+                                            conflict $"Package version is in state '{stateValue}' and cannot be tombstoned."
+                                        | Ok(TombstoneVersionAlreadyTombstoned(target, retentionUntilUtc)) ->
+                                            Results.Ok(
+                                                {| versionId = target.VersionId
+                                                   repoKey = target.RepoKey
+                                                   packageType = target.PackageType
+                                                   packageNamespace = target.PackageNamespace
+                                                   packageName = target.PackageName
+                                                   version = target.Version
+                                                   state = target.State
+                                                   retentionUntilUtc = retentionUntilUtc
+                                                   approvalId = approvalId
+                                                   idempotent = true |}
+                                            )
+                                        | Ok(TombstoneVersionSuccess(target, tombstonedAtUtc, retentionUntilUtc)) ->
+                                            Results.Ok(
+                                                {| versionId = target.VersionId
+                                                   repoKey = target.RepoKey
+                                                   packageType = target.PackageType
+                                                   packageNamespace = target.PackageNamespace
+                                                   packageName = target.PackageName
+                                                   version = target.Version
+                                                   state = target.State
+                                                   tombstonedAtUtc = tombstonedAtUtc
+                                                   retentionUntilUtc = retentionUntilUtc
+                                                   approvalId = approvalId
+                                                   idempotent = false |}
+                                            ))
     )
     |> ignore
 
@@ -7548,55 +8911,85 @@ let main args =
                     match requireRole state ctx repoKey RepoRole.Promote with
                     | Error result -> result
                     | Ok principal ->
-                        match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                        match
+                            withConnection
+                                state
+                                (fun conn ->
+                                    repoExistsForTenant principal.TenantId repoKey conn
+                                    |> Result.bind (fun existsValue ->
+                                        if not existsValue then
+                                            Ok(None, None)
+                                        else
+                                            effectiveRepoGovernancePolicyForRepo principal.TenantId repoKey conn
+                                            |> Result.map (fun policy -> Some policy, Some existsValue)))
+                        with
                         | Error err -> serviceUnavailable err
-                        | Ok false ->
+                        | Ok(None, _) ->
                             Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
-                        | Ok true ->
-                            match
-                                withConnection
-                                    state
-                                    (resolveQuarantineItemForRepo
+                        | Ok(Some policy, _) ->
+                            let approvalResult =
+                                if policy.RequireDualControlForQuarantineResolution then
+                                    requireGovernanceApprovalForAction
+                                        state
+                                        ctx
                                         principal.TenantId
                                         repoKey
-                                        quarantineId
-                                        "released"
-                                        principal.Subject)
-                            with
-                            | Error err -> serviceUnavailable err
-                            | Ok QuarantineMissing ->
-                                Results.NotFound({| error = "not_found"; message = "Quarantine item was not found." |})
-                            | Ok(QuarantineAlreadyResolved statusValue) ->
-                                conflict $"Quarantine item is already in status '{statusValue}'."
-                            | Ok(QuarantineResolved item) ->
-                                let auditDetails =
-                                    Map.ofList
-                                        [ "repoKey", repoKey
-                                          "versionId", item.VersionId.ToString()
-                                          "status", item.Status ]
-
-                                match
-                                    writeAudit
-                                        state
-                                        principal.TenantId
-                                        principal.Subject
-                                        "quarantine.released"
+                                        "quarantine.release"
                                         "quarantine_item"
-                                        (item.QuarantineId.ToString())
-                                        auditDetails
+                                        (quarantineId.ToString())
+                                    |> Result.map Some
+                                else
+                                    Ok None
+
+                            match approvalResult with
+                            | Error result -> result
+                            | Ok approvalId ->
+                                match
+                                    withConnection
+                                        state
+                                        (resolveQuarantineItemForRepo
+                                            principal.TenantId
+                                            repoKey
+                                            quarantineId
+                                            "released"
+                                            principal.Subject)
                                 with
                                 | Error err -> serviceUnavailable err
-                                | Ok() ->
-                                    Results.Ok(
-                                        {| quarantineId = item.QuarantineId
-                                           repoKey = item.RepoKey
-                                           versionId = item.VersionId
-                                           status = item.Status
-                                           reason = item.Reason
-                                           createdAtUtc = item.CreatedAtUtc
-                                           resolvedAtUtc = item.ResolvedAtUtc
-                                           resolvedBySubject = item.ResolvedBySubject |}
-                                    ))
+                                | Ok QuarantineMissing ->
+                                    Results.NotFound({| error = "not_found"; message = "Quarantine item was not found." |})
+                                | Ok(QuarantineAlreadyResolved statusValue) ->
+                                    conflict $"Quarantine item is already in status '{statusValue}'."
+                                | Ok(QuarantineResolved item) ->
+                                    let auditDetails =
+                                        Map.ofList
+                                            [ "repoKey", repoKey
+                                              "versionId", item.VersionId.ToString()
+                                              "status", item.Status
+                                              "approvalId", approvalId |> Option.map string |> Option.defaultValue "" ]
+
+                                    match
+                                        writeAudit
+                                            state
+                                            principal.TenantId
+                                            principal.Subject
+                                            "quarantine.released"
+                                            "quarantine_item"
+                                            (item.QuarantineId.ToString())
+                                            auditDetails
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok() ->
+                                        Results.Ok(
+                                            {| quarantineId = item.QuarantineId
+                                               repoKey = item.RepoKey
+                                               versionId = item.VersionId
+                                               status = item.Status
+                                               reason = item.Reason
+                                               createdAtUtc = item.CreatedAtUtc
+                                               resolvedAtUtc = item.ResolvedAtUtc
+                                               resolvedBySubject = item.ResolvedBySubject
+                                               approvalId = approvalId |}
+                                        ))
     )
     |> ignore
 
@@ -7620,55 +9013,85 @@ let main args =
                     match requireRole state ctx repoKey RepoRole.Promote with
                     | Error result -> result
                     | Ok principal ->
-                        match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                        match
+                            withConnection
+                                state
+                                (fun conn ->
+                                    repoExistsForTenant principal.TenantId repoKey conn
+                                    |> Result.bind (fun existsValue ->
+                                        if not existsValue then
+                                            Ok(None, None)
+                                        else
+                                            effectiveRepoGovernancePolicyForRepo principal.TenantId repoKey conn
+                                            |> Result.map (fun policy -> Some policy, Some existsValue)))
+                        with
                         | Error err -> serviceUnavailable err
-                        | Ok false ->
+                        | Ok(None, _) ->
                             Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
-                        | Ok true ->
-                            match
-                                withConnection
-                                    state
-                                    (resolveQuarantineItemForRepo
+                        | Ok(Some policy, _) ->
+                            let approvalResult =
+                                if policy.RequireDualControlForQuarantineResolution then
+                                    requireGovernanceApprovalForAction
+                                        state
+                                        ctx
                                         principal.TenantId
                                         repoKey
-                                        quarantineId
-                                        "rejected"
-                                        principal.Subject)
-                            with
-                            | Error err -> serviceUnavailable err
-                            | Ok QuarantineMissing ->
-                                Results.NotFound({| error = "not_found"; message = "Quarantine item was not found." |})
-                            | Ok(QuarantineAlreadyResolved statusValue) ->
-                                conflict $"Quarantine item is already in status '{statusValue}'."
-                            | Ok(QuarantineResolved item) ->
-                                let auditDetails =
-                                    Map.ofList
-                                        [ "repoKey", repoKey
-                                          "versionId", item.VersionId.ToString()
-                                          "status", item.Status ]
-
-                                match
-                                    writeAudit
-                                        state
-                                        principal.TenantId
-                                        principal.Subject
-                                        "quarantine.rejected"
+                                        "quarantine.reject"
                                         "quarantine_item"
-                                        (item.QuarantineId.ToString())
-                                        auditDetails
+                                        (quarantineId.ToString())
+                                    |> Result.map Some
+                                else
+                                    Ok None
+
+                            match approvalResult with
+                            | Error result -> result
+                            | Ok approvalId ->
+                                match
+                                    withConnection
+                                        state
+                                        (resolveQuarantineItemForRepo
+                                            principal.TenantId
+                                            repoKey
+                                            quarantineId
+                                            "rejected"
+                                            principal.Subject)
                                 with
                                 | Error err -> serviceUnavailable err
-                                | Ok() ->
-                                    Results.Ok(
-                                        {| quarantineId = item.QuarantineId
-                                           repoKey = item.RepoKey
-                                           versionId = item.VersionId
-                                           status = item.Status
-                                           reason = item.Reason
-                                           createdAtUtc = item.CreatedAtUtc
-                                           resolvedAtUtc = item.ResolvedAtUtc
-                                           resolvedBySubject = item.ResolvedBySubject |}
-                                    ))
+                                | Ok QuarantineMissing ->
+                                    Results.NotFound({| error = "not_found"; message = "Quarantine item was not found." |})
+                                | Ok(QuarantineAlreadyResolved statusValue) ->
+                                    conflict $"Quarantine item is already in status '{statusValue}'."
+                                | Ok(QuarantineResolved item) ->
+                                    let auditDetails =
+                                        Map.ofList
+                                            [ "repoKey", repoKey
+                                              "versionId", item.VersionId.ToString()
+                                              "status", item.Status
+                                              "approvalId", approvalId |> Option.map string |> Option.defaultValue "" ]
+
+                                    match
+                                        writeAudit
+                                            state
+                                            principal.TenantId
+                                            principal.Subject
+                                            "quarantine.rejected"
+                                            "quarantine_item"
+                                            (item.QuarantineId.ToString())
+                                            auditDetails
+                                    with
+                                    | Error err -> serviceUnavailable err
+                                    | Ok() ->
+                                        Results.Ok(
+                                            {| quarantineId = item.QuarantineId
+                                               repoKey = item.RepoKey
+                                               versionId = item.VersionId
+                                               status = item.Status
+                                               reason = item.Reason
+                                               createdAtUtc = item.CreatedAtUtc
+                                               resolvedAtUtc = item.ResolvedAtUtc
+                                               resolvedBySubject = item.ResolvedBySubject
+                                               approvalId = approvalId |}
+                                        ))
     )
     |> ignore
 

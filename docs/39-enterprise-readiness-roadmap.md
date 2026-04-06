@@ -65,8 +65,8 @@ This plan assumes the current repository baseline described in:
 | ER-4-03 | Search lag, freshness, and stuck-job observability | ER-4-02 | todo |
 | ER-4-04 | Large-index rebuild and backfill soak coverage | ER-4-02, ER-4-03 | todo |
 | ER-5-01 | Immutable audit export and correlation model | ER-3-02 | done |
-| ER-5-02 | Repository/org policy inheritance and protected-artifact rules | ER-5-01 | todo |
-| ER-5-03 | Dual-control workflows for high-risk admin actions | ER-5-01 | todo |
+| ER-5-02 | Repository/org policy inheritance and protected-artifact rules | ER-5-01 | done |
+| ER-5-03 | Dual-control workflows for high-risk admin actions | ER-5-01 | done |
 | ER-5-04 | Compliance evidence pack and retention/legal-hold controls | ER-5-02, ER-5-03 | todo |
 | ER-6-01 | Production Helm/manifests hardening and config closure | ER-3-04 | done |
 | ER-6-02 | Zero-downtime or bounded-downtime migration policy | ER-6-01 | done |

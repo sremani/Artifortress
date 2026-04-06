@@ -533,6 +533,19 @@ type ApiFixture() =
                         use migrationConn = new NpgsqlConnection(connectionString)
                         migrationConn.Open()
                         applyMigrations migrationConn repoRoot
+                        let tenantId = ensureTenantId migrationConn
+
+                        use governanceCmd =
+                            new NpgsqlCommand(
+                                """
+delete from repo_governance_policies where tenant_id = @tenant_id;
+delete from tenant_governance_policies where tenant_id = @tenant_id;
+""",
+                                migrationConn
+                            )
+
+                        governanceCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+                        governanceCmd.ExecuteNonQuery() |> ignore
                         Ok()
                     with ex ->
                         Error $"Database is unavailable or migrations failed: {ex.Message}"
@@ -1262,6 +1275,34 @@ limit 1;
             | :? string as status -> Some status
             | _ -> failwith $"Unexpected quarantine status scalar value for version {versionId}."
 
+    member this.TryReadActiveArtifactProtectionMode(versionId: Guid) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select mode
+from artifact_protections
+where version_id = @version_id
+  and released_at is null
+limit 1;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("version_id", versionId) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        if isNull scalar || scalar = box DBNull.Value then
+            None
+        else
+            match scalar with
+            | :? string as mode -> Some mode
+            | _ -> failwith $"Unexpected artifact protection mode scalar value for version {versionId}."
+
     member this.InsertOutboxEvent(eventType: string, aggregateType: string, aggregateId: string, payloadJson: string) =
         this.RequireAvailable()
 
@@ -1782,6 +1823,31 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         fixture.Client.Send(request)
 
+    let getTenantGovernancePolicy (adminToken: string) =
+        fixture.RequireAvailable()
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/governance/policy")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+        fixture.Client.Send(request)
+
+    let updateTenantGovernancePolicy
+        (adminToken: string)
+        (minTombstoneRetentionDays: int)
+        (requireDualControlForTombstone: bool)
+        (requireDualControlForQuarantineResolution: bool)
+        =
+        fixture.RequireAvailable()
+        use request = new HttpRequestMessage(HttpMethod.Put, "/v1/admin/governance/policy")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+
+        request.Content <-
+            JsonContent.Create(
+                {| MinTombstoneRetentionDays = minTombstoneRetentionDays
+                   RequireDualControlForTombstone = requireDualControlForTombstone
+                   RequireDualControlForQuarantineResolution = requireDualControlForQuarantineResolution |}
+            )
+
+        fixture.Client.Send(request)
+
     let listPats (adminToken: string) =
         fixture.RequireAvailable()
         use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/auth/pats")
@@ -1823,6 +1889,60 @@ type Phase1ApiTests(fixture: ApiFixture) =
         use request = new HttpRequestMessage(HttpMethod.Put, $"/v1/repos/{repoKey}/bindings/{subject}")
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
         request.Content <- JsonContent.Create({ Roles = roles })
+        fixture.Client.Send(request)
+
+    let getRepoGovernancePolicy (token: string) (repoKey: string) =
+        use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/repos/{repoKey}/governance/policy")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let updateRepoGovernancePolicy
+        (token: string)
+        (repoKey: string)
+        (minTombstoneRetentionDays: Nullable<int>)
+        (requireDualControlForTombstone: Nullable<bool>)
+        (requireDualControlForQuarantineResolution: Nullable<bool>)
+        =
+        use request = new HttpRequestMessage(HttpMethod.Put, $"/v1/repos/{repoKey}/governance/policy")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+
+        request.Content <-
+            JsonContent.Create(
+                {| MinTombstoneRetentionDays = minTombstoneRetentionDays
+                   RequireDualControlForTombstone = requireDualControlForTombstone
+                   RequireDualControlForQuarantineResolution = requireDualControlForQuarantineResolution |}
+            )
+
+        fixture.Client.Send(request)
+
+    let createGovernanceApproval
+        (token: string)
+        (repoKey: string)
+        (action: string)
+        (resourceType: string)
+        (resourceId: string)
+        (justification: string)
+        =
+        use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/approvals")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <- JsonContent.Create({| Action = action; ResourceType = resourceType; ResourceId = resourceId; Justification = justification |})
+        fixture.Client.Send(request)
+
+    let approveGovernanceApproval (token: string) (repoKey: string) (approvalId: Guid) =
+        use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/approvals/{approvalId}/approve")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let protectArtifactWithToken (token: string) (repoKey: string) (versionId: Guid) (mode: string) (reason: string) =
+        use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/protection")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <- JsonContent.Create({| Mode = mode; Reason = reason |})
+        fixture.Client.Send(request)
+
+    let releaseArtifactProtectionWithToken (token: string) (repoKey: string) (versionId: Guid) (reason: string) =
+        use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/protection/release")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <- JsonContent.Create({| Reason = reason |})
         fixture.Client.Send(request)
 
     let putTenantRoleBinding (token: string) (subject: string) (roles: string array) =
@@ -2771,6 +2891,169 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.False(String.IsNullOrWhiteSpace exportDigest, "Expected export digest header.")
         Assert.Contains("\"correlationId\"", exportBody)
         Assert.Contains(correlationId.ToString(), exportBody)
+
+    [<Fact>]
+    member _.``ER-502 governance policy inheritance applies tenant defaults and repo overrides`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er502-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er502-policy"
+        createRepoAsAdmin adminToken repoKey
+        try
+            use tenantPolicyResponse = updateTenantGovernancePolicy adminToken 5 true false
+            ensureStatus HttpStatusCode.OK tenantPolicyResponse |> ignore
+
+            use repoPolicyResponse =
+                updateRepoGovernancePolicy adminToken repoKey (Nullable 60) (Nullable()) (Nullable true)
+
+            ensureStatus HttpStatusCode.OK repoPolicyResponse |> ignore
+
+            use getPolicyResponse = getRepoGovernancePolicy adminToken repoKey
+            let policyBody = ensureStatus HttpStatusCode.OK getPolicyResponse
+            use policyDoc = JsonDocument.Parse(policyBody)
+
+            let effective = policyDoc.RootElement.GetProperty("effective")
+            let tenantDefault = policyDoc.RootElement.GetProperty("tenantDefault")
+            let repoOverride = policyDoc.RootElement.GetProperty("policyOverride")
+
+            Assert.Equal(60, effective.GetProperty("minTombstoneRetentionDays").GetInt32())
+            Assert.True(effective.GetProperty("requireDualControlForTombstone").GetBoolean())
+            Assert.True(effective.GetProperty("requireDualControlForQuarantineResolution").GetBoolean())
+            Assert.Equal(5, tenantDefault.GetProperty("minTombstoneRetentionDays").GetInt32())
+            Assert.True(tenantDefault.GetProperty("requireDualControlForTombstone").GetBoolean())
+            Assert.Equal(60, repoOverride.GetProperty("minTombstoneRetentionDays").GetInt32())
+            Assert.True(repoOverride.GetProperty("requireDualControlForQuarantineResolution").GetBoolean())
+        finally
+            use resetTenantPolicyResponse = updateTenantGovernancePolicy adminToken 1 false false
+            ensureStatus HttpStatusCode.OK resetTenantPolicyResponse |> ignore
+
+            use resetRepoPolicyResponse =
+                updateRepoGovernancePolicy adminToken repoKey (Nullable()) (Nullable()) (Nullable())
+
+            ensureStatus HttpStatusCode.OK resetRepoPolicyResponse |> ignore
+
+    [<Fact>]
+    member _.``ER-502 protected artifact blocks tombstone until protection is released`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er502-protect-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er502-protect"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er502-protect-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er502-protect-promote") [| $"repo:{repoKey}:promote" |] 60
+        let versionId, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken $"er502-protect-{Guid.NewGuid():N}"
+
+        use protectResponse = protectArtifactWithToken promoteToken repoKey versionId "legal_hold" "compliance hold"
+        ensureStatus HttpStatusCode.OK protectResponse |> ignore
+        Assert.Equal(Some "legal_hold", fixture.TryReadActiveArtifactProtectionMode(versionId))
+
+        use blockedTombstone = tombstoneVersionWithToken promoteToken repoKey versionId "attempt tombstone under hold" 90
+        let blockedBody = ensureStatus HttpStatusCode.Locked blockedTombstone
+        use blockedDoc = JsonDocument.Parse(blockedBody)
+        Assert.Equal("artifact_protected", blockedDoc.RootElement.GetProperty("error").GetString())
+
+        use releaseProtection = releaseArtifactProtectionWithToken promoteToken repoKey versionId "hold complete"
+        ensureStatus HttpStatusCode.OK releaseProtection |> ignore
+        Assert.Equal(None, fixture.TryReadActiveArtifactProtectionMode(versionId))
+
+        use successfulTombstone = tombstoneVersionWithToken promoteToken repoKey versionId "tombstone after hold release" 90
+        ensureStatus HttpStatusCode.OK successfulTombstone |> ignore
+
+    [<Fact>]
+    member _.``ER-503 dual control requires approved governance approval for tombstone and quarantine release`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er503-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er503-dual"
+        createRepoAsAdmin adminToken repoKey
+
+        let promoteRequester, _ = issuePat (makeSubject "er503-promote-requester") [| $"repo:{repoKey}:promote" |] 60
+        let promoteApprover, _ = issuePat (makeSubject "er503-promote-approver") [| $"repo:{repoKey}:promote" |] 60
+
+        use repoPolicyResponse =
+            updateRepoGovernancePolicy adminToken repoKey (Nullable 30) (Nullable true) (Nullable true)
+
+        ensureStatus HttpStatusCode.OK repoPolicyResponse |> ignore
+
+        let writerToken, _ = issuePat (makeSubject "er503-writer") [| $"repo:{repoKey}:write" |] 60
+        let versionId, _ = createPublishedVersionWithBlob repoKey writerToken promoteRequester $"er503-package-{Guid.NewGuid():N}"
+
+        use forbiddenTombstone = tombstoneVersionWithToken promoteRequester repoKey versionId "dual control missing" 30
+        ensureStatus HttpStatusCode.Forbidden forbiddenTombstone |> ignore
+
+        use requestApprovalResponse =
+            createGovernanceApproval
+                promoteRequester
+                repoKey
+                "package.version.tombstone"
+                "package_version"
+                (versionId.ToString())
+                "approved tombstone"
+
+        let requestApprovalBody = ensureStatus HttpStatusCode.Created requestApprovalResponse
+        use requestApprovalDoc = JsonDocument.Parse(requestApprovalBody)
+        let tombstoneApprovalId = requestApprovalDoc.RootElement.GetProperty("approvalId").GetGuid()
+
+        use approveResponse = approveGovernanceApproval adminToken repoKey tombstoneApprovalId
+        ensureStatus HttpStatusCode.OK approveResponse |> ignore
+
+        use approvedTombstoneRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/packages/versions/{versionId}/tombstone")
+
+        approvedTombstoneRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", promoteRequester)
+        approvedTombstoneRequest.Headers.Add("X-Governance-Approval-Id", tombstoneApprovalId.ToString())
+        approvedTombstoneRequest.Content <- JsonContent.Create({| Reason = "dual control approved"; RetentionDays = 30 |})
+        use approvedTombstoneResponse = fixture.Client.Send(approvedTombstoneRequest)
+        let approvedTombstoneBody = ensureStatus HttpStatusCode.OK approvedTombstoneResponse
+        use approvedTombstoneDoc = JsonDocument.Parse(approvedTombstoneBody)
+        Assert.Equal(tombstoneApprovalId, approvedTombstoneDoc.RootElement.GetProperty("approvalId").GetGuid())
+
+        let quarantineVersionId, _ =
+            createPublishedVersionWithBlob repoKey writerToken promoteRequester $"er503-quarantine-{Guid.NewGuid():N}"
+
+        use quarantineEvalResponse =
+            evaluatePolicyWithToken
+                promoteRequester
+                repoKey
+                "promote"
+                quarantineVersionId
+                "quarantine"
+                "dual control quarantine"
+                "er503-policy"
+
+        let quarantineEvalBody = ensureStatus HttpStatusCode.Created quarantineEvalResponse
+        use quarantineEvalDoc = JsonDocument.Parse(quarantineEvalBody)
+        let quarantineId = quarantineEvalDoc.RootElement.GetProperty("quarantineId").GetGuid()
+
+        use forbiddenRelease = releaseQuarantineItemWithToken promoteRequester repoKey quarantineId
+        ensureStatus HttpStatusCode.Forbidden forbiddenRelease |> ignore
+
+        use quarantineApprovalResponse =
+            createGovernanceApproval
+                promoteRequester
+                repoKey
+                "quarantine.release"
+                "quarantine_item"
+                (quarantineId.ToString())
+                "approved release"
+
+        let quarantineApprovalBody = ensureStatus HttpStatusCode.Created quarantineApprovalResponse
+        use quarantineApprovalDoc = JsonDocument.Parse(quarantineApprovalBody)
+        let quarantineApprovalId = quarantineApprovalDoc.RootElement.GetProperty("approvalId").GetGuid()
+
+        use approveQuarantineResponse = approveGovernanceApproval adminToken repoKey quarantineApprovalId
+        ensureStatus HttpStatusCode.OK approveQuarantineResponse |> ignore
+
+        use approvedReleaseRequest =
+            new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/quarantine/{quarantineId}/release")
+
+        approvedReleaseRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", promoteRequester)
+        approvedReleaseRequest.Headers.Add("X-Governance-Approval-Id", quarantineApprovalId.ToString())
+        use approvedReleaseResponse = fixture.Client.Send(approvedReleaseRequest)
+        let approvedReleaseBody = ensureStatus HttpStatusCode.OK approvedReleaseResponse
+        use approvedReleaseDoc = JsonDocument.Parse(approvedReleaseBody)
+        Assert.Equal(quarantineApprovalId, approvedReleaseDoc.RootElement.GetProperty("approvalId").GetGuid())
 
     [<Fact>]
     member _.``P3-02 draft version create API enforces authz and reuses existing draft`` () =
