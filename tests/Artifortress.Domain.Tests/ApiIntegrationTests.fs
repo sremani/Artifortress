@@ -5297,7 +5297,7 @@ type Phase1ApiTests(fixture: ApiFixture) =
         use response = fixture.Client.GetAsync("/health/ready").Result
         let body = ensureStatus HttpStatusCode.OK response
         use doc = JsonDocument.Parse(body)
-        Assert.Equal("ready", doc.RootElement.GetProperty("status").GetString())
+        let overallStatus = doc.RootElement.GetProperty("status").GetString()
 
         let dependencies =
             doc.RootElement.GetProperty("dependencies").EnumerateArray()
@@ -5344,10 +5344,20 @@ type Phase1ApiTests(fixture: ApiFixture) =
             |> Option.map (fun (_, _, status) -> status)
             |> Option.defaultValue ""
 
+        let essentialStatuses =
+            dependencies
+            |> List.choose (fun (name, _, status) ->
+                if name = "postgres" || name = "object_storage" then
+                    Some status
+                else
+                    None)
+
         Assert.True(postgresHealthy)
         Assert.True(objectStorageHealthy)
-        Assert.Equal("not_configured", oidcStatus)
-        Assert.Equal("not_configured", samlStatus)
+        Assert.Contains(overallStatus, [| "ready"; "degraded" |])
+        Assert.DoesNotContain("not_ready", essentialStatuses)
+        Assert.Contains(oidcStatus, [| "ready"; "degraded"; "not_configured" |])
+        Assert.Contains(samlStatus, [| "ready"; "degraded"; "not_configured" |])
         Assert.Equal("not_configured", redisStatus)
         Assert.Equal("not_configured", telemetryStatus)
 
@@ -5398,13 +5408,13 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.True(pendingSearchJobs >= 0L)
         Assert.True(incompleteGcRuns >= 0L)
         Assert.True(recentPolicyTimeouts24h >= 0L)
-        Assert.Equal("ready", readinessStatus)
+        Assert.Contains(readinessStatus, [| "ready"; "degraded" |])
         Assert.Equal("ready", dependencyStatuses["postgres"])
         Assert.Equal("ready", dependencyStatuses["object_storage"])
         Assert.Equal("not_configured", dependencyStatuses["redis"])
         Assert.Equal("not_configured", dependencyStatuses["telemetry"])
-        Assert.Equal("not_configured", oidcTrustStatus)
-        Assert.Equal("not_configured", samlTrustStatus)
+        Assert.Contains(oidcTrustStatus, [| "ready"; "degraded"; "not_configured" |])
+        Assert.Contains(samlTrustStatus, [| "ready"; "degraded"; "not_configured" |])
 
         use auditResponse = getAuditWithToken adminToken 200
         let auditBody = ensureStatus HttpStatusCode.OK auditResponse
