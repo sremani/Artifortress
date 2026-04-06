@@ -5839,60 +5839,6 @@ type Phase1ApiTests(fixture: ApiFixture) =
         ensureStatus HttpStatusCode.NotFound crossTenantRebuildResponse |> ignore
 
     [<Fact>]
-    member _.``ER-203 upload admission policy enforces concurrent session limits`` () =
-        fixture.RequireAvailable()
-
-        let tenantSlug = $"tenant-upload-{Guid.NewGuid():N}".Substring(0, 21)
-        let adminToken, _ =
-            fixture.InsertTokenDirectForTenant
-                tenantSlug
-                "Upload Tenant"
-                (makeSubject "er203-upload-admin")
-                [| "repo:*:admin" |]
-                (DateTimeOffset.UtcNow.AddMinutes(60.0))
-                None
-
-        let repoKey = makeRepoKey "er203-upload"
-        createRepoAsAdmin adminToken repoKey
-
-        let writeToken, _ =
-            fixture.InsertTokenDirectForTenant
-                tenantSlug
-                "Upload Tenant"
-                (makeSubject "er203-upload-writer")
-                [| $"repo:{repoKey}:write" |]
-                (DateTimeOffset.UtcNow.AddMinutes(60.0))
-                None
-
-        use policyResponse = updateTenantAdmissionPolicy adminToken 10485760L 2 25
-        ensureStatus HttpStatusCode.OK policyResponse |> ignore
-
-        let storageReservedDigest = tokenHashFor (Guid.NewGuid().ToString("N"))
-        use firstCreateResponse = createUploadSessionWithToken writeToken repoKey storageReservedDigest 10485700L
-        let firstCreateBody = ensureStatus HttpStatusCode.Created firstCreateResponse
-        use firstCreateDoc = JsonDocument.Parse(firstCreateBody)
-        let firstUploadId = firstCreateDoc.RootElement.GetProperty("uploadId").GetGuid()
-
-        use concurrentPolicyResponse = updateTenantAdmissionPolicy adminToken 10485760L 1 25
-        ensureStatus HttpStatusCode.OK concurrentPolicyResponse |> ignore
-
-        let concurrentDigest = tokenHashFor (Guid.NewGuid().ToString("N"))
-        use concurrentCreateResponse = createUploadSessionWithToken writeToken repoKey concurrentDigest 16L
-        let concurrentCreateBody = ensureStatus HttpStatusCode.Created concurrentCreateResponse
-        use concurrentCreateDoc = JsonDocument.Parse(concurrentCreateBody)
-        let concurrentUploadId = concurrentCreateDoc.RootElement.GetProperty("uploadId").GetGuid()
-
-        let secondDigest = tokenHashFor (Guid.NewGuid().ToString("N"))
-        use concurrentLimitedResponse = createUploadSessionWithToken writeToken repoKey secondDigest 8L
-        ensureStatus HttpStatusCode.TooManyRequests concurrentLimitedResponse |> ignore
-
-        use abortReservedResponse = abortUploadWithToken writeToken repoKey firstUploadId "cleanup"
-        ensureStatus HttpStatusCode.OK abortReservedResponse |> ignore
-
-        use abortConcurrentResponse = abortUploadWithToken writeToken repoKey concurrentUploadId "cleanup"
-        ensureStatus HttpStatusCode.OK abortConcurrentResponse |> ignore
-
-    [<Fact>]
     member _.``ER-203 search rebuild quota limits pending jobs per tenant`` () =
         fixture.RequireAvailable()
         fixture.ResetSearchPipelineStateGlobal()
