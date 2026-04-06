@@ -1,6 +1,6 @@
 # Operations How-To
 
-Last updated: 2026-02-13
+Last updated: 2026-04-06
 
 This guide is for day-2 operations after deployment.
 
@@ -16,10 +16,22 @@ curl -sS http://<api-host>/health/live
 curl -sS http://<api-host>/health/ready
 ```
 
+Interpret the result using:
+- `ready`: all required dependencies are healthy
+- `degraded`: required dependencies are healthy, but at least one optional dependency is in fallback or warning state
+- `not_ready`: at least one required dependency is down and the API should stay out of traffic
+- `not_configured`: appears per dependency for optional systems that are intentionally outside the active runtime contract
+
 3. Check backlog posture:
 ```bash
 curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/ops/summary
 ```
+
+Review:
+- `readiness.status`
+- `readiness.dependencies[*].status`
+- `trustMaterial.oidc.status`
+- `trustMaterial.saml.status`
 
 ## 2. How To Rotate Bootstrap Token
 
@@ -124,6 +136,13 @@ Outputs:
 3. Validate object-storage endpoint and credentials.
 4. Resolve dependency issue, then re-check readiness.
 
+### API is degraded but still serving
+
+1. Inspect `/health/ready` and `/v1/admin/ops/summary`.
+2. Confirm whether degradation is identity trust-material fallback (`oidc_jwks` or `saml_metadata`) or an external non-critical dependency.
+3. If top-level status is `degraded` because of trust-material fallback, repair remote JWKS or SAML metadata before the staleness window expires.
+4. Do not declare the environment healthy again until repeated checks return `ready`.
+
 ### Worker errors or lag
 
 1. Check worker logs for sweep errors.
@@ -153,4 +172,5 @@ curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/rec
 - `docs/28-deployment-howto-staging.md`
 - `docs/29-deployment-howto-production.md`
 - `docs/30-deployment-config-reference.md`
+- `docs/46-dependency-failure-mode-matrix.md`
 - `docs/25-upgrade-rollback-runbook.md`

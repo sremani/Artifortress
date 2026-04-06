@@ -1,6 +1,6 @@
 # Production Deployment How-To
 
-Last updated: 2026-02-13
+Last updated: 2026-04-06
 
 This runbook covers production rollout for API + worker with strict preflight and rollback gates.
 
@@ -92,11 +92,13 @@ curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/ops
 
 Go only if:
 - `/health/ready` is stable and returns `status=ready`.
+- `/v1/admin/ops/summary.readiness.status` is also `ready`.
 - error rates are within baseline.
 - no critical regression in ops summary counters.
 
 No-go and rollback if:
 - sustained readiness failures.
+- readiness remains `degraded` because of trust-material fallback or stale identity metadata at cutover time.
 - migration or correctness regressions.
 - unresolved P0 incident during release window.
 
@@ -124,6 +126,7 @@ Recommended enhanced watch:
 
 Mandatory checks:
 - readiness health transitions
+- dependency-level readiness transitions, not just top-level status
 - outbox/job backlog growth
 - failed search job spikes
 - policy timeout spikes
@@ -133,3 +136,4 @@ Mandatory checks:
 - `docs/23-phase6-runbook.md`
 - `docs/25-upgrade-rollback-runbook.md`
 - `docs/31-operations-howto.md`
+- `docs/46-dependency-failure-mode-matrix.md`

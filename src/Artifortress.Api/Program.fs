@@ -534,6 +534,14 @@ type AppState = {
     SamlIntegration: SamlIntegrationConfig
 }
 
+type DependencyStatusRecord = {
+    Name: string
+    Healthy: bool
+    Essential: bool
+    Status: string
+    Detail: string option
+}
+
 type PatPolicyRecord = {
     MaxTtlMinutes: int
     AllowBootstrapIssuance: bool
@@ -2252,6 +2260,22 @@ let private describeObjectStorageError (err: ObjectStorageError) =
     | TransientFailure message
     | UnexpectedFailure message -> message
 
+let private makeDependencyStatus (name: string) (essential: bool) (status: string) (detail: string option) =
+    { Name = name
+      Essential = essential
+      Status = status
+      Detail = detail
+      Healthy = status = "ready" || status = "not_configured" }
+
+let private describeOidcStaticSource (config: OidcTokenValidationConfig) =
+    [ if config.Hs256SharedSecret.IsSome then
+          "hs256_shared_secret"
+      if not config.Rs256SigningKeys.IsEmpty then
+          "static_signing_keys" ]
+    |> function
+        | [] -> "configured"
+        | sources -> String.Join(",", sources)
+
 let private checkPostgresReadiness (state: AppState) =
     match
         withConnection state (fun conn ->
@@ -2286,34 +2310,59 @@ let private checkObjectStorageReadiness (state: AppState) (cancellationToken: Th
             return false, Some message
     }
 
-let private checkOidcRemoteJwksReadiness (state: AppState) =
-    match state.OidcTokenValidation |> Option.bind (fun config -> config.RemoteJwksState) with
-    | None -> true, None
-    | Some remoteState ->
-        let fresh = isFreshWithin remoteState.MaxStaleness remoteState.LastRefreshSucceededAtUtc
+let private checkOidcDependencyStatus (state: AppState) =
+    match state.OidcTokenValidation with
+    | None -> makeDependencyStatus "oidc_jwks" false "not_configured" (Some "OIDC bearer validation is disabled.")
+    | Some config ->
+        match config.RemoteJwksState with
+        | None ->
+            makeDependencyStatus
+                "oidc_jwks"
+                false
+                "ready"
+                (Some $"source={describeOidcStaticSource config}")
+        | Some remoteState ->
+            let fresh = isFreshWithin remoteState.MaxStaleness remoteState.LastRefreshSucceededAtUtc
 
-        match remoteState.LastRefreshError, remoteState.LastRefreshSucceededAtUtc, fresh with
-        | Some err, _, true -> true, Some(redactSensitiveText $"refresh_warning={err}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}")
-        | Some err, _, false when not remoteState.StaticFallbackKeys.IsEmpty ->
-            true,
-            Some(
-                redactSensitiveText
-                    $"fallback_only=true; refresh_error={err}; static_fallback_keys={remoteState.StaticFallbackKeys.Length}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}"
-            )
-        | Some err, _, false -> false, Some(redactSensitiveText err)
-        | None, _, true -> true, Some(describeRefreshAge remoteState.LastRefreshSucceededAtUtc)
-        | None, _, false when not remoteState.StaticFallbackKeys.IsEmpty ->
-            true,
-            Some(
-                $"fallback_only=true; static_fallback_keys={remoteState.StaticFallbackKeys.Length}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}"
-            )
-        | None, None, false -> false, Some "OIDC JWKS refresh has not completed successfully yet."
-        | None, Some refreshedAt, false ->
-            false, Some $"OIDC JWKS signing material is stale; last successful refresh was at {refreshedAt:O}."
+            match remoteState.LastRefreshError, remoteState.LastRefreshSucceededAtUtc, fresh with
+            | Some err, _, true ->
+                makeDependencyStatus
+                    "oidc_jwks"
+                    false
+                    "degraded"
+                    (Some(redactSensitiveText $"refresh_warning={err}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}"))
+            | Some err, _, false when not remoteState.StaticFallbackKeys.IsEmpty ->
+                makeDependencyStatus
+                    "oidc_jwks"
+                    false
+                    "degraded"
+                    (Some(
+                        redactSensitiveText
+                            $"fallback_only=true; refresh_error={err}; static_fallback_keys={remoteState.StaticFallbackKeys.Length}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}"
+                    ))
+            | Some err, _, false -> makeDependencyStatus "oidc_jwks" false "not_ready" (Some(redactSensitiveText err))
+            | None, _, true ->
+                makeDependencyStatus "oidc_jwks" false "ready" (Some(describeRefreshAge remoteState.LastRefreshSucceededAtUtc))
+            | None, _, false when not remoteState.StaticFallbackKeys.IsEmpty ->
+                makeDependencyStatus
+                    "oidc_jwks"
+                    false
+                    "degraded"
+                    (Some(
+                        $"fallback_only=true; static_fallback_keys={remoteState.StaticFallbackKeys.Length}; {describeRefreshAge remoteState.LastRefreshSucceededAtUtc}"
+                    ))
+            | None, None, false ->
+                makeDependencyStatus "oidc_jwks" false "not_ready" (Some "OIDC JWKS refresh has not completed successfully yet.")
+            | None, Some refreshedAt, false ->
+                makeDependencyStatus
+                    "oidc_jwks"
+                    false
+                    "not_ready"
+                    (Some $"OIDC JWKS signing material is stale; last successful refresh was at {refreshedAt:O}.")
 
-let private checkSamlMetadataReadiness (state: AppState) =
+let private checkSamlDependencyStatus (state: AppState) =
     if not state.SamlIntegration.Enabled then
-        true, None
+        makeDependencyStatus "saml_metadata" false "not_configured" (Some "SAML federation is disabled.")
     else
         let certificates = resolveSamlSigningCertificates state.SamlIntegration
 
@@ -2322,27 +2371,85 @@ let private checkSamlMetadataReadiness (state: AppState) =
             let fresh = isFreshWithin metadataState.MaxStaleness metadataState.LastRefreshSucceededAtUtc
 
             match metadataState.LastRefreshError, fresh, certificates.IsEmpty with
-            | _, _, true -> false, Some "SAML metadata did not yield any signing certificates."
-            | Some err, true, false -> true, Some(redactSensitiveText $"refresh_warning={err}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}")
+            | _, _, true ->
+                makeDependencyStatus "saml_metadata" false "not_ready" (Some "SAML metadata did not yield any signing certificates.")
+            | Some err, true, false ->
+                makeDependencyStatus
+                    "saml_metadata"
+                    false
+                    "degraded"
+                    (Some(redactSensitiveText $"refresh_warning={err}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}"))
             | Some err, false, false when not metadataState.StaticFallbackCertificates.IsEmpty ->
-                true,
-                Some(
-                    redactSensitiveText
-                        $"fallback_only=true; refresh_error={err}; static_fallback_certificates={metadataState.StaticFallbackCertificates.Length}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}"
-                )
-            | Some err, false, false -> false, Some(redactSensitiveText err)
-            | None, true, false -> true, Some(describeRefreshAge metadataState.LastRefreshSucceededAtUtc)
+                makeDependencyStatus
+                    "saml_metadata"
+                    false
+                    "degraded"
+                    (Some(
+                        redactSensitiveText
+                            $"fallback_only=true; refresh_error={err}; static_fallback_certificates={metadataState.StaticFallbackCertificates.Length}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}"
+                    ))
+            | Some err, false, false ->
+                makeDependencyStatus "saml_metadata" false "not_ready" (Some(redactSensitiveText err))
+            | None, true, false ->
+                makeDependencyStatus "saml_metadata" false "ready" (Some(describeRefreshAge metadataState.LastRefreshSucceededAtUtc))
             | None, false, false when not metadataState.StaticFallbackCertificates.IsEmpty ->
-                true,
-                Some(
-                    $"fallback_only=true; static_fallback_certificates={metadataState.StaticFallbackCertificates.Length}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}"
-                )
-            | None, false, false -> false, Some "SAML metadata cache is stale and no fresh signing certificates are available."
+                makeDependencyStatus
+                    "saml_metadata"
+                    false
+                    "degraded"
+                    (Some(
+                        $"fallback_only=true; static_fallback_certificates={metadataState.StaticFallbackCertificates.Length}; {describeRefreshAge metadataState.LastRefreshSucceededAtUtc}"
+                    ))
+            | None, false, false ->
+                makeDependencyStatus
+                    "saml_metadata"
+                    false
+                    "not_ready"
+                    (Some "SAML metadata cache is stale and no fresh signing certificates are available.")
         | None ->
             if certificates.IsEmpty then
-                false, Some "SAML metadata did not yield any signing certificates."
+                makeDependencyStatus "saml_metadata" false "not_ready" (Some "SAML metadata did not yield any signing certificates.")
             else
-                true, Some "source=static"
+                makeDependencyStatus "saml_metadata" false "ready" (Some "source=static")
+
+let private staticDependencyStatuses =
+    [| makeDependencyStatus "redis" false "not_configured" (Some "Redis is not on the critical path for current production scope.")
+       makeDependencyStatus
+           "telemetry"
+           false
+           "not_configured"
+           (Some "Telemetry exporter health is not enforced by readiness; validate collector and exporter pipelines separately.") |]
+
+let private deriveOverallDependencyStatus (dependencies: DependencyStatusRecord array) =
+    if dependencies |> Array.exists (fun dependency -> dependency.Essential && dependency.Status = "not_ready") then
+        "not_ready"
+    elif dependencies |> Array.exists (fun dependency -> dependency.Status = "degraded" || dependency.Status = "not_ready") then
+        "degraded"
+    else
+        "ready"
+
+let private collectDependencyStatuses (state: AppState) (cancellationToken: Threading.CancellationToken) =
+    task {
+        let postgresHealthy, postgresDetail = checkPostgresReadiness state
+        let! objectStorageHealthy, objectStorageDetail = checkObjectStorageReadiness state cancellationToken
+
+        let dependencies =
+            [| makeDependencyStatus
+                   "postgres"
+                   true
+                   (if postgresHealthy then "ready" else "not_ready")
+                   postgresDetail
+               makeDependencyStatus
+                   "object_storage"
+                   true
+                   (if objectStorageHealthy then "ready" else "not_ready")
+                   objectStorageDetail
+               checkOidcDependencyStatus state
+               checkSamlDependencyStatus state |]
+            |> Array.append staticDependencyStatuses
+
+        return dependencies
+    }
 
 let ensureTenantId (state: AppState) (conn: NpgsqlConnection) =
     use cmd =
@@ -6999,42 +7106,10 @@ let main args =
         "/health/ready",
         Func<HttpContext, Threading.Tasks.Task<IResult>>(fun ctx ->
             task {
-                let postgresHealthy, postgresDetail = checkPostgresReadiness state
-                let! objectStorageHealthy, objectStorageDetail = checkObjectStorageReadiness state ctx.RequestAborted
-                let oidcHealthy, oidcDetail = checkOidcRemoteJwksReadiness state
-                let samlHealthy, samlDetail = checkSamlMetadataReadiness state
+                let! dependencies = collectDependencyStatuses state ctx.RequestAborted
+                let overallStatus = deriveOverallDependencyStatus dependencies
 
-                let dependencies =
-                    [| {| name = "postgres"
-                          healthy = postgresHealthy
-                          essential = true
-                          status = if postgresHealthy then "ready" else "not_ready"
-                          detail = postgresDetail |}
-                       {| name = "object_storage"
-                          healthy = objectStorageHealthy
-                          essential = true
-                          status = if objectStorageHealthy then "ready" else "not_ready"
-                          detail = objectStorageDetail |}
-                       {| name = "oidc_jwks"
-                          healthy = oidcHealthy
-                          essential = false
-                          status = if oidcHealthy then "ready" else "degraded"
-                          detail = oidcDetail |}
-                       {| name = "saml_metadata"
-                          healthy = samlHealthy
-                          essential = false
-                          status = if samlHealthy then "ready" else "degraded"
-                          detail = samlDetail |} |]
-
-                if postgresHealthy && objectStorageHealthy then
-                    let overallStatus =
-                        if oidcHealthy && samlHealthy then
-                            "ready"
-                        else
-                            "degraded"
-
-                    return Results.Ok({| status = overallStatus; checkedAtUtc = nowUtc (); dependencies = dependencies |})
-                else
+                if overallStatus = "not_ready" then
                     return
                         Results.Json(
                             {| status = "not_ready"
@@ -7042,6 +7117,8 @@ let main args =
                                dependencies = dependencies |},
                             statusCode = StatusCodes.Status503ServiceUnavailable
                         )
+                else
+                    return Results.Ok({| status = overallStatus; checkedAtUtc = nowUtc (); dependencies = dependencies |})
             })
     )
     |> ignore
@@ -9886,53 +9963,71 @@ let main args =
 
     app.MapGet(
         "/v1/admin/ops/summary",
-        Func<HttpContext, IResult>(fun ctx ->
-            match requireTenantRole state ctx TenantRole.TenantAuditor with
-            | Error result -> result
-            | Ok principal ->
-                match withConnection state (readOpsSummary principal.TenantId) with
-                | Error err -> serviceUnavailable err
-                | Ok summary ->
-                    let oidcHealthy, oidcDetail = checkOidcRemoteJwksReadiness state
-                    let samlHealthy, samlDetail = checkSamlMetadataReadiness state
+        Func<HttpContext, Threading.Tasks.Task<IResult>>(fun ctx ->
+            task {
+                match requireTenantRole state ctx TenantRole.TenantAuditor with
+                | Error result -> return result
+                | Ok principal ->
+                    match withConnection state (readOpsSummary principal.TenantId) with
+                    | Error err -> return serviceUnavailable err
+                    | Ok summary ->
+                        let! dependencies = collectDependencyStatuses state ctx.RequestAborted
+                        let overallReadinessStatus = deriveOverallDependencyStatus dependencies
 
-                    match
-                        writeAudit
-                            state
-                            principal.TenantId
-                            principal.Subject
-                            "ops.summary.read"
-                            "operations"
-                            (principal.TenantId.ToString())
-                            (Map.ofList
-                                [ "pendingOutboxEvents", summary.pendingOutboxEvents.ToString()
-                                  "availableOutboxEvents", summary.availableOutboxEvents.ToString()
-                                  "oldestPendingOutboxAgeSeconds", summary.oldestPendingOutboxAgeSeconds.ToString()
-                                  "failedSearchJobs", summary.failedSearchJobs.ToString()
-                                  "pendingSearchJobs", summary.pendingSearchJobs.ToString()
-                                  "incompleteGcRuns", summary.incompleteGcRuns.ToString()
-                                  "recentPolicyTimeouts24h", summary.recentPolicyTimeouts24h.ToString()
-                                  "oidcTrustHealthy", oidcHealthy.ToString()
-                                  "samlTrustHealthy", samlHealthy.ToString() ])
-                    with
-                    | Error err -> serviceUnavailable err
-                    | Ok () ->
-                        Results.Ok(
-                            {| checkedAtUtc = summary.checkedAtUtc
-                               pendingOutboxEvents = summary.pendingOutboxEvents
-                               availableOutboxEvents = summary.availableOutboxEvents
-                               oldestPendingOutboxAgeSeconds = summary.oldestPendingOutboxAgeSeconds
-                               failedSearchJobs = summary.failedSearchJobs
-                               pendingSearchJobs = summary.pendingSearchJobs
-                               incompleteGcRuns = summary.incompleteGcRuns
-                               recentPolicyTimeouts24h = summary.recentPolicyTimeouts24h
-                               trustMaterial =
-                                {| oidc =
-                                    {| healthy = oidcHealthy
-                                       detail = oidcDetail |}
-                                   saml =
-                                    {| healthy = samlHealthy
-                                       detail = samlDetail |} |} |}))
+                        let trustMaterial =
+                            {| oidc =
+                                dependencies
+                                |> Array.find (fun dependency -> dependency.Name = "oidc_jwks")
+                                |> fun dependency ->
+                                    {| healthy = dependency.Healthy
+                                       status = dependency.Status
+                                       detail = dependency.Detail |}
+                               saml =
+                                dependencies
+                                |> Array.find (fun dependency -> dependency.Name = "saml_metadata")
+                                |> fun dependency ->
+                                    {| healthy = dependency.Healthy
+                                       status = dependency.Status
+                                       detail = dependency.Detail |} |}
+
+                        match
+                            writeAudit
+                                state
+                                principal.TenantId
+                                principal.Subject
+                                "ops.summary.read"
+                                "operations"
+                                (principal.TenantId.ToString())
+                                (Map.ofList
+                                    [ "pendingOutboxEvents", summary.pendingOutboxEvents.ToString()
+                                      "availableOutboxEvents", summary.availableOutboxEvents.ToString()
+                                      "oldestPendingOutboxAgeSeconds", summary.oldestPendingOutboxAgeSeconds.ToString()
+                                      "failedSearchJobs", summary.failedSearchJobs.ToString()
+                                      "pendingSearchJobs", summary.pendingSearchJobs.ToString()
+                                      "incompleteGcRuns", summary.incompleteGcRuns.ToString()
+                                      "recentPolicyTimeouts24h", summary.recentPolicyTimeouts24h.ToString()
+                                      "readinessStatus", overallReadinessStatus
+                                      "oidcTrustStatus", trustMaterial.oidc.status
+                                      "samlTrustStatus", trustMaterial.saml.status ])
+                        with
+                        | Error err -> return serviceUnavailable err
+                        | Ok () ->
+                            return
+                                Results.Ok(
+                                    {| checkedAtUtc = summary.checkedAtUtc
+                                       pendingOutboxEvents = summary.pendingOutboxEvents
+                                       availableOutboxEvents = summary.availableOutboxEvents
+                                       oldestPendingOutboxAgeSeconds = summary.oldestPendingOutboxAgeSeconds
+                                       failedSearchJobs = summary.failedSearchJobs
+                                       pendingSearchJobs = summary.pendingSearchJobs
+                                       incompleteGcRuns = summary.incompleteGcRuns
+                                       recentPolicyTimeouts24h = summary.recentPolicyTimeouts24h
+                                       readiness =
+                                        {| status = overallReadinessStatus
+                                           dependencies = dependencies |}
+                                       trustMaterial = trustMaterial |}
+                                )
+            })
     )
     |> ignore
 

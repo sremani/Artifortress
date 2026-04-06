@@ -5304,23 +5304,52 @@ type Phase1ApiTests(fixture: ApiFixture) =
             |> Seq.map (fun element ->
                 let name = element.GetProperty("name").GetString()
                 let healthy = element.GetProperty("healthy").GetBoolean()
-                name, healthy)
+                let status = element.GetProperty("status").GetString()
+                name, healthy, status)
             |> Seq.toList
 
         let postgresHealthy =
             dependencies
-            |> List.tryFind (fun (name, _) -> name = "postgres")
-            |> Option.map snd
+            |> List.tryFind (fun (name, _, _) -> name = "postgres")
+            |> Option.map (fun (_, healthy, _) -> healthy)
             |> Option.defaultValue false
 
         let objectStorageHealthy =
             dependencies
-            |> List.tryFind (fun (name, _) -> name = "object_storage")
-            |> Option.map snd
+            |> List.tryFind (fun (name, _, _) -> name = "object_storage")
+            |> Option.map (fun (_, healthy, _) -> healthy)
             |> Option.defaultValue false
+
+        let oidcStatus =
+            dependencies
+            |> List.tryFind (fun (name, _, _) -> name = "oidc_jwks")
+            |> Option.map (fun (_, _, status) -> status)
+            |> Option.defaultValue ""
+
+        let samlStatus =
+            dependencies
+            |> List.tryFind (fun (name, _, _) -> name = "saml_metadata")
+            |> Option.map (fun (_, _, status) -> status)
+            |> Option.defaultValue ""
+
+        let redisStatus =
+            dependencies
+            |> List.tryFind (fun (name, _, _) -> name = "redis")
+            |> Option.map (fun (_, _, status) -> status)
+            |> Option.defaultValue ""
+
+        let telemetryStatus =
+            dependencies
+            |> List.tryFind (fun (name, _, _) -> name = "telemetry")
+            |> Option.map (fun (_, _, status) -> status)
+            |> Option.defaultValue ""
 
         Assert.True(postgresHealthy)
         Assert.True(objectStorageHealthy)
+        Assert.Equal("not_configured", oidcStatus)
+        Assert.Equal("not_configured", samlStatus)
+        Assert.Equal("not_configured", redisStatus)
+        Assert.Equal("not_configured", telemetryStatus)
 
     [<Fact>]
     member _.``P6-02 ops summary endpoint enforces authz and emits audit`` () =
@@ -5349,6 +5378,18 @@ type Phase1ApiTests(fixture: ApiFixture) =
         let pendingSearchJobs = successDoc.RootElement.GetProperty("pendingSearchJobs").GetInt64()
         let incompleteGcRuns = successDoc.RootElement.GetProperty("incompleteGcRuns").GetInt64()
         let recentPolicyTimeouts24h = successDoc.RootElement.GetProperty("recentPolicyTimeouts24h").GetInt64()
+        let readinessStatus = successDoc.RootElement.GetProperty("readiness").GetProperty("status").GetString()
+
+        let dependencyStatuses =
+            successDoc.RootElement.GetProperty("readiness").GetProperty("dependencies").EnumerateArray()
+            |> Seq.map (fun element -> element.GetProperty("name").GetString(), element.GetProperty("status").GetString())
+            |> Map.ofSeq
+
+        let oidcTrustStatus =
+            successDoc.RootElement.GetProperty("trustMaterial").GetProperty("oidc").GetProperty("status").GetString()
+
+        let samlTrustStatus =
+            successDoc.RootElement.GetProperty("trustMaterial").GetProperty("saml").GetProperty("status").GetString()
 
         Assert.True(pendingOutbox >= 0L)
         Assert.True(availableOutbox >= 0L)
@@ -5357,6 +5398,13 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.True(pendingSearchJobs >= 0L)
         Assert.True(incompleteGcRuns >= 0L)
         Assert.True(recentPolicyTimeouts24h >= 0L)
+        Assert.Equal("ready", readinessStatus)
+        Assert.Equal("ready", dependencyStatuses["postgres"])
+        Assert.Equal("ready", dependencyStatuses["object_storage"])
+        Assert.Equal("not_configured", dependencyStatuses["redis"])
+        Assert.Equal("not_configured", dependencyStatuses["telemetry"])
+        Assert.Equal("not_configured", oidcTrustStatus)
+        Assert.Equal("not_configured", samlTrustStatus)
 
         use auditResponse = getAuditWithToken adminToken 200
         let auditBody = ensureStatus HttpStatusCode.OK auditResponse

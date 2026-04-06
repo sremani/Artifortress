@@ -57,7 +57,7 @@ This plan assumes the current repository baseline described in:
 | ER-2-03 | Tenant quotas and admission controls | ER-2-01 | done |
 | ER-2-04 | Delegated administration and tenant-scoped operational roles | ER-2-01 | done |
 | ER-3-01 | Background job idempotency and replay-safety hardening | ER-2-02 | todo |
-| ER-3-02 | Dependency failure-mode matrix and deterministic readiness/degradation semantics | ER-3-01 | in_progress |
+| ER-3-02 | Dependency failure-mode matrix and deterministic readiness/degradation semantics | ER-3-01 | done |
 | ER-3-03 | Worker/API crash, restart, and duplicate-delivery drill automation | ER-3-01 | done |
 | ER-3-04 | HA deployment topology and failure-domain runbook | ER-3-02, ER-3-03 | done |
 | ER-4-01 | Search relevance/ranking maturity and deterministic query semantics | ER-3-01 | todo |
