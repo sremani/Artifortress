@@ -1,6 +1,6 @@
 # Upgrade and Rollback Runbook
 
-Last updated: 2026-02-11
+Last updated: 2026-04-06
 
 ## Purpose
 
@@ -44,6 +44,12 @@ curl -sS http://127.0.0.1:8086/health/ready
 
 6. Run smoke and integration checks in environment-specific pipeline.
 7. Run post-upgrade ops summary and compare against baseline.
+8. Rehearse or review supported baseline compatibility:
+
+```bash
+make upgrade-compatibility-drill
+```
+
 8. Declare upgrade successful only when:
 - readiness stable
 - error budget impact acceptable
@@ -80,3 +86,9 @@ RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore
 - capture root cause and remediation ticket
 - update threat/risk logs if control gaps were discovered
 - re-run `make phase6-drill` before next upgrade attempt
+- re-run `make upgrade-compatibility-drill` before broadening the supported upgrade set
+
+## References
+
+- `docs/41-migration-compatibility-policy.md`
+- `docs/48-upgrade-compatibility-matrix.md`

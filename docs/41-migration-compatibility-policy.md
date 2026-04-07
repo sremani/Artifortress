@@ -1,6 +1,6 @@
 # Migration Compatibility Policy
 
-Last updated: 2026-04-01
+Last updated: 2026-04-06
 
 ## Purpose
 
@@ -108,5 +108,6 @@ Current repository standard:
 ## Required References
 
 - `docs/25-upgrade-rollback-runbook.md`
+- `docs/48-upgrade-compatibility-matrix.md`
 - `docs/40-ha-topology-and-failure-domains.md`
 - `docs/42-operations-dashboard-and-drill-bundle.md`

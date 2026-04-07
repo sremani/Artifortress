@@ -7,6 +7,8 @@ configuration="${CONFIGURATION:-Debug}"
 
 drill_names=(
   "P4-04 outbox sweep enqueues search index job and marks event delivered"
+  "ER-3-01 duplicate publish replay preserves single search document and job record"
+  "ER-3-01 repeated malformed publish replay does not create search jobs or documents"
   "ER-3-03 stale processing search job is reclaimed after lease expiry"
   "ER-3-03 fresh processing search job is not reclaimed before lease expiry"
 )

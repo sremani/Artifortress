@@ -16,6 +16,7 @@ Provide the baseline operational pack required for on-call ownership of Artifort
 - periodic drills:
   - `scripts/phase6-drill.sh`
   - `scripts/reliability-drill.sh`
+  - `scripts/upgrade-compatibility-drill.sh`
   - `scripts/enterprise-ops-drill.sh`
 
 ## Core Dashboard Signals
@@ -61,6 +62,8 @@ Alerting should warn on:
 - weekly:
   - `make phase6-drill`
   - `./scripts/reliability-drill.sh`
+- before expanding supported upgrade set:
+  - `make upgrade-compatibility-drill`
 - before production cutover:
   - `ADMIN_TOKEN=<token> ./scripts/enterprise-ops-drill.sh`
 

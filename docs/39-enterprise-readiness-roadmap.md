@@ -56,7 +56,7 @@ This plan assumes the current repository baseline described in:
 | ER-2-02 | Cross-tenant negative integration and stress coverage | ER-2-01 | done |
 | ER-2-03 | Tenant quotas and admission controls | ER-2-01 | done |
 | ER-2-04 | Delegated administration and tenant-scoped operational roles | ER-2-01 | done |
-| ER-3-01 | Background job idempotency and replay-safety hardening | ER-2-02 | todo |
+| ER-3-01 | Background job idempotency and replay-safety hardening | ER-2-02 | done |
 | ER-3-02 | Dependency failure-mode matrix and deterministic readiness/degradation semantics | ER-3-01 | done |
 | ER-3-03 | Worker/API crash, restart, and duplicate-delivery drill automation | ER-3-01 | done |
 | ER-3-04 | HA deployment topology and failure-domain runbook | ER-3-02, ER-3-03 | done |
@@ -70,7 +70,7 @@ This plan assumes the current repository baseline described in:
 | ER-5-04 | Compliance evidence pack and retention/legal-hold controls | ER-5-02, ER-5-03 | todo |
 | ER-6-01 | Production Helm/manifests hardening and config closure | ER-3-04 | done |
 | ER-6-02 | Zero-downtime or bounded-downtime migration policy | ER-6-01 | done |
-| ER-6-03 | Multi-version upgrade compatibility and rollback matrix | ER-6-02 | todo |
+| ER-6-03 | Multi-version upgrade compatibility and rollback matrix | ER-6-02 | done |
 | ER-6-04 | Operations dashboard, alerts, and incident drill bundle | ER-6-01 | done |
 | ER-7-01 | Performance baseline suite for upload/download/publish/search | ER-6-01 | todo |
 | ER-7-02 | Soak, concurrency, and noisy-neighbor test tracks | ER-7-01, ER-2-03 | todo |

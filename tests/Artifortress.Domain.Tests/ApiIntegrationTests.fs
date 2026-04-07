@@ -4084,6 +4084,110 @@ type Phase1ApiTests(fixture: ApiFixture) =
             Assert.Equal(None, lastError)
 
     [<Fact>]
+    member _.``ER-3-01 duplicate publish replay preserves single search document and job record`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er301-dup-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er301-dup"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er301-dup-writer") [| $"repo:{repoKey}:write" |] 60
+        let packageName = $"search-er301-dup-{Guid.NewGuid():N}"
+
+        use createDraftResponse =
+            createDraftVersionWithToken writeToken repoKey "nuget" "" packageName "1.0.0"
+
+        let createDraftBody = ensureStatus HttpStatusCode.Created createDraftResponse
+        use draftDoc = JsonDocument.Parse(createDraftBody)
+        let versionId = draftDoc.RootElement.GetProperty("versionId").GetGuid()
+
+        let digest = tokenHashFor $"er301-dup-digest-{Guid.NewGuid():N}"
+        fixture.SeedCommittedBlobForRepo(repoKey, digest, 512L)
+
+        let entries =
+            [| { RelativePath = "lib/package.nupkg"
+                 BlobDigest = digest
+                 ChecksumSha1 = ""
+                 ChecksumSha256 = digest
+                 SizeBytes = 512L } |]
+
+        use entriesResponse = upsertArtifactEntriesWithToken writeToken repoKey versionId entries
+        ensureStatus HttpStatusCode.OK entriesResponse |> ignore
+
+        use manifestDoc = JsonDocument.Parse("""{"id":"phase5.package","version":"1.0.0"}""")
+        let manifest = manifestDoc.RootElement.Clone()
+        use manifestResponse = upsertManifestWithToken writeToken repoKey versionId manifest ""
+        ensureStatus HttpStatusCode.OK manifestResponse |> ignore
+
+        fixture.PublishVersionForTest(versionId)
+
+        let payloadJson = JsonSerializer.Serialize({| versionId = versionId |})
+
+        let firstEvent =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+
+        let secondEvent =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+
+        let firstOutbox = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(2, firstOutbox.ClaimedCount)
+        Assert.Equal(2, firstOutbox.EnqueuedCount)
+        Assert.Equal(2, firstOutbox.DeliveredCount)
+        Assert.Equal(0, firstOutbox.RequeuedCount)
+
+        let firstJobSweep = fixture.RunSearchIndexJobSweep(50, 3)
+        Assert.Equal(1, firstJobSweep.ClaimedCount)
+        Assert.Equal(1, firstJobSweep.CompletedCount)
+        Assert.Equal(0, firstJobSweep.FailedCount)
+
+        Assert.True(fixture.IsOutboxDelivered(firstEvent))
+        Assert.True(fixture.IsOutboxDelivered(secondEvent))
+        Assert.Equal(1L, fixture.CountSearchIndexJobsForVersion(versionId))
+        Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionId))
+
+        let replayEvent =
+            fixture.InsertOutboxEvent("version.published", "package_version", versionId.ToString(), payloadJson)
+
+        let replayOutbox = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(1, replayOutbox.ClaimedCount)
+        Assert.Equal(1, replayOutbox.EnqueuedCount)
+        Assert.Equal(1, replayOutbox.DeliveredCount)
+        Assert.Equal(0, replayOutbox.RequeuedCount)
+
+        let replayJobSweep = fixture.RunSearchIndexJobSweep(50, 3)
+        Assert.Equal(1, replayJobSweep.ClaimedCount)
+        Assert.Equal(1, replayJobSweep.CompletedCount)
+        Assert.Equal(0, replayJobSweep.FailedCount)
+
+        Assert.True(fixture.IsOutboxDelivered(replayEvent))
+        Assert.Equal(1L, fixture.CountSearchIndexJobsForVersion(versionId))
+        Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionId))
+
+    [<Fact>]
+    member _.``ER-3-01 repeated malformed publish replay does not create search jobs or documents`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let malformedEventId =
+            fixture.InsertOutboxEvent("version.published", "package_version", "still-not-a-guid", "{}")
+
+        let firstSweep = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(1, firstSweep.ClaimedCount)
+        Assert.Equal(0, firstSweep.EnqueuedCount)
+        Assert.Equal(0, firstSweep.DeliveredCount)
+        Assert.Equal(1, firstSweep.RequeuedCount)
+
+        let secondSweep = fixture.RunSearchIndexOutboxSweep(50)
+        Assert.Equal(0, secondSweep.ClaimedCount)
+        Assert.Equal(0, secondSweep.EnqueuedCount)
+        Assert.Equal(0, secondSweep.DeliveredCount)
+        Assert.Equal(0, secondSweep.RequeuedCount)
+
+        Assert.False(fixture.IsOutboxDelivered(malformedEventId))
+        Assert.Equal(0L, fixture.CountSearchIndexJobsForTenant())
+
+    [<Fact>]
     member _.``P4-06 download blocks quarantined blob and unblocks after release`` () =
         fixture.RequireAvailable()
 
