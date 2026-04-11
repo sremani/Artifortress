@@ -67,7 +67,7 @@ This plan assumes the current repository baseline described in:
 | ER-5-01 | Immutable audit export and correlation model | ER-3-02 | done |
 | ER-5-02 | Repository/org policy inheritance and protected-artifact rules | ER-5-01 | done |
 | ER-5-03 | Dual-control workflows for high-risk admin actions | ER-5-01 | done |
-| ER-5-04 | Compliance evidence pack and retention/legal-hold controls | ER-5-02, ER-5-03 | todo |
+| ER-5-04 | Compliance evidence pack and retention/legal-hold controls | ER-5-02, ER-5-03 | done |
 | ER-6-01 | Production Helm/manifests hardening and config closure | ER-3-04 | done |
 | ER-6-02 | Zero-downtime or bounded-downtime migration policy | ER-6-01 | done |
 | ER-6-03 | Multi-version upgrade compatibility and rollback matrix | ER-6-02 | done |

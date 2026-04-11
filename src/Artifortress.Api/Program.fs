@@ -423,6 +423,19 @@ type ArtifactProtectionRecord = {
     ReleaseReason: string option
 }
 
+type ComplianceLegalHoldRecord = {
+    ProtectionId: Guid
+    RepoKey: string
+    VersionId: Guid
+    PackageName: string
+    Version: string
+    State: string
+    Reason: string
+    ProtectedBySubject: string
+    ProtectedAtUtc: DateTimeOffset
+    RetentionUntilUtc: DateTimeOffset option
+}
+
 type GovernanceApprovalRecord = {
     ApprovalId: Guid
     RepoKey: string
@@ -4514,11 +4527,15 @@ from (
   from artifact_entries ae
   join package_versions pv on pv.version_id = ae.version_id
   left join tombstones ts on ts.version_id = pv.version_id
+  left join artifact_protections ap on ap.version_id = pv.version_id
+    and ap.tenant_id = pv.tenant_id
+    and ap.released_at is null
   where pv.tenant_id = @tenant_id
     and (
       pv.state <> 'tombstoned'
       or ts.retention_until > now()
       or ts.version_id is null
+      or ap.protection_id is not null
     )
 
   union
@@ -4527,12 +4544,16 @@ from (
   from manifests m
   join package_versions pv on pv.version_id = m.version_id
   left join tombstones ts on ts.version_id = pv.version_id
+  left join artifact_protections ap on ap.version_id = pv.version_id
+    and ap.tenant_id = pv.tenant_id
+    and ap.released_at is null
   where pv.tenant_id = @tenant_id
     and m.manifest_blob_digest is not null
     and (
       pv.state <> 'tombstoned'
       or ts.retention_until > now()
       or ts.version_id is null
+      or ap.protection_id is not null
     )
 ) roots;
 """,
@@ -4555,6 +4576,13 @@ with doomed as (
   where pv.tenant_id = @tenant_id
     and pv.state = 'tombstoned'
     and ts.retention_until <= now()
+    and not exists (
+      select 1
+      from artifact_protections ap
+      where ap.tenant_id = pv.tenant_id
+        and ap.version_id = pv.version_id
+        and ap.released_at is null
+    )
   order by ts.retention_until, pv.created_at
   limit @batch_size
 )
@@ -4590,6 +4618,13 @@ join tombstones ts on ts.version_id = pv.version_id
 where pv.tenant_id = @tenant_id
   and pv.state = 'tombstoned'
   and ts.retention_until <= now()
+  and not exists (
+    select 1
+    from artifact_protections ap
+    where ap.tenant_id = pv.tenant_id
+      and ap.version_id = pv.version_id
+      and ap.released_at is null
+  )
 order by ts.retention_until, pv.created_at
 limit @batch_size;
 """,
@@ -6227,6 +6262,60 @@ limit @limit;
 
     loop ()
 
+let readActiveLegalHolds (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select ap.protection_id,
+       r.repo_key,
+       pv.version_id,
+       p.name,
+       pv.version,
+       pv.state,
+       ap.reason,
+       ap.protected_by_subject,
+       ap.protected_at,
+       ts.retention_until
+from artifact_protections ap
+join repos r on r.repo_id = ap.repo_id
+join package_versions pv on pv.version_id = ap.version_id
+join packages p on p.package_id = pv.package_id
+left join tombstones ts on ts.version_id = pv.version_id
+where ap.tenant_id = @tenant_id
+  and ap.mode = 'legal_hold'
+  and ap.released_at is null
+order by ap.protected_at desc;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let holds = ResizeArray<ComplianceLegalHoldRecord>()
+
+    let rec loop () =
+        if reader.Read() then
+            holds.Add(
+                { ProtectionId = reader.GetGuid(0)
+                  RepoKey = reader.GetString(1)
+                  VersionId = reader.GetGuid(2)
+                  PackageName = reader.GetString(3)
+                  Version = reader.GetString(4)
+                  State = reader.GetString(5)
+                  Reason = reader.GetString(6)
+                  ProtectedBySubject = reader.GetString(7)
+                  ProtectedAtUtc = reader.GetFieldValue<DateTimeOffset>(8)
+                  RetentionUntilUtc =
+                    if reader.IsDBNull(9) then None else Some(reader.GetFieldValue<DateTimeOffset>(9)) }
+            )
+
+            loop ()
+        else
+            Ok(holds |> Seq.toList)
+
+    loop ()
+
 let private auditRecordToExportObject (record: AuditRecord) =
     {| auditId = record.AuditId
        correlationId = record.CorrelationId
@@ -6244,6 +6333,13 @@ let createAuditExportPayload (records: AuditRecord list) =
         |> List.map (fun record -> JsonSerializer.Serialize(auditRecordToExportObject record))
 
     let payload = String.concat "\n" lines
+    let bytes = Encoding.UTF8.GetBytes(payload)
+    let digestBytes = SHA256.HashData(bytes)
+    let digest = Convert.ToHexString(digestBytes).ToLowerInvariant()
+    payload, digest
+
+let createJsonPayloadAndDigest<'T> (value: 'T) =
+    let payload = JsonSerializer.Serialize(value)
     let bytes = Encoding.UTF8.GetBytes(payload)
     let digestBytes = SHA256.HashData(bytes)
     let digest = Convert.ToHexString(digestBytes).ToLowerInvariant()
@@ -6673,6 +6769,57 @@ order by ga.requested_at desc;
                   ApprovedBySubject = if reader.IsDBNull(7) then None else Some(reader.GetString(7))
                   ApprovedAtUtc = if reader.IsDBNull(8) then None else Some(reader.GetFieldValue<DateTimeOffset>(8))
                   Status = reader.GetString(9) }
+            )
+            loop ()
+        else
+            Ok(approvals |> Seq.toList)
+
+    loop ()
+
+let readGovernanceApprovalsForTenant (tenantId: Guid) (limit: int) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select ga.approval_id,
+       r.repo_key,
+       ga.action,
+       ga.resource_type,
+       ga.resource_id,
+       ga.justification,
+       ga.requested_by_subject,
+       ga.requested_at,
+       ga.approved_by_subject,
+       ga.approved_at,
+       ga.status
+from governance_approvals ga
+join repos r on r.repo_id = ga.repo_id
+where ga.tenant_id = @tenant_id
+order by ga.requested_at desc
+limit @limit;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("limit", limit) |> ignore
+
+    use reader = cmd.ExecuteReader()
+    let approvals = ResizeArray<GovernanceApprovalRecord>()
+
+    let rec loop () =
+        if reader.Read() then
+            approvals.Add(
+                { ApprovalId = reader.GetGuid(0)
+                  RepoKey = reader.GetString(1)
+                  Action = reader.GetString(2)
+                  ResourceType = reader.GetString(3)
+                  ResourceId = reader.GetString(4)
+                  Justification = reader.GetString(5)
+                  RequestedBySubject = reader.GetString(6)
+                  RequestedAtUtc = reader.GetFieldValue<DateTimeOffset>(7)
+                  ApprovedBySubject = if reader.IsDBNull(8) then None else Some(reader.GetString(8))
+                  ApprovedAtUtc = if reader.IsDBNull(9) then None else Some(reader.GetFieldValue<DateTimeOffset>(9))
+                  Status = reader.GetString(10) }
             )
             loop ()
         else
@@ -10136,6 +10283,151 @@ let main args =
                                        deleteErrorCount = gcRun.DeleteErrorCount
                                        candidateDigests = gcRun.CandidateDigests |> List.toArray |}
                                 ))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/compliance/legal-holds",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAuditor with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (readActiveLegalHolds principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok holds ->
+                    Results.Ok(
+                        {| generatedAtUtc = nowUtc ()
+                           totalCount = holds.Length
+                           items =
+                            holds
+                            |> List.map (fun hold ->
+                                {| protectionId = hold.ProtectionId
+                                   repoKey = hold.RepoKey
+                                   versionId = hold.VersionId
+                                   packageName = hold.PackageName
+                                   version = hold.Version
+                                   state = hold.State
+                                   reason = hold.Reason
+                                   protectedBySubject = hold.ProtectedBySubject
+                                   protectedAtUtc = hold.ProtectedAtUtc
+                                   retentionUntilUtc = hold.RetentionUntilUtc |})
+                            |> List.toArray |}
+                    ))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/compliance/evidence",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAuditor with
+            | Error result -> result
+            | Ok principal ->
+                let rawAuditLimit = ctx.Request.Query["auditLimit"].ToString()
+                let rawApprovalLimit = ctx.Request.Query["approvalLimit"].ToString()
+
+                let auditLimit =
+                    match Int32.TryParse rawAuditLimit with
+                    | true, parsed when parsed > 0 -> min parsed 2000
+                    | _ -> 500
+
+                let approvalLimit =
+                    match Int32.TryParse rawApprovalLimit with
+                    | true, parsed when parsed > 0 -> min parsed 1000
+                    | _ -> 250
+
+                let exportAuditWriteResult =
+                    writeAudit
+                        state
+                        principal.TenantId
+                        principal.Subject
+                        "compliance.evidence.generated"
+                        "compliance_evidence_pack"
+                        (Guid.NewGuid().ToString())
+                        (Map.ofList
+                            [ "auditLimit", auditLimit.ToString()
+                              "approvalLimit", approvalLimit.ToString() ])
+
+                match exportAuditWriteResult with
+                | Error err -> serviceUnavailable err
+                | Ok () ->
+                    let generatedAtUtc = nowUtc ()
+                    match
+                        withConnection state (fun conn ->
+                            effectiveTenantGovernancePolicyForTenant principal.TenantId conn
+                            |> Result.bind (fun governancePolicy ->
+                                readTenantRoleBindings principal.TenantId conn
+                                |> Result.bind (fun tenantRoleBindings ->
+                                    readActiveLegalHolds principal.TenantId conn
+                                    |> Result.bind (fun legalHolds ->
+                                        readGovernanceApprovalsForTenant principal.TenantId approvalLimit conn
+                                        |> Result.bind (fun approvals ->
+                                            readAuditRecords principal.TenantId auditLimit conn
+                                            |> Result.map (fun auditRecords ->
+                                                governancePolicy, tenantRoleBindings, legalHolds, approvals, auditRecords))))))
+                    with
+                    | Error err -> serviceUnavailable err
+                    | Ok(governancePolicy, tenantRoleBindings, legalHolds, approvals, auditRecords) ->
+                        let auditPayload, auditExportSha256 = createAuditExportPayload auditRecords
+
+                        let evidence =
+                            {| generatedAtUtc = generatedAtUtc
+                               tenantId = principal.TenantId
+                               summary =
+                                {| tenantRoleBindingCount = tenantRoleBindings.Length
+                                   activeLegalHoldCount = legalHolds.Length
+                                   governanceApprovalCount = approvals.Length
+                                   auditRecordCount = auditRecords.Length |}
+                               tenantGovernancePolicy =
+                                {| minTombstoneRetentionDays = governancePolicy.MinTombstoneRetentionDays
+                                   requireDualControlForTombstone = governancePolicy.RequireDualControlForTombstone
+                                   requireDualControlForQuarantineResolution = governancePolicy.RequireDualControlForQuarantineResolution
+                                   updatedBySubject = governancePolicy.UpdatedBySubject
+                                   updatedAtUtc = governancePolicy.UpdatedAtUtc |}
+                               tenantRoleBindings =
+                                tenantRoleBindings
+                                |> List.map (fun binding ->
+                                    {| subject = binding.Subject
+                                       roles = binding.Roles |> Seq.map TenantRole.value |> Seq.sort |> Seq.toArray
+                                       updatedAtUtc = binding.UpdatedAtUtc |})
+                                |> List.toArray
+                               activeLegalHolds =
+                                legalHolds
+                                |> List.map (fun hold ->
+                                    {| protectionId = hold.ProtectionId
+                                       repoKey = hold.RepoKey
+                                       versionId = hold.VersionId
+                                       packageName = hold.PackageName
+                                       version = hold.Version
+                                       state = hold.State
+                                       reason = hold.Reason
+                                       protectedBySubject = hold.ProtectedBySubject
+                                       protectedAtUtc = hold.ProtectedAtUtc
+                                       retentionUntilUtc = hold.RetentionUntilUtc |})
+                                |> List.toArray
+                               governanceApprovals =
+                                approvals
+                                |> List.map (fun approval ->
+                                    {| approvalId = approval.ApprovalId
+                                       repoKey = approval.RepoKey
+                                       action = approval.Action
+                                       resourceType = approval.ResourceType
+                                       resourceId = approval.ResourceId
+                                       justification = approval.Justification
+                                       requestedBySubject = approval.RequestedBySubject
+                                       requestedAtUtc = approval.RequestedAtUtc
+                                       approvedBySubject = approval.ApprovedBySubject
+                                       approvedAtUtc = approval.ApprovedAtUtc
+                                       status = approval.Status |})
+                                |> List.toArray
+                               audit =
+                                {| exportSha256 = auditExportSha256
+                                   ndjson = auditPayload
+                                   records = auditRecords |> List.map auditRecordToExportObject |> List.toArray |} |}
+
+                        let payload, digest = createJsonPayloadAndDigest evidence
+                        ctx.Response.Headers.["X-Artifortress-Compliance-Pack-SHA256"] <- digest
+                        ctx.Response.Headers.["Content-Disposition"] <- "attachment; filename=compliance-evidence-pack.json"
+                        Results.Text(payload, "application/json"))
     )
     |> ignore
 

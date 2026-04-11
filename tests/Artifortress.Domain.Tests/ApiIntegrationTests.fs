@@ -2258,6 +2258,32 @@ type Phase1ApiTests(fixture: ApiFixture) =
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
         fixture.Client.Send(request)
 
+    let getComplianceLegalHoldsWithToken (token: string) =
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/compliance/legal-holds")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let getComplianceEvidenceWithToken (token: string) (auditLimit: int option) (approvalLimit: int option) =
+        let queryParts = ResizeArray<string>()
+
+        match auditLimit with
+        | Some value -> queryParts.Add($"auditLimit={value}")
+        | None -> ()
+
+        match approvalLimit with
+        | Some value -> queryParts.Add($"approvalLimit={value}")
+        | None -> ()
+
+        let suffix =
+            if queryParts.Count = 0 then
+                ""
+            else
+                "?" + String.concat "&" queryParts
+
+        use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/compliance/evidence{suffix}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
     let uploadPartFromPresignedUrl (uploadUrl: string) (payload: byte array) =
         use client = new HttpClient()
         use content = new ByteArrayContent(payload)
@@ -3054,6 +3080,152 @@ type Phase1ApiTests(fixture: ApiFixture) =
         let approvedReleaseBody = ensureStatus HttpStatusCode.OK approvedReleaseResponse
         use approvedReleaseDoc = JsonDocument.Parse(approvedReleaseBody)
         Assert.Equal(quarantineApprovalId, approvedReleaseDoc.RootElement.GetProperty("approvalId").GetGuid())
+
+    [<Fact>]
+    member _.``ER-504 active legal hold blocks GC hard delete until released`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er504-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er504-legal-hold-gc"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er504-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er504-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionId, digest =
+            createPublishedVersionWithBlob repoKey writeToken promoteToken $"er504-{Guid.NewGuid():N}"
+
+        use tombstoneResponse = tombstoneVersionWithToken promoteToken repoKey versionId "er504 tombstone" 1
+        ensureStatus HttpStatusCode.OK tombstoneResponse |> ignore
+
+        use holdResponse = protectArtifactWithToken promoteToken repoKey versionId "legal_hold" "er504 compliance hold"
+        ensureStatus HttpStatusCode.OK holdResponse |> ignore
+        fixture.ExpireTombstoneRetention(versionId)
+
+        use blockedGcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = false
+                      RetentionGraceHours = 0
+                      BatchSize = 250 })
+
+        let blockedGcBody = ensureStatus HttpStatusCode.OK blockedGcResponse
+        use blockedGcDoc = JsonDocument.Parse(blockedGcBody)
+        Assert.Equal(0, blockedGcDoc.RootElement.GetProperty("deletedVersionCount").GetInt32())
+        Assert.Equal(Some "tombstoned", fixture.TryReadVersionState(versionId))
+        Assert.Equal(Some "legal_hold", fixture.TryReadActiveArtifactProtectionMode(versionId))
+        Assert.True(fixture.BlobExists(digest), "GC must not delete blobs referenced by versions under active legal hold.")
+
+        use releaseHoldResponse = releaseArtifactProtectionWithToken promoteToken repoKey versionId "er504 hold released"
+        ensureStatus HttpStatusCode.OK releaseHoldResponse |> ignore
+        Assert.Equal(None, fixture.TryReadActiveArtifactProtectionMode(versionId))
+
+        use cleanupGcResponse =
+            runGcWithToken
+                adminToken
+                (Some
+                    { DryRun = false
+                      RetentionGraceHours = 0
+                      BatchSize = 250 })
+
+        let cleanupGcBody = ensureStatus HttpStatusCode.OK cleanupGcResponse
+        use cleanupGcDoc = JsonDocument.Parse(cleanupGcBody)
+        Assert.True(cleanupGcDoc.RootElement.GetProperty("deletedVersionCount").GetInt32() >= 1)
+        Assert.Equal(None, fixture.TryReadVersionState(versionId))
+        Assert.False(fixture.BlobExists(digest))
+
+    [<Fact>]
+    member _.``ER-504 compliance evidence pack exposes legal holds approvals and audit digest`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er504-evidence-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er504-evidence"
+        createRepoAsAdmin adminToken repoKey
+
+        let auditorSubject = makeSubject "er504-auditor"
+        use putAuditorBindingResponse = putTenantRoleBinding adminToken auditorSubject [| "tenant_auditor" |]
+        ensureStatus HttpStatusCode.OK putAuditorBindingResponse |> ignore
+
+        let auditorToken, _ = issuePat auditorSubject [| $"repo:{repoKey}:read" |] 60
+        let approvalAdminToken, _ = issuePat (makeSubject "er504-evidence-approval-admin") [| $"repo:{repoKey}:admin" |] 60
+        let writeToken, _ = issuePat (makeSubject "er504-evidence-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteRequester, _ = issuePat (makeSubject "er504-evidence-requester") [| $"repo:{repoKey}:promote" |] 60
+
+        use tenantPolicyResponse = updateTenantGovernancePolicy adminToken 14 true true
+        ensureStatus HttpStatusCode.OK tenantPolicyResponse |> ignore
+
+        try
+            let versionId, _ =
+                createPublishedVersionWithBlob repoKey writeToken promoteRequester $"er504-evidence-{Guid.NewGuid():N}"
+
+            use holdResponse = protectArtifactWithToken promoteRequester repoKey versionId "legal_hold" "regulatory inquiry"
+            ensureStatus HttpStatusCode.OK holdResponse |> ignore
+
+            use requestApprovalResponse =
+                createGovernanceApproval
+                    promoteRequester
+                    repoKey
+                    "package.version.tombstone"
+                    "package_version"
+                    (versionId.ToString())
+                    "regulatory review pending"
+
+            let requestApprovalBody = ensureStatus HttpStatusCode.Created requestApprovalResponse
+            use requestApprovalDoc = JsonDocument.Parse(requestApprovalBody)
+            let approvalId = requestApprovalDoc.RootElement.GetProperty("approvalId").GetGuid()
+
+            use approveResponse = approveGovernanceApproval approvalAdminToken repoKey approvalId
+            ensureStatus HttpStatusCode.OK approveResponse |> ignore
+
+            use legalHoldsResponse = getComplianceLegalHoldsWithToken auditorToken
+            let legalHoldsBody = ensureStatus HttpStatusCode.OK legalHoldsResponse
+            use legalHoldsDoc = JsonDocument.Parse(legalHoldsBody)
+            Assert.True(legalHoldsDoc.RootElement.GetProperty("totalCount").GetInt32() >= 1)
+
+            let holdItem =
+                legalHoldsDoc.RootElement.GetProperty("items").EnumerateArray()
+                |> Seq.find (fun item -> item.GetProperty("versionId").GetGuid() = versionId)
+
+            Assert.Equal(repoKey, holdItem.GetProperty("repoKey").GetString())
+            Assert.Equal("regulatory inquiry", holdItem.GetProperty("reason").GetString())
+
+            use evidenceResponse = getComplianceEvidenceWithToken auditorToken (Some 200) (Some 50)
+            let evidenceBody = ensureStatus HttpStatusCode.OK evidenceResponse
+            Assert.True(evidenceResponse.Headers.Contains("X-Artifortress-Compliance-Pack-SHA256"))
+            use evidenceDoc = JsonDocument.Parse(evidenceBody)
+
+            let summary = evidenceDoc.RootElement.GetProperty("summary")
+            Assert.True(summary.GetProperty("activeLegalHoldCount").GetInt32() >= 1)
+            Assert.True(summary.GetProperty("governanceApprovalCount").GetInt32() >= 1)
+            Assert.True(summary.GetProperty("auditRecordCount").GetInt32() >= 1)
+
+            let governancePolicy = evidenceDoc.RootElement.GetProperty("tenantGovernancePolicy")
+            Assert.Equal(14, governancePolicy.GetProperty("minTombstoneRetentionDays").GetInt32())
+            Assert.True(governancePolicy.GetProperty("requireDualControlForTombstone").GetBoolean())
+
+            let evidenceHold =
+                evidenceDoc.RootElement.GetProperty("activeLegalHolds").EnumerateArray()
+                |> Seq.find (fun item -> item.GetProperty("versionId").GetGuid() = versionId)
+
+            Assert.Equal("regulatory inquiry", evidenceHold.GetProperty("reason").GetString())
+
+            let approval =
+                evidenceDoc.RootElement.GetProperty("governanceApprovals").EnumerateArray()
+                |> Seq.find (fun item -> item.GetProperty("approvalId").GetGuid() = approvalId)
+
+            Assert.Equal("approved", approval.GetProperty("status").GetString())
+
+            let auditSection = evidenceDoc.RootElement.GetProperty("audit")
+            Assert.False(String.IsNullOrWhiteSpace(auditSection.GetProperty("exportSha256").GetString()))
+            Assert.Contains(
+                "\"action\":\"compliance.evidence.generated\"",
+                auditSection.GetProperty("ndjson").GetString(),
+                StringComparison.Ordinal
+            )
+        finally
+            use resetTenantPolicyResponse = updateTenantGovernancePolicy adminToken 1 false false
+            ensureStatus HttpStatusCode.OK resetTenantPolicyResponse |> ignore
 
     [<Fact>]
     member _.``P3-02 draft version create API enforces authz and reuses existing draft`` () =
