@@ -1480,6 +1480,63 @@ where version_id = @version_id;
         | :? int32 as count -> int64 count
         | _ -> failwith $"Unexpected search_documents count scalar value for version {versionId}."
 
+    member this.CountSearchDocumentsForRepo(repoKey: string) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from search_documents sd
+join repos r
+  on r.repo_id = sd.repo_id
+ and r.tenant_id = sd.tenant_id
+where r.repo_key = @repo_key;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected search_documents count scalar value for repo {repoKey}."
+
+    member this.CountSearchIndexJobsForRepo(repoKey: string) =
+        this.RequireAvailable()
+
+        use conn = new NpgsqlConnection(connectionString)
+        conn.Open()
+
+        use cmd =
+            new NpgsqlCommand(
+                """
+select count(*)
+from search_index_jobs j
+join package_versions pv
+  on pv.version_id = j.version_id
+ and pv.tenant_id = j.tenant_id
+join repos r
+  on r.repo_id = pv.repo_id
+ and r.tenant_id = pv.tenant_id
+where r.repo_key = @repo_key;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+        let scalar = cmd.ExecuteScalar()
+
+        match scalar with
+        | :? int64 as count -> count
+        | :? int32 as count -> int64 count
+        | _ -> failwith $"Unexpected search_index_jobs count scalar value for repo {repoKey}."
+
     member this.CountSearchIndexJobsForTenant() =
         this.RequireAvailable()
 
@@ -6633,6 +6690,103 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.True(statusDoc.RootElement.GetProperty("staleDocuments").GetInt64() >= 1L)
         Assert.True(statusDoc.RootElement.GetProperty("worstCaseFreshnessLagSeconds").GetInt64() >= 0L)
         Assert.Equal(JsonValueKind.String, statusDoc.RootElement.GetProperty("newestIndexedAtUtc").ValueKind)
+
+    [<Fact>]
+    member _.``ER-404 large rebuild backfill completes without drift or starvation`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er404-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er404-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "er404-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "er404-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er404-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let baselineVersions =
+            [ for i in 1..45 do
+                  let packageName = $"er404-pkg-{i:D3}-{Guid.NewGuid():N}"
+                  yield createPublishedVersionWithBlob repoKey writeToken promoteToken packageName ]
+
+        fixture.ResetSearchPipelineStateGlobal()
+
+        use rebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 200)
+        let rebuildBody = ensureStatus HttpStatusCode.OK rebuildResponse
+        use rebuildDoc = JsonDocument.Parse(rebuildBody)
+        Assert.Equal(int64 baselineVersions.Length, rebuildDoc.RootElement.GetProperty("enqueuedCount").GetInt64())
+
+        let expectedDocumentCount = baselineVersions.Length + 1
+        let mutable round = 0
+        let mutable publishedDuringBackfill: (Guid * string) option = None
+        let mutable lastPendingJobs = Int64.MaxValue
+        let mutable observedPendingReduction = false
+
+        while fixture.CountSearchDocumentsForRepo(repoKey) < int64 expectedDocumentCount && round < 20 do
+            round <- round + 1
+
+            let outcome = fixture.RunSearchIndexJobSweep(7, 3)
+
+            if round = 2 then
+                let latePackageName = $"er404-late-{Guid.NewGuid():N}"
+                let lateVersionId, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken latePackageName
+                publishedDuringBackfill <- Some(lateVersionId, latePackageName)
+
+                let outboxOutcome = fixture.RunSearchIndexOutboxSweep(20)
+                Assert.True(outboxOutcome.EnqueuedCount >= 1)
+
+                use midflightRebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 200)
+                let midflightRebuildBody = ensureStatus HttpStatusCode.OK midflightRebuildResponse
+                use midflightRebuildDoc = JsonDocument.Parse(midflightRebuildBody)
+                Assert.True(midflightRebuildDoc.RootElement.GetProperty("enqueuedCount").GetInt64() >= int64 baselineVersions.Length)
+
+            use statusResponse = getSearchStatusWithToken adminToken (Some repoKey)
+            let statusBody = ensureStatus HttpStatusCode.OK statusResponse
+            use statusDoc = JsonDocument.Parse(statusBody)
+
+            let pendingJobs = statusDoc.RootElement.GetProperty("pendingJobs").GetInt64()
+            let failedJobs = statusDoc.RootElement.GetProperty("failedJobs").GetInt64()
+            let staleProcessingJobs = statusDoc.RootElement.GetProperty("staleProcessingJobs").GetInt64()
+
+            Assert.Equal(0L, failedJobs)
+            Assert.Equal(0L, staleProcessingJobs)
+            Assert.True(outcome.ClaimedCount > 0 || pendingJobs = 0L)
+
+            if pendingJobs < lastPendingJobs then
+                observedPendingReduction <- true
+
+            lastPendingJobs <- pendingJobs
+
+        let finalDocumentCount = fixture.CountSearchDocumentsForRepo(repoKey)
+        Assert.Equal(int64 expectedDocumentCount, finalDocumentCount)
+        Assert.Equal(int64 expectedDocumentCount, fixture.CountSearchIndexJobsForRepo(repoKey))
+        Assert.True(observedPendingReduction)
+
+        for versionId, _ in baselineVersions do
+            Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionId))
+
+        match publishedDuringBackfill with
+        | Some(versionId, packageName) ->
+            Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionId))
+
+            use searchResponse = searchPackagesWithToken readToken repoKey (Some packageName) (Some 10) (Some 0)
+            let searchBody = ensureStatus HttpStatusCode.OK searchResponse
+            use searchDoc = JsonDocument.Parse(searchBody)
+            let firstItem =
+                searchDoc.RootElement.GetProperty("items").EnumerateArray() |> Seq.head
+
+            Assert.True(searchDoc.RootElement.GetProperty("totalCount").GetInt64() >= 1L)
+            Assert.Equal(packageName, firstItem.GetProperty("packageName").GetString())
+        | None -> failwith "Expected a published version during backfill."
+
+        use finalStatusResponse = getSearchStatusWithToken adminToken (Some repoKey)
+        let finalStatusBody = ensureStatus HttpStatusCode.OK finalStatusResponse
+        use finalStatusDoc = JsonDocument.Parse(finalStatusBody)
+        Assert.Equal(0L, finalStatusDoc.RootElement.GetProperty("pendingJobs").GetInt64())
+        Assert.Equal(0L, finalStatusDoc.RootElement.GetProperty("processingJobs").GetInt64())
+        Assert.Equal(0L, finalStatusDoc.RootElement.GetProperty("failedJobs").GetInt64())
+        Assert.Equal(0L, finalStatusDoc.RootElement.GetProperty("staleProcessingJobs").GetInt64())
+        Assert.Equal(0L, finalStatusDoc.RootElement.GetProperty("staleDocuments").GetInt64())
 
     [<Fact>]
     member _.``ER-201 tenant admission policy endpoint round-trips and reports usage`` () =
