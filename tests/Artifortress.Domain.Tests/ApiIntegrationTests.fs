@@ -2248,6 +2248,37 @@ type Phase1ApiTests(fixture: ApiFixture) =
         request.Content <- JsonContent.Create(body)
         fixture.Client.Send(request)
 
+    let getSearchStatusWithToken (token: string) (repoKey: string option) =
+        let suffix =
+            match repoKey with
+            | Some value -> $"?repoKey={Uri.EscapeDataString(value)}"
+            | None -> ""
+
+        use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/admin/search/status{suffix}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let pauseSearchWithToken (token: string) (reason: string) =
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/search/pause")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <- JsonContent.Create({| Reason = reason |})
+        fixture.Client.Send(request)
+
+    let resumeSearchWithToken (token: string) =
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/search/resume")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let cancelSearchWithToken (token: string) (repoKey: string option) (reason: string option) =
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/search/cancel")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        request.Content <-
+            JsonContent.Create(
+                {| RepoKey = repoKey |> Option.defaultValue ""
+                   Reason = reason |> Option.defaultValue "" |}
+            )
+        fixture.Client.Send(request)
+
     let getAuditWithToken (token: string) (limit: int) =
         use request = new HttpRequestMessage(HttpMethod.Get, $"/v1/audit?limit={limit}")
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
@@ -6455,6 +6486,153 @@ type Phase1ApiTests(fixture: ApiFixture) =
         let postRebuildSearchBody = ensureStatus HttpStatusCode.OK postRebuildSearchResponse
         use postRebuildSearchDoc = JsonDocument.Parse(postRebuildSearchBody)
         Assert.Equal(2L, postRebuildSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+    [<Fact>]
+    member _.``ER-401 search query ranks exact package name ahead of prefix and token matches`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er401-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er401-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "er401-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "er401-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er401-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let _, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken "widget"
+        let _, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken "widget-core"
+        let _, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken "core-widget"
+
+        fixture.ResetSearchPipelineStateGlobal()
+
+        use rebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 100)
+        ensureStatus HttpStatusCode.OK rebuildResponse |> ignore
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(50, 3)
+        Assert.True(jobOutcome.CompletedCount >= 3)
+
+        use searchResponse = searchPackagesWithToken readToken repoKey (Some "widget") (Some 10) (Some 0)
+        let searchBody = ensureStatus HttpStatusCode.OK searchResponse
+        use searchDoc = JsonDocument.Parse(searchBody)
+
+        let names =
+            searchDoc.RootElement.GetProperty("items").EnumerateArray()
+            |> Seq.map (fun item -> item.GetProperty("packageName").GetString())
+            |> Seq.toList
+
+        Assert.True(names.Length >= 3)
+        Assert.Equal("widget", names[0])
+        Assert.Equal("widget-core", names[1])
+        Assert.Equal("core-widget", names[2])
+
+    [<Fact>]
+    member _.``ER-402 search pause resume cancel controls gate worker and rebuild execution`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er402-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er402-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er402-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er402-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionA, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken $"er402-a-{Guid.NewGuid():N}"
+        let versionB, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken $"er402-b-{Guid.NewGuid():N}"
+
+        fixture.ResetSearchPipelineStateGlobal()
+
+        try
+            use pauseResponse = pauseSearchWithToken adminToken "maintenance window"
+            let pauseBody = ensureStatus HttpStatusCode.OK pauseResponse
+            use pauseDoc = JsonDocument.Parse(pauseBody)
+            Assert.True(pauseDoc.RootElement.GetProperty("paused").GetBoolean())
+            Assert.Equal("maintenance window", pauseDoc.RootElement.GetProperty("pauseReason").GetString())
+
+            let payloadA = JsonSerializer.Serialize({| versionId = versionA |})
+            let _ = fixture.InsertOutboxEvent("version.published", "package_version", versionA.ToString(), payloadA)
+
+            let pausedOutboxOutcome = fixture.RunSearchIndexOutboxSweep(20)
+            Assert.Equal(0, pausedOutboxOutcome.ClaimedCount)
+
+            fixture.UpsertSearchIndexJobForVersionForTest(versionA, "pending", 0, DateTimeOffset.UtcNow.AddMinutes(-1.0), None)
+            fixture.UpsertSearchIndexJobForVersionForTest(versionB, "failed", 1, DateTimeOffset.UtcNow.AddMinutes(-1.0), Some "synthetic")
+
+            let pausedJobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+            Assert.Equal(0, pausedJobOutcome.ClaimedCount)
+
+            use pausedStatusResponse = getSearchStatusWithToken adminToken (Some repoKey)
+            let pausedStatusBody = ensureStatus HttpStatusCode.OK pausedStatusResponse
+            use pausedStatusDoc = JsonDocument.Parse(pausedStatusBody)
+            Assert.True(pausedStatusDoc.RootElement.GetProperty("paused").GetBoolean())
+            Assert.Equal(1L, pausedStatusDoc.RootElement.GetProperty("pendingJobs").GetInt64())
+            Assert.Equal(1L, pausedStatusDoc.RootElement.GetProperty("failedJobs").GetInt64())
+
+            use blockedRebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 50)
+            ensureStatus HttpStatusCode.Conflict blockedRebuildResponse |> ignore
+
+            use cancelResponse = cancelSearchWithToken adminToken (Some repoKey) (Some "operator reset")
+            let cancelBody = ensureStatus HttpStatusCode.OK cancelResponse
+            use cancelDoc = JsonDocument.Parse(cancelBody)
+            Assert.Equal(2, cancelDoc.RootElement.GetProperty("cancelledCount").GetInt32())
+
+            use resumedResponse = resumeSearchWithToken adminToken
+            let resumedBody = ensureStatus HttpStatusCode.OK resumedResponse
+            use resumedDoc = JsonDocument.Parse(resumedBody)
+            Assert.False(resumedDoc.RootElement.GetProperty("paused").GetBoolean())
+
+            use rebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 50)
+            let rebuildBody = ensureStatus HttpStatusCode.OK rebuildResponse
+            use rebuildDoc = JsonDocument.Parse(rebuildBody)
+            Assert.Equal(2L, rebuildDoc.RootElement.GetProperty("enqueuedCount").GetInt64())
+
+            let jobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+            Assert.True(jobOutcome.CompletedCount >= 2)
+            Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionA))
+            Assert.Equal(1L, fixture.CountSearchDocumentsForVersion(versionB))
+        finally
+            use _ = resumeSearchWithToken adminToken
+            ()
+
+    [<Fact>]
+    member _.``ER-403 search status reports stale processing and freshness lag`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er403-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er403-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er403-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er403-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let versionA, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken $"er403-a-{Guid.NewGuid():N}"
+        let versionB, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken $"er403-b-{Guid.NewGuid():N}"
+
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let payloadB = JsonSerializer.Serialize({| versionId = versionB |})
+        let _ = fixture.InsertOutboxEvent("version.published", "package_version", versionB.ToString(), payloadB)
+        let outboxOutcome = fixture.RunSearchIndexOutboxSweep(20)
+        Assert.True(outboxOutcome.EnqueuedCount >= 1)
+
+        let jobOutcome = fixture.RunSearchIndexJobSweep(20, 3)
+        Assert.True(jobOutcome.CompletedCount >= 1)
+
+        fixture.UpsertSearchIndexJobForVersionForTest(versionA, "processing", 1, DateTimeOffset.UtcNow.AddMinutes(-5.0), None)
+        fixture.SetSearchIndexJobUpdatedAt(versionA, DateTimeOffset.UtcNow.AddMinutes(-10.0))
+
+        use statusResponse = getSearchStatusWithToken adminToken (Some repoKey)
+        let statusBody = ensureStatus HttpStatusCode.OK statusResponse
+        use statusDoc = JsonDocument.Parse(statusBody)
+
+        Assert.False(statusDoc.RootElement.GetProperty("paused").GetBoolean())
+        Assert.True(statusDoc.RootElement.GetProperty("processingJobs").GetInt64() >= 1L)
+        Assert.True(statusDoc.RootElement.GetProperty("staleProcessingJobs").GetInt64() >= 1L)
+        Assert.True(statusDoc.RootElement.GetProperty("staleDocuments").GetInt64() >= 1L)
+        Assert.True(statusDoc.RootElement.GetProperty("worstCaseFreshnessLagSeconds").GetInt64() >= 0L)
+        Assert.Equal(JsonValueKind.String, statusDoc.RootElement.GetProperty("newestIndexedAtUtc").ValueKind)
 
     [<Fact>]
     member _.``ER-201 tenant admission policy endpoint round-trips and reports usage`` () =

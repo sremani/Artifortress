@@ -37,11 +37,20 @@ module SearchIndexOutboxProducer =
             new NpgsqlCommand(
                 """
 with picked as (
-  select event_id, tenant_id, aggregate_id, payload::text as payload_json
+  select outbox_events.event_id,
+         outbox_events.tenant_id,
+         outbox_events.aggregate_id,
+         outbox_events.payload::text as payload_json
   from outbox_events
   where delivered_at is null
     and event_type = 'version.published'
     and available_at <= now()
+    and not exists (
+      select 1
+      from tenant_search_controls tsc
+      where tsc.tenant_id = outbox_events.tenant_id
+        and tsc.is_paused = true
+    )
   order by occurred_at
   limit @batch_size
   for update skip locked
@@ -54,7 +63,7 @@ claimed as (
   where e.event_id = p.event_id
   returning p.event_id, p.tenant_id, p.aggregate_id, p.payload_json
 )
-select event_id, tenant_id, aggregate_id, payload_json
+select claimed.event_id, claimed.tenant_id, claimed.aggregate_id, claimed.payload_json
 from claimed;
 """,
                 conn
@@ -178,19 +187,28 @@ module SearchIndexJobProcessor =
             new NpgsqlCommand(
                 """
 with candidate as (
-  select job_id, tenant_id, version_id, attempts
+  select search_index_jobs.job_id,
+         search_index_jobs.tenant_id,
+         search_index_jobs.version_id,
+         search_index_jobs.attempts
   from search_index_jobs
   where (
       (
-      status in ('pending', 'failed')
-      and available_at <= now()
+      search_index_jobs.status in ('pending', 'failed')
+      and search_index_jobs.available_at <= now()
       ) or (
-      status = 'processing'
-      and updated_at <= now() - make_interval(secs => @lease_seconds)
+      search_index_jobs.status = 'processing'
+      and search_index_jobs.updated_at <= now() - make_interval(secs => @lease_seconds)
       )
     )
-    and attempts < @max_attempts
-  order by available_at, created_at
+    and search_index_jobs.attempts < @max_attempts
+    and not exists (
+      select 1
+      from tenant_search_controls tsc
+      where tsc.tenant_id = search_index_jobs.tenant_id
+        and tsc.is_paused = true
+    )
+  order by search_index_jobs.available_at, search_index_jobs.created_at
   limit @batch_size
   for update skip locked
 ),
@@ -202,7 +220,7 @@ claimed as (
   where j.job_id = c.job_id
   returning j.job_id, j.tenant_id, j.version_id, j.attempts
 )
-select job_id, tenant_id, version_id, attempts
+select claimed.job_id, claimed.tenant_id, claimed.version_id, claimed.attempts
 from claimed;
 """,
                 conn

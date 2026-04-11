@@ -106,6 +106,17 @@ type SearchRebuildRequest = {
 }
 
 [<CLIMutable>]
+type SearchPauseRequest = {
+    Reason: string
+}
+
+[<CLIMutable>]
+type SearchCancelRequest = {
+    RepoKey: string
+    Reason: string
+}
+
+[<CLIMutable>]
 type CreateUploadSessionRequest = {
     ExpectedDigest: string
     ExpectedLength: int64
@@ -350,6 +361,13 @@ type SearchDocumentRecord = {
     IndexedAtUtc: DateTimeOffset
 }
 
+type SearchControlRecord = {
+    IsPaused: bool
+    PauseReason: string option
+    UpdatedBySubject: string
+    UpdatedAtUtc: DateTimeOffset
+}
+
 type SearchDocumentsPage = {
     TotalCount: int64
     Items: SearchDocumentRecord list
@@ -542,6 +560,7 @@ type AppState = {
     DefaultTombstoneRetentionDays: int
     DefaultGcRetentionGraceHours: int
     DefaultGcBatchSize: int
+    SearchJobLeaseSeconds: int
     DefaultTenantAdmissionPolicy: TenantAdmissionPolicyRecord
     OidcTokenValidation: OidcTokenValidationConfig option
     SamlIntegration: SamlIntegrationConfig
@@ -929,6 +948,22 @@ let validateSearchRebuildRequest (requestOption: SearchRebuildRequest option) =
             Error "batchSize must be between 1 and 5000."
         else
             Ok(repoKey, batchSize)
+
+let validateSearchPauseRequest (request: SearchPauseRequest) =
+    let reason = normalizeText request.Reason
+    if String.IsNullOrWhiteSpace reason then Error "reason is required." else Ok reason
+
+let validateSearchCancelRequest (requestOption: SearchCancelRequest option) =
+    match requestOption with
+    | None -> Ok(None, "operator_cancelled")
+    | Some request ->
+        let repoKey =
+            let value = normalizeRepoKey request.RepoKey
+            if String.IsNullOrWhiteSpace value then None else Some value
+
+        let reason = normalizeText request.Reason
+        let effectiveReason = if String.IsNullOrWhiteSpace reason then "operator_cancelled" else reason
+        Ok(repoKey, effectiveReason)
 
 let validateEvaluatePolicyRequest (request: EvaluatePolicyRequest) =
     let action = normalizeText request.Action |> fun value -> value.ToLowerInvariant()
@@ -2676,6 +2711,88 @@ limit 1;
 let effectiveTenantAdmissionPolicyForTenant (state: AppState) (tenantId: Guid) (conn: NpgsqlConnection) =
     readTenantAdmissionPolicy tenantId conn
     |> Result.map (Option.defaultValue state.DefaultTenantAdmissionPolicy)
+
+let readTenantSearchControl (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select is_paused, pause_reason, updated_by_subject, updated_at
+from tenant_search_controls
+where tenant_id = @tenant_id
+limit 1;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        Ok(
+            Some
+                { IsPaused = reader.GetBoolean(0)
+                  PauseReason = if reader.IsDBNull(1) then None else Some(reader.GetString(1))
+                  UpdatedBySubject = reader.GetString(2)
+                  UpdatedAtUtc = reader.GetFieldValue<DateTimeOffset>(3) }
+        )
+    else
+        Ok None
+
+let effectiveTenantSearchControlForTenant (tenantId: Guid) (conn: NpgsqlConnection) =
+    readTenantSearchControl tenantId conn
+    |> Result.map (
+        Option.defaultValue
+            { IsPaused = false
+              PauseReason = None
+              UpdatedBySubject = "system"
+              UpdatedAtUtc = nowUtc () }
+    )
+
+let upsertTenantSearchControl
+    (tenantId: Guid)
+    (isPaused: bool)
+    (pauseReason: string option)
+    (updatedBySubject: string)
+    (conn: NpgsqlConnection)
+    =
+    use cmd =
+        new NpgsqlCommand(
+            """
+insert into tenant_search_controls
+  (tenant_id, is_paused, pause_reason, updated_by_subject, updated_at)
+values
+  (@tenant_id, @is_paused, @pause_reason, @updated_by_subject, now())
+on conflict (tenant_id)
+do update set
+  is_paused = excluded.is_paused,
+  pause_reason = excluded.pause_reason,
+  updated_by_subject = excluded.updated_by_subject,
+  updated_at = now()
+returning updated_at;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("is_paused", isPaused) |> ignore
+    let pauseReasonParam = cmd.Parameters.Add("pause_reason", NpgsqlDbType.Text)
+    pauseReasonParam.Value <- (match pauseReason with | Some value -> box value | None -> box DBNull.Value)
+    cmd.Parameters.AddWithValue("updated_by_subject", updatedBySubject) |> ignore
+
+    let scalar = cmd.ExecuteScalar()
+
+    let updatedAtUtc =
+        match scalar with
+        | :? DateTimeOffset as dto -> Ok dto
+        | :? DateTime as dt -> Ok(toUtcDateTimeOffset dt)
+        | _ -> Error "Unexpected timestamp type returned for tenant search control upsert."
+
+    updatedAtUtc
+    |> Result.map (fun timestamp ->
+        { IsPaused = isPaused
+          PauseReason = pauseReason
+          UpdatedBySubject = updatedBySubject
+          UpdatedAtUtc = timestamp })
 
 let readTenantGovernancePolicy (tenantId: Guid) (conn: NpgsqlConnection) =
     use cmd =
@@ -5111,6 +5228,11 @@ let readSearchDocumentsForRepo
     (conn: NpgsqlConnection)
     =
     let normalizedQuery = normalizeSearchQueryText query
+    let queryPrefix =
+        if String.IsNullOrWhiteSpace normalizedQuery then
+            ""
+        else
+            normalizedQuery.ToLowerInvariant() + "%"
 
     use countCmd =
         new NpgsqlCommand(
@@ -5139,6 +5261,7 @@ where sd.tenant_id = @tenant_id
     countCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
     countCmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
     countCmd.Parameters.AddWithValue("query", normalizedQuery) |> ignore
+    countCmd.Parameters.AddWithValue("query_prefix", queryPrefix) |> ignore
 
     let totalCountResult =
         match countCmd.ExecuteScalar() with
@@ -5158,7 +5281,19 @@ select
   sd.package_name,
   sd.package_version,
   sd.published_at,
-  sd.indexed_at
+  sd.indexed_at,
+  case
+    when @query = '' then 0
+    when lower(sd.package_name) = lower(@query) then 300
+    when lower(coalesce(sd.package_namespace, '')) = lower(@query) then 220
+    when lower(sd.package_name) like @query_prefix then 180
+    when lower(coalesce(sd.package_namespace, '')) like @query_prefix then 140
+    else 0
+  end
+  + case
+      when @query = '' then 0
+      else ts_rank_cd(sd.search_vector, plainto_tsquery('simple', @query))
+    end as match_score
 from search_documents sd
 join package_versions pv
   on pv.version_id = sd.version_id
@@ -5175,7 +5310,13 @@ where sd.tenant_id = @tenant_id
     @query = ''
     or sd.search_vector @@ plainto_tsquery('simple', @query)
   )
-order by sd.package_name asc, sd.package_version desc
+order by
+  case when @query = '' then 0 else 1 end desc,
+  match_score desc,
+  coalesce(sd.published_at, sd.indexed_at) desc,
+  sd.package_name asc,
+  sd.package_version desc,
+  sd.version_id asc
 limit @limit
 offset @offset;
 """,
@@ -5185,6 +5326,7 @@ offset @offset;
     cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
     cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
     cmd.Parameters.AddWithValue("query", normalizedQuery) |> ignore
+    cmd.Parameters.AddWithValue("query_prefix", queryPrefix) |> ignore
     cmd.Parameters.AddWithValue("limit", limit) |> ignore
     cmd.Parameters.AddWithValue("offset", offset) |> ignore
 
@@ -5280,6 +5422,162 @@ select count(*) from upserted;
             | :? int64 as count -> Ok(SearchRebuildEnqueued(count, effectiveBatchSize, usage.PendingSearchJobs + effectiveBatchSize))
             | :? int32 as count -> Ok(SearchRebuildEnqueued(int64 count, effectiveBatchSize, usage.PendingSearchJobs + effectiveBatchSize))
             | _ -> Error "Unexpected row count type returned during search rebuild enqueue.")
+
+let readSearchStatusForTenant
+    (tenantId: Guid)
+    (repoKey: string option)
+    (leaseSeconds: int)
+    (conn: NpgsqlConnection)
+    =
+    let repoFilterSql, addRepoFilter =
+        match repoKey with
+        | Some value ->
+            "and r.repo_key = @repo_key",
+            (fun (cmd: NpgsqlCommand) -> cmd.Parameters.AddWithValue("repo_key", value) |> ignore)
+        | None -> "", (fun (_: NpgsqlCommand) -> ())
+
+    use cmd =
+        new NpgsqlCommand(
+            $"""
+with scoped_jobs as (
+  select j.status,
+         j.available_at,
+         j.updated_at,
+         pv.version_id,
+         coalesce(pv.published_at, pv.created_at) as source_timestamp
+  from search_index_jobs j
+  join package_versions pv
+    on pv.version_id = j.version_id
+   and pv.tenant_id = j.tenant_id
+  join repos r
+    on r.repo_id = pv.repo_id
+   and r.tenant_id = pv.tenant_id
+  where j.tenant_id = @tenant_id
+    {repoFilterSql}
+),
+scoped_docs as (
+  select sd.version_id,
+         sd.indexed_at,
+         coalesce(pv.published_at, pv.created_at) as source_timestamp
+  from search_documents sd
+  join package_versions pv
+    on pv.version_id = sd.version_id
+   and pv.tenant_id = sd.tenant_id
+  join repos r
+    on r.repo_id = sd.repo_id
+   and r.tenant_id = sd.tenant_id
+  where sd.tenant_id = @tenant_id
+    {repoFilterSql}
+),
+published_targets as (
+  select pv.version_id,
+         coalesce(pv.published_at, pv.created_at) as source_timestamp
+  from package_versions pv
+  join repos r
+    on r.repo_id = pv.repo_id
+   and r.tenant_id = pv.tenant_id
+  where pv.tenant_id = @tenant_id
+    and pv.state = 'published'
+    {repoFilterSql}
+)
+select
+  coalesce(sum(case when status = 'pending' then 1 else 0 end), 0)::bigint as pending_jobs,
+  coalesce(sum(case when status = 'processing' then 1 else 0 end), 0)::bigint as processing_jobs,
+  coalesce(sum(case when status = 'failed' then 1 else 0 end), 0)::bigint as failed_jobs,
+  coalesce(sum(case when status = 'completed' then 1 else 0 end), 0)::bigint as completed_jobs,
+  coalesce(sum(case when status = 'cancelled' then 1 else 0 end), 0)::bigint as cancelled_jobs,
+  coalesce(max(extract(epoch from (now() - available_at))) filter (where status in ('pending', 'failed')), 0)::bigint as oldest_ready_job_age_seconds,
+  coalesce(max(extract(epoch from (now() - updated_at))) filter (where status = 'processing'), 0)::bigint as oldest_processing_age_seconds,
+  coalesce(sum(case when status = 'processing' and updated_at <= now() - make_interval(secs => @lease_seconds) then 1 else 0 end), 0)::bigint as stale_processing_jobs,
+  coalesce((select count(*) from published_targets pt
+            left join scoped_docs sd on sd.version_id = pt.version_id
+            where sd.version_id is null or sd.indexed_at < pt.source_timestamp), 0)::bigint as stale_documents,
+  coalesce((select max(indexed_at) from scoped_docs), null) as newest_indexed_at,
+  coalesce((select max(extract(epoch from (now() - pt.source_timestamp)))
+            from published_targets pt
+            left join scoped_docs sd on sd.version_id = pt.version_id
+            where sd.version_id is null or sd.indexed_at < pt.source_timestamp), 0)::bigint as worst_case_freshness_lag_seconds
+from scoped_jobs;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("lease_seconds", max 30 leaseSeconds) |> ignore
+    addRepoFilter cmd
+
+    use reader = cmd.ExecuteReader()
+
+    if reader.Read() then
+        let newestIndexedAtUtc =
+            if reader.IsDBNull(9) then None else Some(reader.GetFieldValue<DateTimeOffset>(9))
+
+        Ok
+            {| PendingJobs = reader.GetInt64(0)
+               ProcessingJobs = reader.GetInt64(1)
+               FailedJobs = reader.GetInt64(2)
+               CompletedJobs = reader.GetInt64(3)
+               CancelledJobs = reader.GetInt64(4)
+               OldestReadyJobAgeSeconds = reader.GetInt64(5)
+               OldestProcessingAgeSeconds = reader.GetInt64(6)
+               StaleProcessingJobs = reader.GetInt64(7)
+               StaleDocuments = reader.GetInt64(8)
+               NewestIndexedAtUtc = newestIndexedAtUtc
+               WorstCaseFreshnessLagSeconds = reader.GetInt64(10) |}
+    else
+        Error "Unexpected empty result while reading search status."
+
+let cancelSearchJobsForTenant
+    (tenantId: Guid)
+    (repoKey: string option)
+    (reason: string)
+    (conn: NpgsqlConnection)
+    =
+    let repoFilterSql, addRepoFilter =
+        match repoKey with
+        | Some value ->
+            "and r.repo_key = @repo_key",
+            (fun (cmd: NpgsqlCommand) -> cmd.Parameters.AddWithValue("repo_key", value) |> ignore)
+        | None -> "", (fun (_: NpgsqlCommand) -> ())
+
+    use cmd =
+        new NpgsqlCommand(
+            $"""
+with scoped as (
+  select j.job_id
+  from search_index_jobs j
+  join package_versions pv
+    on pv.version_id = j.version_id
+   and pv.tenant_id = j.tenant_id
+  join repos r
+    on r.repo_id = pv.repo_id
+   and r.tenant_id = pv.tenant_id
+  where j.tenant_id = @tenant_id
+    and j.status in ('pending', 'failed')
+    {repoFilterSql}
+)
+update search_index_jobs j
+set status = 'cancelled',
+    last_error = @last_error,
+    updated_at = now()
+from scoped s
+where j.job_id = s.job_id
+returning j.job_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("last_error", $"cancelled:{reason}") |> ignore
+    addRepoFilter cmd
+
+    use reader = cmd.ExecuteReader()
+    let mutable cancelledCount = 0
+
+    while reader.Read() do
+        cancelledCount <- cancelledCount + 1
+
+    Ok cancelledCount
 
 let evaluatePolicyForVersion
     (tenantId: Guid)
@@ -6940,6 +7238,13 @@ let main args =
             | true, value when value >= 1 && value <= 5000 -> value
             | _ -> 200
 
+        let searchJobLeaseSeconds =
+            let raw = builder.Configuration.["Worker:SearchJobLeaseSeconds"]
+
+            match Int32.TryParse raw with
+            | true, value when value >= 30 && value <= 86400 -> value
+            | _ -> 300
+
         let configuredDefaultTenantAdmissionPolicy =
             { MaxLogicalStorageBytes =
                 parseBoundedPositiveInt64
@@ -7185,6 +7490,7 @@ let main args =
           DefaultTombstoneRetentionDays = defaultTombstoneRetentionDays
           DefaultGcRetentionGraceHours = defaultGcRetentionGraceHours
           DefaultGcBatchSize = defaultGcBatchSize
+          SearchJobLeaseSeconds = searchJobLeaseSeconds
           DefaultTenantAdmissionPolicy = configuredDefaultTenantAdmissionPolicy
           OidcTokenValidation = oidcTokenValidation
           SamlIntegration = samlIntegration }
@@ -10062,20 +10368,28 @@ let main args =
                                 withConnection
                                     state
                                     (fun conn ->
-                                        effectiveTenantAdmissionPolicyForTenant state principal.TenantId conn
-                                        |> Result.bind (fun policy ->
-                                            enqueueSearchRebuildJobs
-                                                principal.TenantId
-                                                repoKeyOption
-                                                batchSize
-                                                policy.MaxPendingSearchJobs
-                                                conn))
+                                        effectiveTenantSearchControlForTenant principal.TenantId conn
+                                        |> Result.bind (fun control ->
+                                            if control.IsPaused then
+                                                let pauseReason = control.PauseReason |> Option.defaultValue "operator pause"
+                                                Ok(Error $"Search pipeline is paused: {pauseReason}")
+                                            else
+                                                effectiveTenantAdmissionPolicyForTenant state principal.TenantId conn
+                                                |> Result.bind (fun policy ->
+                                                    enqueueSearchRebuildJobs
+                                                        principal.TenantId
+                                                        repoKeyOption
+                                                        batchSize
+                                                        policy.MaxPendingSearchJobs
+                                                        conn
+                                                    |> Result.map Ok)))
                             with
+                            | Ok(Error pausedReason) -> conflict pausedReason
                             | Error err -> serviceUnavailable err
-                            | Ok(SearchRebuildQuotaExceeded pendingJobs) ->
+                            | Ok(Ok(SearchRebuildQuotaExceeded pendingJobs)) ->
                                 tooManyRequests
                                     $"Tenant search rebuild quota exceeded. Pending search jobs: {pendingJobs}."
-                            | Ok(SearchRebuildEnqueued(enqueuedCount, effectiveBatchSize, pendingJobsAfterEnqueue)) ->
+                            | Ok(Ok(SearchRebuildEnqueued(enqueuedCount, effectiveBatchSize, pendingJobsAfterEnqueue))) ->
                                 let resourceId =
                                     match repoKeyOption with
                                     | Some repoKey -> repoKey
@@ -10104,6 +10418,180 @@ let main args =
                                            effectiveBatchSize = effectiveBatchSize
                                            enqueuedCount = enqueuedCount
                                            pendingJobsAfterEnqueue = pendingJobsAfterEnqueue |}
+                                    ))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/search/status",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAuditor with
+            | Error result -> result
+            | Ok principal ->
+                let repoKeyOption =
+                    let value = normalizeRepoKey (ctx.Request.Query["repoKey"].ToString())
+                    if String.IsNullOrWhiteSpace value then None else Some value
+
+                let repoExistsResult =
+                    match repoKeyOption with
+                    | None -> Ok true
+                    | Some repoKey -> withConnection state (repoExistsForTenant principal.TenantId repoKey)
+
+                match repoExistsResult with
+                | Error err -> serviceUnavailable err
+                | Ok false -> Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                | Ok true ->
+                    match
+                        withConnection state (fun conn ->
+                            effectiveTenantSearchControlForTenant principal.TenantId conn
+                            |> Result.bind (fun control ->
+                                readSearchStatusForTenant principal.TenantId repoKeyOption state.SearchJobLeaseSeconds conn
+                                |> Result.map (fun status -> control, status)))
+                    with
+                    | Error err -> serviceUnavailable err
+                    | Ok(control, status) ->
+                        Results.Ok(
+                            {| repoKey = repoKeyOption
+                               paused = control.IsPaused
+                               pauseReason = control.PauseReason
+                               controlUpdatedBySubject = control.UpdatedBySubject
+                               controlUpdatedAtUtc = control.UpdatedAtUtc
+                               checkedAtUtc = nowUtc ()
+                               pendingJobs = status.PendingJobs
+                               processingJobs = status.ProcessingJobs
+                               failedJobs = status.FailedJobs
+                               completedJobs = status.CompletedJobs
+                               cancelledJobs = status.CancelledJobs
+                               oldestReadyJobAgeSeconds = status.OldestReadyJobAgeSeconds
+                               oldestProcessingAgeSeconds = status.OldestProcessingAgeSeconds
+                               staleProcessingJobs = status.StaleProcessingJobs
+                               staleDocuments = status.StaleDocuments
+                               newestIndexedAtUtc = status.NewestIndexedAtUtc
+                               worstCaseFreshnessLagSeconds = status.WorstCaseFreshnessLagSeconds |}
+                        ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/search/pause",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantOperator with
+            | Error result -> result
+            | Ok principal ->
+                match readJsonBody<SearchPauseRequest> ctx with
+                | Error err -> badRequest err
+                | Ok request ->
+                    match validateSearchPauseRequest request with
+                    | Error err -> badRequest err
+                    | Ok reason ->
+                        match withConnection state (upsertTenantSearchControl principal.TenantId true (Some reason) principal.Subject) with
+                        | Error err -> serviceUnavailable err
+                        | Ok control ->
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    "search.control.paused"
+                                    "search_index"
+                                    (principal.TenantId.ToString())
+                                    (Map.ofList [ "reason", reason ])
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok () ->
+                                Results.Ok(
+                                    {| paused = control.IsPaused
+                                       pauseReason = control.PauseReason
+                                       updatedBySubject = control.UpdatedBySubject
+                                       updatedAtUtc = control.UpdatedAtUtc |}
+                                ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/search/resume",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantOperator with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (upsertTenantSearchControl principal.TenantId false None principal.Subject) with
+                | Error err -> serviceUnavailable err
+                | Ok control ->
+                    match
+                        writeAudit
+                            state
+                            principal.TenantId
+                            principal.Subject
+                            "search.control.resumed"
+                            "search_index"
+                            (principal.TenantId.ToString())
+                            Map.empty
+                    with
+                    | Error err -> serviceUnavailable err
+                    | Ok () ->
+                        Results.Ok(
+                            {| paused = control.IsPaused
+                               pauseReason = control.PauseReason
+                               updatedBySubject = control.UpdatedBySubject
+                               updatedAtUtc = control.UpdatedAtUtc |}
+                        ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/search/cancel",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantOperator with
+            | Error result -> result
+            | Ok principal ->
+                match readOptionalJsonBody<SearchCancelRequest> ctx with
+                | Error err -> badRequest err
+                | Ok requestOption ->
+                    match validateSearchCancelRequest requestOption with
+                    | Error err -> badRequest err
+                    | Ok(repoKeyOption, reason) ->
+                        let repoExistsResult =
+                            match repoKeyOption with
+                            | None -> Ok true
+                            | Some repoKey -> withConnection state (repoExistsForTenant principal.TenantId repoKey)
+
+                        match repoExistsResult with
+                        | Error err -> serviceUnavailable err
+                        | Ok false -> Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                        | Ok true ->
+                            match
+                                withConnection state (fun conn ->
+                                    cancelSearchJobsForTenant principal.TenantId repoKeyOption reason conn
+                                    |> Result.bind (fun cancelledCount ->
+                                        readSearchStatusForTenant principal.TenantId repoKeyOption state.SearchJobLeaseSeconds conn
+                                        |> Result.map (fun status -> cancelledCount, status)))
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok(cancelledCount, status) ->
+                                let resourceId = repoKeyOption |> Option.defaultValue (principal.TenantId.ToString())
+
+                                match
+                                    writeAudit
+                                        state
+                                        principal.TenantId
+                                        principal.Subject
+                                        "search.control.cancelled"
+                                        "search_index"
+                                        resourceId
+                                        (Map.ofList
+                                            [ "repoKey", repoKeyOption |> Option.defaultValue "*"
+                                              "reason", reason
+                                              "cancelledCount", cancelledCount.ToString() ])
+                                with
+                                | Error err -> serviceUnavailable err
+                                | Ok () ->
+                                    Results.Ok(
+                                        {| repoKey = repoKeyOption
+                                           reason = reason
+                                           cancelledCount = cancelledCount
+                                           processingJobsUnaffected = status.ProcessingJobs
+                                           remainingPendingJobs = status.PendingJobs
+                                           remainingFailedJobs = status.FailedJobs |}
                                     ))
     )
     |> ignore

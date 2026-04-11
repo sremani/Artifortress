@@ -60,9 +60,9 @@ This plan assumes the current repository baseline described in:
 | ER-3-02 | Dependency failure-mode matrix and deterministic readiness/degradation semantics | ER-3-01 | done |
 | ER-3-03 | Worker/API crash, restart, and duplicate-delivery drill automation | ER-3-01 | done |
 | ER-3-04 | HA deployment topology and failure-domain runbook | ER-3-02, ER-3-03 | done |
-| ER-4-01 | Search relevance/ranking maturity and deterministic query semantics | ER-3-01 | todo |
-| ER-4-02 | Search rebuild control plane: pause/resume/cancel/status | ER-4-01 | todo |
-| ER-4-03 | Search lag, freshness, and stuck-job observability | ER-4-02 | todo |
+| ER-4-01 | Search relevance/ranking maturity and deterministic query semantics | ER-3-01 | done |
+| ER-4-02 | Search rebuild control plane: pause/resume/cancel/status | ER-4-01 | done |
+| ER-4-03 | Search lag, freshness, and stuck-job observability | ER-4-02 | done |
 | ER-4-04 | Large-index rebuild and backfill soak coverage | ER-4-02, ER-4-03 | todo |
 | ER-5-01 | Immutable audit export and correlation model | ER-3-02 | done |
 | ER-5-02 | Repository/org policy inheritance and protected-artifact rules | ER-5-01 | done |
