@@ -1,6 +1,6 @@
 # Operations How-To
 
-Last updated: 2026-04-06
+Last updated: 2026-04-18
 
 This guide is for day-2 operations after deployment.
 
@@ -127,7 +127,28 @@ Outputs:
 - `docs/reports/phase6-rto-rpo-drill-latest.md`
 - `docs/reports/phase6-ga-readiness-latest.md`
 
-## 9. Incident Quick Playbook
+## 9. Canonical Pre-Release Battery
+
+Run the full enterprise verification battery with:
+```bash
+make verify-enterprise
+```
+
+This is the canonical pre-release command because it:
+- runs shared-state drills serially
+- runs isolated database drills in a parallel-safe group
+- refreshes the current evidence reports for throughput, recovery, reliability, search soak, and performance soak
+
+Generated evidence includes:
+- `docs/reports/phase2-load-baseline-latest.md`
+- `docs/reports/phase6-rto-rpo-drill-latest.md`
+- `docs/reports/reliability-drill-latest.md`
+- `docs/reports/search-soak-drill-latest.md`
+- `docs/reports/performance-workflow-baseline-latest.md`
+- `docs/reports/performance-soak-latest.md`
+- `docs/reports/upgrade-compatibility-drill-latest.md`
+
+## 10. Incident Quick Playbook
 
 ### API is live but not ready
 
@@ -158,14 +179,15 @@ curl -sS -H "Authorization: Bearer <admin-token>" http://<api-host>/v1/admin/rec
 ```
 3. Run DR drill in controlled environment to validate recovery path.
 
-## 10. Recommended Weekly Cadence
+## 11. Recommended Weekly Cadence
 
 - Run `make phase6-drill` at least weekly.
+- Run `make verify-enterprise` before release candidates or production cutovers.
 - Review ops summary trends and alert thresholds.
 - Review audit log samples for privileged operations.
 - Rehearse rollback path after major release changes.
 
-## 11. Related Documents
+## 12. Related Documents
 
 - `docs/26-deployment-plan.md`
 - `docs/27-deployment-architecture.md`
