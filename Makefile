@@ -8,7 +8,7 @@ PROJECTS := \
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration test-integration-full format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill reliability-drill search-soak-drill performance-workflow-baseline performance-soak-drill upgrade-compatibility-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
+.PHONY: help restore build test test-integration test-integration-full format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill reliability-drill search-soak-drill performance-workflow-baseline performance-soak-drill verify-enterprise upgrade-compatibility-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
 
 help:
 	@echo "Targets:"
@@ -32,6 +32,7 @@ help:
 	@echo "  search-soak-drill  Run large-index search rebuild/backfill soak drill"
 	@echo "  performance-workflow-baseline  Run publish/search/quarantine performance baseline"
 	@echo "  performance-soak-drill  Run mixed-workload performance soak drill"
+	@echo "  verify-enterprise  Run the full enterprise verification battery with safe sequencing"
 	@echo "  upgrade-compatibility-drill  Rehearse supported baseline schema upgrades to head"
 	@echo "  mutation-spike     Run F# mutation feasibility spike (wrapper CLI) and generate report"
 	@echo "  mutation-track     Run mutation wrapper default flow and generate report"
@@ -140,6 +141,9 @@ performance-workflow-baseline:
 
 performance-soak-drill:
 	./scripts/performance-soak-drill.sh
+
+verify-enterprise:
+	./scripts/verify-enterprise.sh
 
 upgrade-compatibility-drill:
 	./scripts/upgrade-compatibility-drill.sh
