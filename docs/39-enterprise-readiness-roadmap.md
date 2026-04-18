@@ -5,10 +5,15 @@ Status key:
 - `in_progress`: currently being implemented
 - `done`: implemented and validated in this repository
 - `blocked`: cannot proceed until dependency/risk is resolved
+- `deferred`: intentionally postponed for a future milestone
 
 ## Objective
 
 This roadmap defines the execution path to make Artifortress fully enterprise-ready.
+
+Current program state:
+- `ER-1` through `ER-7` are complete in this repository.
+- `ER-8` is intentionally deferred for a future productization milestone.
 
 The intent is not to broaden feature scope arbitrarily. The intent is to close the
 remaining trust gaps that determine whether a large organization can adopt
@@ -75,9 +80,9 @@ This plan assumes the current repository baseline described in:
 | ER-7-01 | Performance baseline suite for upload/download/publish/search | ER-6-01 | done |
 | ER-7-02 | Soak, concurrency, and noisy-neighbor test tracks | ER-7-01, ER-2-03 | done |
 | ER-7-03 | Capacity-planning guide and supported scale profiles | ER-7-01, ER-7-02 | done |
-| ER-8-01 | Enterprise deployment guide, security whitepaper, and admin handbook | ER-6-04, ER-1-06 | todo |
-| ER-8-02 | Versioning, deprecation, and support-window policy | ER-8-01 | todo |
-| ER-8-03 | Enterprise GA checklist and launch sign-off board | ER-7-03, ER-8-02, ER-5-04 | todo |
+| ER-8-01 | Enterprise deployment guide, security whitepaper, and admin handbook | ER-6-04, ER-1-06 | deferred |
+| ER-8-02 | Versioning, deprecation, and support-window policy | ER-8-01 | deferred |
+| ER-8-03 | Enterprise GA checklist and launch sign-off board | ER-7-03, ER-8-02, ER-5-04 | deferred |
 
 ## Current Sequencing Guidance
 
@@ -90,6 +95,10 @@ Recommended execution order:
 6. ER-4 search maturity
 7. ER-7 performance and scale
 8. ER-8 enterprise GA packaging
+
+Current execution policy:
+- stop at the completion of `ER-7`
+- treat `ER-8` as future work unless explicitly reactivated
 
 Rationale:
 - Enterprises reject products first on security, reliability, and operability.
