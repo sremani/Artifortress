@@ -6789,6 +6789,281 @@ type Phase1ApiTests(fixture: ApiFixture) =
         Assert.Equal(0L, finalStatusDoc.RootElement.GetProperty("staleDocuments").GetInt64())
 
     [<Fact>]
+    member _.``ER-701 publish workflow baseline batch completes`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er701-publish-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er701-publish"
+        createRepoAsAdmin adminToken repoKey
+
+        let writeToken, _ = issuePat (makeSubject "er701-publish-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er701-publish-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let workloadCount = 24
+        let timer = Stopwatch.StartNew()
+
+        let versions =
+            [ for i in 1..workloadCount do
+                  let packageName = $"er701-publish-{i:D2}-{Guid.NewGuid():N}"
+                  yield createPublishedVersionWithBlob repoKey writeToken promoteToken packageName ]
+
+        timer.Stop()
+
+        Assert.Equal(workloadCount, versions.Length)
+        Assert.True(timer.ElapsedMilliseconds >= 0L)
+
+        for versionId, _ in versions do
+            Assert.Equal(Some "published", fixture.TryReadVersionState(versionId))
+
+    [<Fact>]
+    member _.``ER-701 search query baseline batch completes`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let adminToken, _ = issuePat (makeSubject "er701-search-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er701-search"
+        createRepoAsAdmin adminToken repoKey
+
+        let readToken, _ = issuePat (makeSubject "er701-search-reader") [| $"repo:{repoKey}:read" |] 60
+        let writeToken, _ = issuePat (makeSubject "er701-search-writer") [| $"repo:{repoKey}:write" |] 60
+        let promoteToken, _ = issuePat (makeSubject "er701-search-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let packageNames =
+            [ for i in 1..18 do
+                  let packageName = $"er701-search-{i:D2}-{Guid.NewGuid():N}"
+                  let _, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken packageName
+                  yield packageName ]
+
+        fixture.ResetSearchPipelineStateGlobal()
+
+        use rebuildResponse = rebuildSearchIndexWithToken adminToken (Some repoKey) (Some 100)
+        ensureStatus HttpStatusCode.OK rebuildResponse |> ignore
+
+        while fixture.CountSearchDocumentsForRepo(repoKey) < int64 packageNames.Length do
+            let outcome = fixture.RunSearchIndexJobSweep(12, 3)
+            Assert.True(outcome.ClaimedCount > 0 || fixture.CountSearchDocumentsForRepo(repoKey) = int64 packageNames.Length)
+
+        let queries =
+            [ for _ in 1..4 do
+                  yield! packageNames ]
+
+        let timer = Stopwatch.StartNew()
+
+        for packageName in queries do
+            use searchResponse = searchPackagesWithToken readToken repoKey (Some packageName) (Some 10) (Some 0)
+            let searchBody = ensureStatus HttpStatusCode.OK searchResponse
+            use searchDoc = JsonDocument.Parse(searchBody)
+            Assert.True(searchDoc.RootElement.GetProperty("totalCount").GetInt64() >= 1L)
+
+        timer.Stop()
+
+        Assert.Equal(72, queries.Length)
+        Assert.True(timer.ElapsedMilliseconds >= 0L)
+
+    [<Fact>]
+    member _.``ER-701 quarantine workflow baseline batch completes`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er701-quarantine-admin") [| "repo:*:admin" |] 60
+        let repoKey = makeRepoKey "er701-quarantine"
+        createRepoAsAdmin adminToken repoKey
+
+        let promoteToken, _ = issuePat (makeSubject "er701-quarantine-promote") [| $"repo:{repoKey}:promote" |] 60
+        let writeToken, _ = issuePat (makeSubject "er701-quarantine-writer") [| $"repo:{repoKey}:write" |] 60
+
+        let versionIds =
+            [ for i in 1..12 do
+                  let packageName = $"er701-quarantine-{i:D2}-{Guid.NewGuid():N}"
+                  let versionId, _ = createPublishedVersionWithBlob repoKey writeToken promoteToken packageName
+                  yield versionId ]
+
+        let timer = Stopwatch.StartNew()
+
+        let quarantineIds =
+            [ for versionId in versionIds do
+                  use quarantineResponse =
+                      evaluatePolicyWithToken
+                          promoteToken
+                          repoKey
+                          "publish"
+                          versionId
+                          "quarantine"
+                          "performance-baseline quarantine"
+                          "er701-policy"
+
+                  let quarantineBody = ensureStatus HttpStatusCode.Created quarantineResponse
+                  use quarantineDoc = JsonDocument.Parse(quarantineBody)
+                  yield quarantineDoc.RootElement.GetProperty("quarantineId").GetGuid() ]
+
+        use listResponse = listQuarantineWithToken promoteToken repoKey (Some "quarantined")
+        let listBody = ensureStatus HttpStatusCode.OK listResponse
+        use listDoc = JsonDocument.Parse(listBody)
+        Assert.Equal(versionIds.Length, listDoc.RootElement.GetArrayLength())
+
+        for quarantineId in quarantineIds |> List.take 6 do
+            use getResponse = getQuarantineItemWithToken promoteToken repoKey quarantineId
+            let getBody = ensureStatus HttpStatusCode.OK getResponse
+            use getDoc = JsonDocument.Parse(getBody)
+            Assert.Equal("quarantined", getDoc.RootElement.GetProperty("status").GetString())
+
+        timer.Stop()
+
+        Assert.Equal(versionIds.Length, quarantineIds.Length)
+        Assert.True(timer.ElapsedMilliseconds >= 0L)
+
+    [<Fact>]
+    member _.``ER-702 mixed tenant sustained workload remains stable under load`` () =
+        fixture.RequireAvailable()
+        fixture.ResetSearchPipelineStateGlobal()
+
+        let repoKey = makeRepoKey "er702-shared"
+        let tenantBSlug = $"tenant-er702-{Guid.NewGuid():N}".Substring(0, 20)
+
+        let tenantAAdmin, _ = issuePat (makeSubject "er702-a-admin") [| "repo:*:admin" |] 60
+        createRepoAsAdmin tenantAAdmin repoKey
+
+        let tenantARead, _ = issuePat (makeSubject "er702-a-read") [| $"repo:{repoKey}:read" |] 60
+        let tenantAWrite, _ = issuePat (makeSubject "er702-a-write") [| $"repo:{repoKey}:write" |] 60
+        let tenantAPromote, _ = issuePat (makeSubject "er702-a-promote") [| $"repo:{repoKey}:promote" |] 60
+
+        let tenantBAdmin, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant ER702 B"
+                (makeSubject "er702-b-admin")
+                [| "repo:*:admin" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        createRepoAsAdmin tenantBAdmin repoKey
+
+        let tenantBRead, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant ER702 B"
+                (makeSubject "er702-b-read")
+                [| $"repo:{repoKey}:read" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let tenantBWrite, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant ER702 B"
+                (makeSubject "er702-b-write")
+                [| $"repo:{repoKey}:write" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let tenantBPromote, _ =
+            fixture.InsertTokenDirectForTenant
+                tenantBSlug
+                "Tenant ER702 B"
+                (makeSubject "er702-b-promote")
+                [| $"repo:{repoKey}:promote" |]
+                (DateTimeOffset.UtcNow.AddMinutes(60.0))
+                None
+
+        let tenantAPackages =
+            [ for i in 1..18 do
+                  let packageName = $"er702-a-{i:D2}-{Guid.NewGuid():N}"
+                  let versionId, _ = createPublishedVersionWithBlob repoKey tenantAWrite tenantAPromote packageName
+                  yield versionId, packageName ]
+
+        let tenantBPackages =
+            [ for i in 1..10 do
+                  let packageName = $"er702-b-{i:D2}-{Guid.NewGuid():N}"
+                  let versionId, _ =
+                      createPublishedVersionWithBlobForTenant
+                          tenantBSlug
+                          "Tenant ER702 B"
+                          repoKey
+                          tenantBWrite
+                          tenantBPromote
+                          packageName
+
+                  yield versionId, packageName ]
+
+        for versionId, _ in tenantAPackages |> List.take 4 do
+            use quarantineResponse =
+                evaluatePolicyWithToken
+                    tenantAPromote
+                    repoKey
+                    "publish"
+                    versionId
+                    "quarantine"
+                    "mixed workload quarantine"
+                    "er702-policy"
+
+            ensureStatus HttpStatusCode.Created quarantineResponse |> ignore
+
+        use rebuildAResponse = rebuildSearchIndexWithToken tenantAAdmin (Some repoKey) (Some 100)
+        ensureStatus HttpStatusCode.OK rebuildAResponse |> ignore
+        use rebuildBResponse = rebuildSearchIndexWithToken tenantBAdmin (Some repoKey) (Some 100)
+        ensureStatus HttpStatusCode.OK rebuildBResponse |> ignore
+
+        let expectedTenantAVisible = tenantAPackages.Length - 4
+        let expectedTenantBVisible = tenantBPackages.Length
+        let mutable tenantAVisible = 0L
+        let mutable tenantBVisible = 0L
+
+        for round in 1..10 do
+            let outboxOutcome = fixture.RunSearchIndexOutboxSweep(12)
+            let jobOutcome = fixture.RunSearchIndexJobSweep(8, 3)
+            Assert.True(outboxOutcome.ClaimedCount >= 0)
+            Assert.True(jobOutcome.ClaimedCount >= 0)
+
+            let tenantAQuery = snd tenantAPackages[round % tenantAPackages.Length]
+            let tenantBQuery = snd tenantBPackages[round % tenantBPackages.Length]
+
+            use tenantASearchOwn = searchPackagesWithToken tenantARead repoKey (Some tenantAQuery) (Some 10) (Some 0)
+            let tenantASearchOwnBody = ensureStatus HttpStatusCode.OK tenantASearchOwn
+            use tenantASearchOwnDoc = JsonDocument.Parse(tenantASearchOwnBody)
+
+            use tenantBSearchOwn = searchPackagesWithToken tenantBRead repoKey (Some tenantBQuery) (Some 10) (Some 0)
+            let tenantBSearchOwnBody = ensureStatus HttpStatusCode.OK tenantBSearchOwn
+            use tenantBSearchOwnDoc = JsonDocument.Parse(tenantBSearchOwnBody)
+
+            use tenantACrossSearch = searchPackagesWithToken tenantARead repoKey (Some tenantBQuery) (Some 10) (Some 0)
+            let tenantACrossBody = ensureStatus HttpStatusCode.OK tenantACrossSearch
+            use tenantACrossDoc = JsonDocument.Parse(tenantACrossBody)
+
+            use tenantBCrossSearch = searchPackagesWithToken tenantBRead repoKey (Some tenantAQuery) (Some 10) (Some 0)
+            let tenantBCrossBody = ensureStatus HttpStatusCode.OK tenantBCrossSearch
+            use tenantBCrossDoc = JsonDocument.Parse(tenantBCrossBody)
+
+            Assert.Equal(0L, tenantACrossDoc.RootElement.GetProperty("totalCount").GetInt64())
+            Assert.Equal(0L, tenantBCrossDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+            tenantAVisible <- max tenantAVisible (tenantASearchOwnDoc.RootElement.GetProperty("totalCount").GetInt64())
+            tenantBVisible <- max tenantBVisible (tenantBSearchOwnDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        Assert.True(tenantAVisible >= 1L)
+        Assert.True(tenantBVisible >= 1L)
+
+        use finalTenantASearch = searchPackagesWithToken tenantARead repoKey None (Some 100) (Some 0)
+        let finalTenantASearchBody = ensureStatus HttpStatusCode.OK finalTenantASearch
+        use finalTenantASearchDoc = JsonDocument.Parse(finalTenantASearchBody)
+        Assert.Equal(int64 expectedTenantAVisible, finalTenantASearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use finalTenantBSearch = searchPackagesWithToken tenantBRead repoKey None (Some 100) (Some 0)
+        let finalTenantBSearchBody = ensureStatus HttpStatusCode.OK finalTenantBSearch
+        use finalTenantBSearchDoc = JsonDocument.Parse(finalTenantBSearchBody)
+        Assert.Equal(int64 expectedTenantBVisible, finalTenantBSearchDoc.RootElement.GetProperty("totalCount").GetInt64())
+
+        use finalStatusAResponse = getSearchStatusWithToken tenantAAdmin (Some repoKey)
+        let finalStatusABody = ensureStatus HttpStatusCode.OK finalStatusAResponse
+        use finalStatusADoc = JsonDocument.Parse(finalStatusABody)
+        Assert.Equal(0L, finalStatusADoc.RootElement.GetProperty("failedJobs").GetInt64())
+        Assert.Equal(0L, finalStatusADoc.RootElement.GetProperty("staleProcessingJobs").GetInt64())
+
+        use finalStatusBResponse = getSearchStatusWithToken tenantBAdmin (Some repoKey)
+        let finalStatusBBody = ensureStatus HttpStatusCode.OK finalStatusBResponse
+        use finalStatusBDoc = JsonDocument.Parse(finalStatusBBody)
+        Assert.Equal(0L, finalStatusBDoc.RootElement.GetProperty("failedJobs").GetInt64())
+        Assert.Equal(0L, finalStatusBDoc.RootElement.GetProperty("staleProcessingJobs").GetInt64())
+
+    [<Fact>]
     member _.``ER-201 tenant admission policy endpoint round-trips and reports usage`` () =
         fixture.RequireAvailable()
 
