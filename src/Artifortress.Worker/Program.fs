@@ -28,7 +28,7 @@ type SearchIndexSourceRecord = {
     PackageName: string
     PackageVersion: string
     PublishedAtUtc: DateTimeOffset option
-    ManifestJson: string option
+    SearchText: string
 }
 
 module SearchIndexOutboxProducer =
@@ -393,7 +393,15 @@ select
   p.name,
   pv.version,
   pv.published_at,
-  m.manifest_json::text
+  concat_ws(
+    ' ',
+    r.repo_key::text,
+    p.package_type,
+    coalesce(p.namespace, ''),
+    p.name,
+    pv.version,
+    coalesce(m.manifest_json::text, '')
+  ) as search_text
 from package_versions pv
 join repos r
   on r.repo_id = pv.repo_id
@@ -418,7 +426,6 @@ limit 1;
         if reader.Read() then
             let packageNamespace = if reader.IsDBNull(5) then None else Some(reader.GetString(5))
             let publishedAtUtc = if reader.IsDBNull(8) then None else Some(reader.GetFieldValue<DateTimeOffset>(8))
-            let manifestJson = if reader.IsDBNull(9) then None else Some(reader.GetString(9))
 
             Ok(
                 Some
@@ -431,35 +438,19 @@ limit 1;
                       PackageName = reader.GetString(6)
                       PackageVersion = reader.GetString(7)
                       PublishedAtUtc = publishedAtUtc
-                      ManifestJson = manifestJson }
+                      SearchText = reader.GetString(9) }
             )
         else
             Ok None
 
-    let private buildSearchText (source: SearchIndexSourceRecord) =
-        let fields =
-            [ source.RepoKey
-              source.PackageType
-              source.PackageNamespace |> Option.defaultValue ""
-              source.PackageName
-              source.PackageVersion
-              source.ManifestJson |> Option.defaultValue "" ]
-
-        fields
-        |> List.map (fun value -> value.Trim())
-        |> List.filter (fun value -> not (String.IsNullOrWhiteSpace value))
-        |> String.concat " "
-
     let private upsertSearchDocument (source: SearchIndexSourceRecord) (conn: NpgsqlConnection) =
-        let searchText = buildSearchText source
-
         use cmd =
             new NpgsqlCommand(
                 """
 insert into search_documents
   (tenant_id, repo_id, version_id, repo_key, package_type, package_namespace, package_name, package_version, manifest_json, published_at, search_text, indexed_at, updated_at)
 values
-  (@tenant_id, @repo_id, @version_id, @repo_key, @package_type, @package_namespace, @package_name, @package_version, @manifest_json, @published_at, @search_text, now(), now())
+  (@tenant_id, @repo_id, @version_id, @repo_key, @package_type, @package_namespace, @package_name, @package_version, null, @published_at, @search_text, now(), now())
 on conflict (tenant_id, version_id)
 do update set
   repo_id = excluded.repo_id,
@@ -468,11 +459,18 @@ do update set
   package_namespace = excluded.package_namespace,
   package_name = excluded.package_name,
   package_version = excluded.package_version,
-  manifest_json = excluded.manifest_json,
   published_at = excluded.published_at,
   search_text = excluded.search_text,
   indexed_at = now(),
-  updated_at = now();
+  updated_at = now()
+where search_documents.repo_id is distinct from excluded.repo_id
+   or search_documents.repo_key is distinct from excluded.repo_key
+   or search_documents.package_type is distinct from excluded.package_type
+   or search_documents.package_namespace is distinct from excluded.package_namespace
+   or search_documents.package_name is distinct from excluded.package_name
+   or search_documents.package_version is distinct from excluded.package_version
+   or search_documents.published_at is distinct from excluded.published_at
+   or search_documents.search_text is distinct from excluded.search_text;
 """,
                 conn
             )
@@ -489,13 +487,10 @@ do update set
         cmd.Parameters.AddWithValue("package_name", source.PackageName) |> ignore
         cmd.Parameters.AddWithValue("package_version", source.PackageVersion) |> ignore
 
-        let manifestParam = cmd.Parameters.Add("manifest_json", NpgsqlTypes.NpgsqlDbType.Jsonb)
-        manifestParam.Value <- (match source.ManifestJson with | Some value -> box value | None -> box DBNull.Value)
-
         let publishedAtParam = cmd.Parameters.Add("published_at", NpgsqlTypes.NpgsqlDbType.TimestampTz)
         publishedAtParam.Value <- (match source.PublishedAtUtc with | Some value -> box value | None -> box DBNull.Value)
 
-        cmd.Parameters.AddWithValue("search_text", searchText) |> ignore
+        cmd.Parameters.AddWithValue("search_text", source.SearchText) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
     let private markCompleted (jobId: Guid) (conn: NpgsqlConnection) =

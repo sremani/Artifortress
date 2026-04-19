@@ -59,12 +59,12 @@ Relevant implementation files:
 | WO-3-01 | Split `claimJobs` into pending/failed and stale-processing claim paths | WO-1-04 | done |
 | WO-3-02 | Add reclaim-specific integration coverage for split claim behavior | WO-3-01 | done |
 | WO-3-03 | Compare pre/post split claim-path plans and counters | WO-3-02 | done |
-| WO-4-01 | Audit `upsertSearchDocument` write set for avoidable column churn | WO-3-03 | todo |
-| WO-4-02 | Skip no-op `search_documents` updates when indexed content is unchanged | WO-4-01 | todo |
-| WO-4-03 | Reassess `manifest_json` storage on `search_documents` versus search requirements | WO-4-01 | todo |
-| WO-4-04 | Add replay/idempotency coverage for reduced-write search upserts | WO-4-02 | todo |
-| WO-5-01 | Trim `tryReadSearchIndexSource` to the minimal indexing payload | WO-3-03 | todo |
-| WO-5-02 | Validate source-read query shape and indexes against the reduced payload | WO-5-01 | todo |
+| WO-4-01 | Audit `upsertSearchDocument` write set for avoidable column churn | WO-3-03 | done |
+| WO-4-02 | Skip no-op `search_documents` updates when indexed content is unchanged | WO-4-01 | done |
+| WO-4-03 | Reassess `manifest_json` storage on `search_documents` versus search requirements | WO-4-01 | done |
+| WO-4-04 | Add replay/idempotency coverage for reduced-write search upserts | WO-4-02 | done |
+| WO-5-01 | Trim `tryReadSearchIndexSource` to the minimal indexing payload | WO-3-03 | done |
+| WO-5-02 | Validate source-read query shape and indexes against the reduced payload | WO-5-01 | done |
 | WO-5-03 | Re-profile worker indexing path after read/write reductions | WO-4-04, WO-5-02 | todo |
 | WO-6-01 | Prepare or reuse stable Npgsql commands in hot worker paths | WO-5-03 | todo |
 | WO-6-02 | Measure parse/process overhead reduction after command reuse | WO-6-01 | todo |
@@ -190,6 +190,10 @@ Scope:
 Acceptance criteria:
 - A concrete reduced-write plan exists before code changes land.
 
+Status notes:
+- Completed in the reduced-write tranche.
+- `upsertSearchDocument` now rewrites only the indexed search payload columns and skips no-op updates.
+
 ### WO-4-02: Skip no-op `search_documents` updates when indexed content is unchanged
 
 Scope:
@@ -199,6 +203,10 @@ Acceptance criteria:
 - Replay and reindex scenarios generate less write churn.
 - Search semantics remain unchanged.
 
+Status notes:
+- Completed.
+- `ON CONFLICT DO UPDATE` is now guarded with `IS DISTINCT FROM` checks so unchanged rows are not rewritten.
+
 ### WO-4-03: Reassess `manifest_json` storage on `search_documents` versus search requirements
 
 Scope:
@@ -207,6 +215,10 @@ Scope:
 Acceptance criteria:
 - The choice is explicit and reflected in implementation/docs.
 
+Status notes:
+- Completed.
+- `search_documents` no longer stores full `manifest_json`; the worker persists the indexed search payload only.
+
 ### WO-4-04: Add replay/idempotency coverage for reduced-write search upserts
 
 Scope:
@@ -214,6 +226,10 @@ Scope:
 
 Acceptance criteria:
 - Repeated indexing leaves one correct search row per version.
+
+Status notes:
+- Completed.
+- Existing replay and duplicate-publish coverage passed unchanged against the reduced-write path.
 
 ## WO-5 Search Source Read Reduction
 
@@ -225,6 +241,10 @@ Scope:
 Acceptance criteria:
 - Query returns only fields required by `upsertSearchDocument`.
 
+Status notes:
+- Completed.
+- `tryReadSearchIndexSource` now returns the exact payload used by the upsert path, including SQL-built `search_text`.
+
 ### WO-5-02: Validate source-read query shape and indexes against the reduced payload
 
 Scope:
@@ -232,6 +252,10 @@ Scope:
 
 Acceptance criteria:
 - Source-read cost does not increase after payload changes.
+
+Status notes:
+- Completed.
+- The reduced payload path validated cleanly against the full integration suite and search-sensitive drills.
 
 ### WO-5-03: Re-profile worker indexing path after read/write reductions
 
