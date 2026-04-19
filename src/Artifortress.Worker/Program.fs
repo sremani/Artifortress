@@ -32,6 +32,11 @@ type SearchIndexSourceRecord = {
 }
 
 module SearchIndexOutboxProducer =
+    type private BatchedEnqueueResult = {
+        EnqueuedCount: int
+        DeliveredCount: int
+    }
+
     let private claimOutboxEvents (batchSize: int) (conn: NpgsqlConnection) =
         use cmd =
             new NpgsqlCommand(
@@ -105,54 +110,111 @@ where event_id = @event_id
         cmd.Parameters.AddWithValue("event_id", eventId) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
-    let private enqueueSearchJobAndMarkDelivered
-        (eventId: Guid)
-        (tenantId: Guid)
-        (versionId: Guid)
-        (conn: NpgsqlConnection)
-        =
-        use tx = conn.BeginTransaction()
-
-        use jobCmd =
-            new NpgsqlCommand(
-                """
-insert into search_index_jobs
-  (tenant_id, version_id, status, available_at, attempts, last_error, created_at, updated_at)
-values
-  (@tenant_id, @version_id, 'pending', now(), 0, null, now(), now())
-on conflict (tenant_id, version_id)
-do update set
-  status = 'pending',
-  attempts = 0,
-  available_at = excluded.available_at,
-  updated_at = now(),
-  last_error = null;
-""",
-                conn,
-                tx
-            )
-
-        jobCmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
-        jobCmd.Parameters.AddWithValue("version_id", versionId) |> ignore
-        jobCmd.ExecuteNonQuery() |> ignore
-
-        use deliveredCmd =
-            new NpgsqlCommand(
-                """
+    let private requeueEvents (eventIds: Guid list) (conn: NpgsqlConnection) =
+        if not eventIds.IsEmpty then
+            use cmd =
+                new NpgsqlCommand(
+                    """
 update outbox_events
-set delivered_at = now()
-where event_id = @event_id
+set available_at = now() + interval '5 minutes'
+where event_id = any(@event_ids)
   and delivered_at is null;
 """,
-                conn,
-                tx
-            )
+                    conn
+                )
 
-        deliveredCmd.Parameters.AddWithValue("event_id", eventId) |> ignore
-        let deliveredRows = deliveredCmd.ExecuteNonQuery()
+            let eventIdsParam = cmd.Parameters.Add("event_ids", NpgsqlTypes.NpgsqlDbType.Array ||| NpgsqlTypes.NpgsqlDbType.Uuid)
+            eventIdsParam.Value <- eventIds |> List.toArray
+            cmd.ExecuteNonQuery() |> ignore
 
-        tx.Commit()
-        deliveredRows > 0
+    let private enqueueSearchJobsAndMarkDelivered
+        (routedEvents: (Guid * Guid * Guid) list)
+        (conn: NpgsqlConnection)
+        =
+        if routedEvents.IsEmpty then
+            { EnqueuedCount = 0
+              DeliveredCount = 0 }
+        else
+            let eventIds, tenantIds, versionIds =
+                routedEvents
+                |> List.fold
+                    (fun (eventAcc, tenantAcc, versionAcc) (eventId, tenantId, versionId) ->
+                        (eventId :: eventAcc, tenantId :: tenantAcc, versionId :: versionAcc))
+                    ([], [], [])
+
+            use tx = conn.BeginTransaction()
+
+            use cmd =
+                new NpgsqlCommand(
+                    """
+with payload(event_id, tenant_id, version_id) as (
+  select *
+  from unnest(@event_ids, @tenant_ids, @version_ids)
+),
+jobs_source as (
+  select distinct tenant_id, version_id
+  from payload
+),
+upserted as (
+  insert into search_index_jobs
+    (tenant_id, version_id, status, available_at, attempts, last_error, created_at, updated_at)
+  select
+    jobs_source.tenant_id,
+    jobs_source.version_id,
+    'pending',
+    now(),
+    0,
+    null,
+    now(),
+    now()
+  from jobs_source
+  on conflict (tenant_id, version_id)
+  do update set
+    status = 'pending',
+    attempts = 0,
+    available_at = excluded.available_at,
+    updated_at = now(),
+    last_error = null
+),
+delivered as (
+  update outbox_events
+  set delivered_at = now()
+  from payload
+  where outbox_events.event_id = payload.event_id
+    and outbox_events.delivered_at is null
+  returning outbox_events.event_id
+)
+select
+  (select count(*) from payload) as enqueued_count,
+  (select count(*) from delivered) as delivered_count;
+""",
+                    conn,
+                    tx
+                )
+
+            let eventIdsParam = cmd.Parameters.Add("event_ids", NpgsqlTypes.NpgsqlDbType.Array ||| NpgsqlTypes.NpgsqlDbType.Uuid)
+            eventIdsParam.Value <- eventIds |> List.rev |> List.toArray
+
+            let tenantIdsParam = cmd.Parameters.Add("tenant_ids", NpgsqlTypes.NpgsqlDbType.Array ||| NpgsqlTypes.NpgsqlDbType.Uuid)
+            tenantIdsParam.Value <- tenantIds |> List.rev |> List.toArray
+
+            let versionIdsParam = cmd.Parameters.Add("version_ids", NpgsqlTypes.NpgsqlDbType.Array ||| NpgsqlTypes.NpgsqlDbType.Uuid)
+            versionIdsParam.Value <- versionIds |> List.rev |> List.toArray
+
+            use reader = cmd.ExecuteReader()
+
+            let result =
+                if reader.Read() then
+                    { EnqueuedCount = reader.GetInt32(0)
+                      DeliveredCount = reader.GetInt32(1) }
+                else
+                    { EnqueuedCount = 0
+                      DeliveredCount = 0 }
+
+            reader.Close()
+
+            tx.Commit()
+            result
 
     let runSweep (connectionString: string) (batchSize: int) =
         try
@@ -160,29 +222,34 @@ where event_id = @event_id
             conn.Open()
 
             let claimed = claimOutboxEvents batchSize conn
-            let mutable metrics = WorkerSweepMetrics.zeroOutbox
+            let requeuedEventIds =
+                claimed
+                |> List.choose (fun outboxEvent ->
+                    match WorkerOutboxFlow.decideRouting outboxEvent.AggregateId outboxEvent.PayloadJson with
+                    | WorkerOutboxFlow.Requeue -> Some outboxEvent.EventId
+                    | WorkerOutboxFlow.EnqueueVersion _ -> None)
 
-            for outboxEvent in claimed do
-                match WorkerOutboxFlow.decideRouting outboxEvent.AggregateId outboxEvent.PayloadJson with
-                | WorkerOutboxFlow.Requeue ->
-                    requeueEvent outboxEvent.EventId conn
-                    metrics <- WorkerSweepMetrics.recordRequeue metrics
-                | WorkerOutboxFlow.EnqueueVersion versionId ->
-                    let isDelivered =
-                        enqueueSearchJobAndMarkDelivered outboxEvent.EventId outboxEvent.TenantId versionId conn
+            let routedEvents =
+                claimed
+                |> List.choose (fun outboxEvent ->
+                    match WorkerOutboxFlow.decideRouting outboxEvent.AggregateId outboxEvent.PayloadJson with
+                    | WorkerOutboxFlow.Requeue -> None
+                    | WorkerOutboxFlow.EnqueueVersion versionId ->
+                        Some(outboxEvent.EventId, outboxEvent.TenantId, versionId))
 
-                    metrics <- WorkerSweepMetrics.recordEnqueue isDelivered metrics
+            requeueEvents requeuedEventIds conn
+            let enqueueResult = enqueueSearchJobsAndMarkDelivered routedEvents conn
 
             Ok
                 { ClaimedCount = claimed.Length
-                  EnqueuedCount = metrics.EnqueuedCount
-                  DeliveredCount = metrics.DeliveredCount
-                  RequeuedCount = metrics.RequeuedCount }
+                  EnqueuedCount = enqueueResult.EnqueuedCount
+                  DeliveredCount = enqueueResult.DeliveredCount
+                  RequeuedCount = requeuedEventIds.Length }
         with ex ->
             Error $"search_index_outbox_sweep_failed: {ex.Message}"
 
 module SearchIndexJobProcessor =
-    let private claimJobs (batchSize: int) (maxAttempts: int) (leaseSeconds: int) (conn: NpgsqlConnection) =
+    let private claimPendingOrFailedJobs (batchSize: int) (maxAttempts: int) (conn: NpgsqlConnection) =
         use cmd =
             new NpgsqlCommand(
                 """
@@ -192,15 +259,8 @@ with candidate as (
          search_index_jobs.version_id,
          search_index_jobs.attempts
   from search_index_jobs
-  where (
-      (
-      search_index_jobs.status in ('pending', 'failed')
-      and search_index_jobs.available_at <= now()
-      ) or (
-      search_index_jobs.status = 'processing'
-      and search_index_jobs.updated_at <= now() - make_interval(secs => @lease_seconds)
-      )
-    )
+  where search_index_jobs.status in ('pending', 'failed')
+    and search_index_jobs.available_at <= now()
     and search_index_jobs.attempts < @max_attempts
     and not exists (
       select 1
@@ -209,6 +269,65 @@ with candidate as (
         and tsc.is_paused = true
     )
   order by search_index_jobs.available_at, search_index_jobs.created_at
+  limit @batch_size
+  for update skip locked
+),
+claimed as (
+  update search_index_jobs j
+  set status = 'processing',
+      updated_at = now()
+  from candidate c
+  where j.job_id = c.job_id
+  returning j.job_id, j.tenant_id, j.version_id, j.attempts
+)
+select claimed.job_id, claimed.tenant_id, claimed.version_id, claimed.attempts
+from claimed;
+""",
+                conn
+            )
+
+        cmd.Parameters.AddWithValue("batch_size", WorkerDbParameters.normalizeBatchSize batchSize) |> ignore
+        cmd.Parameters.AddWithValue("max_attempts", WorkerDbParameters.normalizeMaxAttempts maxAttempts) |> ignore
+
+        use reader = cmd.ExecuteReader()
+        let jobs = ResizeArray<WorkerDataShapes.ClaimedSearchJob>()
+
+        let rec loop () =
+            if reader.Read() then
+                jobs.Add(
+                    WorkerDataShapes.createClaimedSearchJob
+                        (reader.GetGuid(0))
+                        (reader.GetGuid(1))
+                        (reader.GetGuid(2))
+                        (reader.GetInt32(3))
+                )
+
+                loop ()
+            else
+                jobs |> Seq.toList
+
+        loop ()
+
+    let private claimStaleProcessingJobs (batchSize: int) (maxAttempts: int) (leaseSeconds: int) (conn: NpgsqlConnection) =
+        use cmd =
+            new NpgsqlCommand(
+                """
+with candidate as (
+  select search_index_jobs.job_id,
+         search_index_jobs.tenant_id,
+         search_index_jobs.version_id,
+         search_index_jobs.attempts
+  from search_index_jobs
+  where search_index_jobs.status = 'processing'
+    and search_index_jobs.updated_at <= now() - make_interval(secs => @lease_seconds)
+    and search_index_jobs.attempts < @max_attempts
+    and not exists (
+      select 1
+      from tenant_search_controls tsc
+      where tsc.tenant_id = search_index_jobs.tenant_id
+        and tsc.is_paused = true
+    )
+  order by search_index_jobs.updated_at, search_index_jobs.created_at
   limit @batch_size
   for update skip locked
 ),
@@ -248,6 +367,17 @@ from claimed;
                 jobs |> Seq.toList
 
         loop ()
+
+    let private claimJobs (batchSize: int) (maxAttempts: int) (leaseSeconds: int) (conn: NpgsqlConnection) =
+        let normalizedBatchSize = WorkerDbParameters.normalizeBatchSize batchSize
+        let pendingOrFailed = claimPendingOrFailedJobs normalizedBatchSize maxAttempts conn
+        let remaining = normalizedBatchSize - pendingOrFailed.Length
+
+        if remaining <= 0 then
+            pendingOrFailed
+        else
+            let staleProcessing = claimStaleProcessingJobs remaining maxAttempts leaseSeconds conn
+            pendingOrFailed @ staleProcessing
 
     let private tryReadSearchIndexSource (tenantId: Guid) (versionId: Guid) (conn: NpgsqlConnection) =
         use cmd =

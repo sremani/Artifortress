@@ -53,12 +53,12 @@ Relevant implementation files:
 | WO-1-02 | Add stale-processing reclaim index for `search_index_jobs` | WO-1-01 | done |
 | WO-1-03 | Tighten pending/failed claim index for `search_index_jobs` ordering | WO-1-01 | done |
 | WO-1-04 | Capture `EXPLAIN` evidence for `claimOutboxEvents` and `claimJobs` | WO-1-02, WO-1-03 | done |
-| WO-2-01 | Rewrite outbox handoff as a set-based SQL unit | WO-1-04 | todo |
-| WO-2-02 | Batch claimed events in `SearchIndexOutboxProducer.runSweep` | WO-2-01 | todo |
-| WO-2-03 | Add replay and duplicate-delivery regression coverage for batched outbox handoff | WO-2-02 | todo |
-| WO-3-01 | Split `claimJobs` into pending/failed and stale-processing claim paths | WO-1-04 | todo |
-| WO-3-02 | Add reclaim-specific integration coverage for split claim behavior | WO-3-01 | todo |
-| WO-3-03 | Compare pre/post split claim-path plans and counters | WO-3-02 | todo |
+| WO-2-01 | Rewrite outbox handoff as a set-based SQL unit | WO-1-04 | done |
+| WO-2-02 | Batch claimed events in `SearchIndexOutboxProducer.runSweep` | WO-2-01 | done |
+| WO-2-03 | Add replay and duplicate-delivery regression coverage for batched outbox handoff | WO-2-02 | done |
+| WO-3-01 | Split `claimJobs` into pending/failed and stale-processing claim paths | WO-1-04 | done |
+| WO-3-02 | Add reclaim-specific integration coverage for split claim behavior | WO-3-01 | done |
+| WO-3-03 | Compare pre/post split claim-path plans and counters | WO-3-02 | done |
 | WO-4-01 | Audit `upsertSearchDocument` write set for avoidable column churn | WO-3-03 | todo |
 | WO-4-02 | Skip no-op `search_documents` updates when indexed content is unchanged | WO-4-01 | todo |
 | WO-4-03 | Reassess `manifest_json` storage on `search_documents` versus search requirements | WO-4-01 | todo |
