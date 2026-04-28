@@ -122,5 +122,6 @@ Do not promote a release candidate unless all are true:
 
 - signed tag: `v0.1.0-rc.1`
 - release workflow run: `25078042079`
+- GitHub Release type: prerelease
 - evidence report: `docs/reports/release-provenance-latest.md`
 - status: `PASS`
