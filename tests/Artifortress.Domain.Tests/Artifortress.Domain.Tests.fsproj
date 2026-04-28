@@ -12,6 +12,7 @@
     <Compile Include="PropertyTests.fs" />
     <Compile Include="ObjectStorageTests.fs" />
     <Compile Include="AdminCliSmokeTests.fs" />
+    <Compile Include="TenantLifecycleTests.fs" />
     <Compile Include="ApiIntegrationTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

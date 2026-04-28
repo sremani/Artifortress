@@ -157,3 +157,26 @@ let ``tenant role delete maps to access revocation endpoint`` () =
         Assert.Equal("DELETE", request.Method)
         Assert.Equal("/v1/admin/tenant-role-bindings/departing-admin%40example.com", request.PathAndQuery)
     | Ok _ -> failwith "Expected a single request plan."
+
+[<Fact>]
+let ``repo binding delete maps to repository access revocation endpoint`` () =
+    let plan =
+        buildPlan
+            [| "--url"
+               "https://artifortress.example.com"
+               "--token"
+               "admin-token"
+               "repo"
+               "bindings"
+               "delete"
+               "--repo"
+               "libs-release"
+               "--subject"
+               "departing-admin@example.com" |]
+
+    match plan with
+    | Error err -> failwith err
+    | Ok(Single request) ->
+        Assert.Equal("DELETE", request.Method)
+        Assert.Equal("/v1/repos/libs-release/bindings/departing-admin%40example.com", request.PathAndQuery)
+    | Ok _ -> failwith "Expected a single request plan."
