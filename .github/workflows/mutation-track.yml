@@ -11,10 +11,10 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
 
@@ -40,7 +40,7 @@ jobs:
 
       - name: Upload mutation artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-trackb-artifacts
           path: |
@@ -64,15 +64,15 @@ jobs:
       MUTATION_NATIVE_REQUIRED_STREAK: ${{ vars.MUTATION_NATIVE_REQUIRED_STREAK }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
 
       - name: Restore native trend cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: artifacts/mutation/mutation-native-score-history.csv
           key: mutation-native-score-history-v1
@@ -106,14 +106,14 @@ jobs:
 
       - name: Save native trend cache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: artifacts/mutation/mutation-native-score-history.csv
           key: mutation-native-score-history-v1-${{ github.run_id }}
 
       - name: Upload native mutation artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-native-artifacts
           path: |

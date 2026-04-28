@@ -69,7 +69,7 @@ following without direct maintainer intervention:
 | EGA-11 | Define SLOs, SLIs, and alert routing guidance | P0 | Operations | done |
 | EGA-12 | Validate HA deployment in Kubernetes reference environment | P0 | Reliability | done |
 | EGA-13 | Run release provenance on a real signed tag | P0 | Supply Chain | done |
-| EGA-14 | Resolve GitHub Actions Node 20 deprecation risk | P0 | CI/Supply Chain | todo |
+| EGA-14 | Resolve GitHub Actions Node 20 deprecation risk | P0 | CI/Supply Chain | in_progress |
 | EGA-31 | Persist consolidated enterprise verification evidence | P0 | Release Evidence | done |
 | EGA-32 | Define artifortress.com production hosting hardware plan | P0 | Launch Infrastructure | in_progress |
 | EGA-33 | Remove MinIO as strategic object-storage dependency | P0 | Storage/Launch Risk | in_progress |
@@ -332,6 +332,13 @@ Acceptance criteria:
 - No release-blocking hosted-runner deprecation warnings remain.
 - Workflows continue to pass after action upgrades.
 - Release provenance workflow is included in validation.
+
+Status:
+- in_progress with workflow action upgrades applied
+- evidence report: `docs/reports/github-actions-node24-validation-latest.md`
+- upgraded `actions/checkout`, `actions/setup-dotnet`, `actions/cache`,
+  `actions/upload-artifact`, and `softprops/action-gh-release` to current
+  Node 24-compatible major versions
 
 ### EGA-31: Persist consolidated enterprise verification evidence
 

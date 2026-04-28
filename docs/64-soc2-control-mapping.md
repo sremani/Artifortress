@@ -91,7 +91,7 @@ privacy-management system.
 | Migration policy | migration classes and rollback assumptions | implemented | `docs/41-migration-compatibility-policy.md` |
 | Release evidence | consolidated enterprise verification report | implemented | `docs/reports/enterprise-verification-latest.md` |
 | Release provenance | signed bundles, images, chart, and SBOM workflow | implemented | `docs/44-release-provenance-and-verification.md`, `docs/reports/release-provenance-latest.md` |
-| CI deprecation risk | Node 20 cleanup | gap | `EGA-14` |
+| CI deprecation risk | Node 20 cleanup | in progress | `EGA-14`, `docs/reports/github-actions-node24-validation-latest.md` |
 
 ## Access Control
 

@@ -220,6 +220,7 @@ make mutation-trackb-compile-validate
 - `docs/74-object-storage-independence-and-minio-exit-plan.md`: MinIO exit plan and object-storage replacement side-project charter.
 - `docs/reports/enterprise-verification-latest.md`: consolidated report from `make verify-enterprise`.
 - `docs/reports/release-provenance-latest.md`: release asset certification report from `make release-provenance-certify TAG=v<version>`.
+- `docs/reports/github-actions-node24-validation-latest.md`: GitHub Actions Node 24 migration evidence.
 - `docs/reports/ha-kubernetes-validation-latest.md`: latest kind-based Kubernetes HA validation report.
 - `docs/reports/helm-certification-latest.md`: latest Helm install/upgrade/uninstall certification report.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
