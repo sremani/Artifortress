@@ -130,13 +130,16 @@ The latest signed-tag evidence is in
 Security patch expectations are defined in
 `docs/60-versioning-support-policy.md`.
 
-External vulnerability intake and patch SLA workflow are not closed yet and are
-tracked by `EGA-17`.
+External vulnerability intake, severity classification, patch targets, and
+coordinated advisory workflow are defined in `SECURITY.md` and
+`docs/75-vulnerability-disclosure-and-patch-sla.md`.
 
 ### Support
 
-The versioning and support-window policy is documented. A paid-customer support
-intake, severity, and escalation model remains tracked by `EGA-27`.
+The versioning and support-window policy is documented in
+`docs/60-versioning-support-policy.md`. Paid-customer support intake, severity,
+and escalation workflow is documented in
+`docs/67-support-intake-and-escalation.md`.
 
 ## Subprocessors And External Dependencies
 
@@ -181,14 +184,13 @@ Before procurement approval for enterprise GA, the release record should include
 
 Open procurement-relevant gaps:
 
-- `EGA-08`: Helm install/upgrade/uninstall certification job
-- `EGA-09`: production preflight validator
-- `EGA-10`: support bundle collection workflow
-- `EGA-11`: SLOs, SLIs, and alert routing guidance
-- `EGA-12`: HA deployment validation in Kubernetes reference environment
-- `EGA-17`: vulnerability disclosure and patch SLA policy
-- `EGA-27`: support intake, severity, and escalation model
+- `EGA-19`: admin CLI for common operator workflows
+- `EGA-20`: tenant onboarding and offboarding workflow
+- `EGA-21`: cloud-specific production examples
+- `EGA-22`: air-gapped/offline install plan
+- `EGA-23`: backup/restore and upgrade drills against release artifacts
+- `EGA-24`: capacity certification on non-local infrastructure
+- `EGA-25`: package-format compatibility strategy
 
-These gaps do not invalidate existing local verification evidence, but they
-remain blockers for broad procurement readiness unless the support envelope is
-narrowed.
+These gaps do not invalidate the current security and release evidence, but
+they narrow which enterprise claims should be made during procurement review.

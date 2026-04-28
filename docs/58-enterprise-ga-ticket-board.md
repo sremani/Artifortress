@@ -75,7 +75,7 @@ following without direct maintainer intervention:
 | EGA-33 | Remove MinIO as strategic object-storage dependency | P0 | Storage/Launch Risk | in_progress |
 | EGA-15 | Create procurement evidence pack | P1 | Procurement/Compliance | done |
 | EGA-16 | Map controls to SOC 2-style evidence | P1 | Compliance | done |
-| EGA-17 | Add vulnerability disclosure and patch SLA policy | P1 | Security/Support | todo |
+| EGA-17 | Add vulnerability disclosure and patch SLA policy | P1 | Security/Support | done |
 | EGA-18 | Add diagnostic error catalog and operator playbooks | P1 | Supportability | done |
 | EGA-19 | Add admin CLI for common operator workflows | P1 | UX/Ops | todo |
 | EGA-20 | Add tenant onboarding and offboarding workflow | P1 | Tenant Ops | todo |
@@ -469,6 +469,11 @@ Acceptance criteria:
 - `SECURITY.md` or equivalent exists.
 - Release support policy references vulnerability handling.
 - Critical patch workflow is documented.
+
+Status:
+- done in `SECURITY.md`
+- detailed policy: `docs/75-vulnerability-disclosure-and-patch-sla.md`
+- release support references updated in `docs/60-versioning-support-policy.md`
 
 ### EGA-18: Add diagnostic error catalog and operator playbooks
 

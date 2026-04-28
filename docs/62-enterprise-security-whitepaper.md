@@ -1,6 +1,6 @@
 # Enterprise Security Whitepaper
 
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 
 ## Purpose
 
@@ -215,6 +215,22 @@ Known residual release risks:
 - no residual release-provenance runtime deprecation risk is known after
   `EGA-14`
 
+## Vulnerability Handling
+
+Artifortress provides a private external vulnerability intake path, severity
+taxonomy, response targets, patch timelines, and coordinated advisory workflow.
+
+Policy evidence:
+
+- `SECURITY.md`
+- `docs/75-vulnerability-disclosure-and-patch-sla.md`
+- `docs/60-versioning-support-policy.md`
+- `docs/67-support-intake-and-escalation.md`
+
+Critical vulnerabilities require a security owner, release owner, mitigation or
+patch decision, signed release provenance, and customer advisory or release-note
+decision.
+
 ## Availability And Resilience
 
 Supported resilience posture:
@@ -252,6 +268,7 @@ Primary enterprise threat classes and current closure:
 | secret leakage | centralized redaction coverage for audit and worker errors | closed |
 | replay or restart corruption | idempotency and lease reclaim drills | closed |
 | unverifiable releases | signed-tag provenance workflow, SBOMs, cosign verification helper | closed |
+| unresolved vulnerability intake | disclosure and patch SLA policy | closed |
 
 Open P0/P1 security blockers in the current security closure document: `0`.
 

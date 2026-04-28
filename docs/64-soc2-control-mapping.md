@@ -34,7 +34,7 @@ The goal is to make procurement and compliance review faster by identifying:
 | Tenant isolation | tenant filters and negative coverage | implemented | `docs/45-tenant-isolation-and-admission-controls.md` |
 | Secret redaction | audit and worker redaction coverage | implemented | `docs/43-security-review-closure-v2.md` |
 | Network security | ingress, TLS, firewall policy | customer-owned | `docs/59-enterprise-product-envelope.md` |
-| Vulnerability intake | disclosure and patch SLA policy | gap | `EGA-17` |
+| Vulnerability intake | disclosure and patch SLA policy | implemented | `SECURITY.md`, `docs/75-vulnerability-disclosure-and-patch-sla.md` |
 
 ## Availability
 
@@ -42,12 +42,12 @@ The goal is to make procurement and compliance review faster by identifying:
 |---|---|---|---|
 | Readiness | dependency-backed `/health/ready` | implemented | `docs/27-deployment-architecture.md` |
 | Operational health | `/v1/admin/ops/summary` | implemented | `docs/42-operations-dashboard-and-drill-bundle.md` |
-| HA topology | multi-replica API/worker shape | partial | `docs/40-ha-topology-and-failure-domains.md`, `EGA-12` |
+| HA topology | multi-replica API/worker shape | implemented | `docs/40-ha-topology-and-failure-domains.md`, `docs/69-ha-kubernetes-validation-plan.md`, `docs/reports/ha-kubernetes-validation-latest.md` |
 | Backup/restore | scripted drill evidence | implemented | `docs/reports/phase6-rto-rpo-drill-latest.md` |
 | Upgrade compatibility | supported baseline upgrade drill | implemented | `docs/reports/upgrade-compatibility-drill-latest.md` |
 | Replay safety | worker idempotency and lease reclaim drills | implemented | `docs/reports/reliability-drill-latest.md` |
-| SLO/SLI policy | customer-facing objectives and routing | gap | `EGA-11` |
-| Support bundle | redacted diagnostic collection | gap | `EGA-10` |
+| SLO/SLI policy | customer-facing objectives and routing | implemented | `docs/68-slo-sli-alerting.md` |
+| Support bundle | redacted diagnostic collection | implemented | `docs/65-support-bundle-workflow.md`, `scripts/support-bundle.sh` |
 
 ## Confidentiality
 
@@ -119,8 +119,8 @@ privacy-management system.
 |---|---|---|---|
 | Operations runbook | incident response flow | implemented | `docs/31-operations-howto.md`, `docs/42-operations-dashboard-and-drill-bundle.md` |
 | Recovery drills | backup/restore and reliability drills | implemented | `docs/reports/phase6-rto-rpo-drill-latest.md`, `docs/reports/reliability-drill-latest.md` |
-| Error catalog | diagnostic error mapping | gap | `EGA-18` |
-| Support intake | severity and escalation model | gap | `EGA-27` |
+| Error catalog | diagnostic error mapping | implemented | `docs/66-diagnostic-error-catalog.md` |
+| Support intake | severity and escalation model | implemented | `docs/67-support-intake-and-escalation.md` |
 
 ## Vendor And Supply Chain Risk
 
@@ -134,15 +134,8 @@ privacy-management system.
 
 ## Gap Register
 
-| Gap | Ticket |
-|---|---|
-| vulnerability disclosure and patch SLA policy | `EGA-17` |
-| SLOs, SLIs, and alert routing guidance | `EGA-11` |
-| support bundle collection workflow | `EGA-10` |
-| diagnostic error catalog and operator playbooks | `EGA-18` |
-| support intake, severity, and escalation model | `EGA-27` |
-| Helm install/upgrade/uninstall certification | `EGA-08` |
-| HA deployment validation in Kubernetes reference environment | `EGA-12` |
+No open SOC 2-style evidence gaps are tracked in this document. Future
+customer-specific compliance requests should become scoped follow-up tickets.
 
 ## Auditor Note
 

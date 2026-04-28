@@ -44,6 +44,7 @@ Each release candidate must record:
 | Release provenance | signed bundles, checksums, SBOMs, verification output | required |
 | Migration review | migration class and rollback path documented | required |
 | Security review | no open P0/P1 security blockers | required |
+| Vulnerability handling | `SECURITY.md` and patch SLA policy reviewed | required |
 | Product envelope | `docs/59-enterprise-product-envelope.md` reviewed | required |
 | Support policy | `docs/60-versioning-support-policy.md` reviewed | required |
 | Documentation | release notes and operator-impact notes complete | required |

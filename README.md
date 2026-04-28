@@ -218,6 +218,7 @@ make mutation-trackb-compile-validate
 - `docs/72-installation-and-production-cutover-guide.md`: clean-cluster install and production cutover workflow.
 - `docs/73-artifortress-com-production-hosting-plan.md`: initial `artifortress.com` hosting hardware and infrastructure plan.
 - `docs/74-object-storage-independence-and-minio-exit-plan.md`: MinIO exit plan and object-storage replacement side-project charter.
+- `docs/75-vulnerability-disclosure-and-patch-sla.md`: vulnerability intake, disclosure, and security patch SLA policy.
 - `docs/reports/enterprise-verification-latest.md`: consolidated report from `make verify-enterprise`.
 - `docs/reports/release-provenance-latest.md`: release asset certification report from `make release-provenance-certify TAG=v<version>`.
 - `docs/reports/github-actions-node24-validation-latest.md`: GitHub Actions Node 24 migration evidence.

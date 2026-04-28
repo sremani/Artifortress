@@ -1,6 +1,6 @@
 # Versioning And Support Policy
 
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 
 ## Purpose
 
@@ -113,9 +113,10 @@ Dependency changes:
 Security fixes may ship as patch releases.
 
 Severity handling:
-- critical: patch or documented mitigation targeted as soon as practical
-- high: patch or mitigation targeted in the next patch cycle
-- medium/low: handled in normal release planning unless actively exploited
+- critical: patch or documented mitigation target is `7` calendar days
+- high: patch or mitigation target is `30` calendar days
+- medium: patch or mitigation target is `90` calendar days
+- low: handled in the next practical release unless actively exploited
 
 Security patch releases must include:
 - affected versions
@@ -124,8 +125,11 @@ Security patch releases must include:
 - verification steps
 - release provenance evidence
 
-This policy defines patch expectations only. Vulnerability intake and external
-disclosure workflow are tracked separately by `EGA-17`.
+External vulnerability intake, severity classification, advisory publication,
+and emergency patch workflow are defined in:
+
+- `SECURITY.md`
+- `docs/75-vulnerability-disclosure-and-patch-sla.md`
 
 ## Deprecation Policy
 
