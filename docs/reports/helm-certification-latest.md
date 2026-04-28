@@ -49,9 +49,9 @@ Server Version: v1.35.0
 ## Helm History
 
 ```text
-REVISION	UPDATED                 	STATUS    	CHART             	APP VERSION	DESCRIPTION     
-1       	Tue Apr 28 14:37:42 2026	superseded	artifortress-0.1.0	latest     	Install complete
-2       	Tue Apr 28 14:37:58 2026	deployed  	artifortress-0.1.0	latest     	Upgrade complete
+REVISION  UPDATED                   STATUS      CHART               APP VERSION  DESCRIPTION
+1         Tue Apr 28 14:37:42 2026  superseded  artifortress-0.1.0  latest       Install complete
+2         Tue Apr 28 14:37:58 2026  deployed    artifortress-0.1.0  latest       Upgrade complete
 ```
 
 ## Pod Placement Before Uninstall
