@@ -1,6 +1,6 @@
 # Release Candidate Sign-Off
 
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 
 ## Purpose
 
@@ -45,6 +45,7 @@ Each release candidate must record:
 | Migration review | migration class and rollback path documented | required |
 | Security review | no open P0/P1 security blockers | required |
 | Vulnerability handling | `SECURITY.md` and patch SLA policy reviewed | required |
+| Admin CLI | `docs/76-admin-cli-operator-workflows.md` and smoke coverage reviewed | required |
 | Product envelope | `docs/59-enterprise-product-envelope.md` reviewed | required |
 | Support policy | `docs/60-versioning-support-policy.md` reviewed | required |
 | Documentation | release notes and operator-impact notes complete | required |

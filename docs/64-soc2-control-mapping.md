@@ -1,6 +1,6 @@
 # SOC 2-Style Control Mapping
 
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 
 ## Purpose
 
@@ -42,6 +42,7 @@ The goal is to make procurement and compliance review faster by identifying:
 |---|---|---|---|
 | Readiness | dependency-backed `/health/ready` | implemented | `docs/27-deployment-architecture.md` |
 | Operational health | `/v1/admin/ops/summary` | implemented | `docs/42-operations-dashboard-and-drill-bundle.md` |
+| Operator CLI | supported JSON-first admin CLI for routine workflows | implemented | `tools/Artifortress.AdminCli`, `docs/76-admin-cli-operator-workflows.md` |
 | HA topology | multi-replica API/worker shape | implemented | `docs/40-ha-topology-and-failure-domains.md`, `docs/69-ha-kubernetes-validation-plan.md`, `docs/reports/ha-kubernetes-validation-latest.md` |
 | Backup/restore | scripted drill evidence | implemented | `docs/reports/phase6-rto-rpo-drill-latest.md` |
 | Upgrade compatibility | supported baseline upgrade drill | implemented | `docs/reports/upgrade-compatibility-drill-latest.md` |

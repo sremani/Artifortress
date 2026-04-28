@@ -34,6 +34,10 @@ Artifortress is an artifact repository focused on correctness, integrity, and op
   - Version tombstone API with retention windows.
   - Admin GC run API with safe dry-run mode and execute hard-delete mode.
   - Admin reconcile API for metadata/blob drift summary.
+- Operator tooling:
+  - Supported admin CLI for routine tenant, repository, PAT, compliance,
+    legal-hold, GC, search, ops summary, and preflight workflows.
+  - JSON-first CLI output with secret redaction.
 - Phase 6 hardening:
   - Readiness endpoint checks actual dependencies (Postgres + object storage) and returns deterministic non-ready responses.
   - Admin operations summary endpoint for backlog and lifecycle health posture.
@@ -155,6 +159,7 @@ make mutation-trackb-compile-validate
 - `src/Artifortress.Domain`: domain primitives and authorization invariants.
 - `src/Artifortress.Api`: HTTP API with Postgres-backed control plane and Phase 2 upload/download data plane.
 - `src/Artifortress.Worker`: worker outbox/job sweep runtime plus extracted pure helper modules for deterministic behavior and PBT.
+- `tools/Artifortress.AdminCli`: supported operator CLI for routine administration.
 - `tests/Artifortress.Domain.Tests`: unit + integration tests.
 - `db/migrations`: SQL schema migrations.
 - `scripts`: migration, smoke, and demo scripts.
@@ -219,6 +224,7 @@ make mutation-trackb-compile-validate
 - `docs/73-artifortress-com-production-hosting-plan.md`: initial `artifortress.com` hosting hardware and infrastructure plan.
 - `docs/74-object-storage-independence-and-minio-exit-plan.md`: MinIO exit plan and object-storage replacement side-project charter.
 - `docs/75-vulnerability-disclosure-and-patch-sla.md`: vulnerability intake, disclosure, and security patch SLA policy.
+- `docs/76-admin-cli-operator-workflows.md`: supported admin CLI commands and operator workflow examples.
 - `docs/reports/enterprise-verification-latest.md`: consolidated report from `make verify-enterprise`.
 - `docs/reports/release-provenance-latest.md`: release asset certification report from `make release-provenance-certify TAG=v<version>`.
 - `docs/reports/github-actions-node24-validation-latest.md`: GitHub Actions Node 24 migration evidence.

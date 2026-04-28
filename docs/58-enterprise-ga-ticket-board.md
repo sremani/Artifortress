@@ -77,7 +77,7 @@ following without direct maintainer intervention:
 | EGA-16 | Map controls to SOC 2-style evidence | P1 | Compliance | done |
 | EGA-17 | Add vulnerability disclosure and patch SLA policy | P1 | Security/Support | done |
 | EGA-18 | Add diagnostic error catalog and operator playbooks | P1 | Supportability | done |
-| EGA-19 | Add admin CLI for common operator workflows | P1 | UX/Ops | todo |
+| EGA-19 | Add admin CLI for common operator workflows | P1 | UX/Ops | done |
 | EGA-20 | Add tenant onboarding and offboarding workflow | P1 | Tenant Ops | todo |
 | EGA-21 | Add cloud-specific production examples | P1 | Deployment | todo |
 | EGA-22 | Add air-gapped/offline install plan | P1 | Distribution | todo |
@@ -502,6 +502,14 @@ Acceptance criteria:
 - Routine admin workflows do not require raw curl commands.
 - CLI output is scriptable and redacts secrets.
 - CLI has smoke coverage for the highest-risk commands.
+
+Status:
+- implemented `tools/Artifortress.AdminCli` as the supported API-backed
+  operator CLI
+- added `make admin-cli ARGS="..."` wrapper
+- documented workflows in `docs/76-admin-cli-operator-workflows.md`
+- smoke coverage added in
+  `tests/Artifortress.Domain.Tests/AdminCliSmokeTests.fs`
 
 ### EGA-20: Add tenant onboarding and offboarding workflow
 

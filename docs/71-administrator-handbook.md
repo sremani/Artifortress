@@ -16,6 +16,7 @@ It is intentionally operational. Use it with:
 - `docs/66-diagnostic-error-catalog.md`
 - `docs/68-slo-sli-alerting.md`
 - `docs/70-production-preflight.md`
+- `docs/76-admin-cli-operator-workflows.md`
 
 When this handbook and the product envelope disagree, the product envelope wins.
 
@@ -32,8 +33,9 @@ Administrators are responsible for:
 - running backup, restore, upgrade, rollback, and reliability drills
 - collecting redacted diagnostics for support
 
-Normal administration must use supported APIs, scripts, Helm values, or release
-artifacts. Direct database edits are not part of the supported routine workflow.
+Normal administration must use the supported admin CLI, APIs, scripts, Helm
+values, or release artifacts. Direct database edits are not part of the
+supported routine workflow.
 
 ## Access Model
 
@@ -126,6 +128,14 @@ curl -sS \
 For identity rollout and fallback details, use `docs/37-phase7-runbook.md` and
 `docs/38-phase7-rollout-gates.md`.
 
+The supported CLI equivalents are:
+
+```bash
+make admin-cli ARGS="--url https://artifortress.example.com health ready"
+make admin-cli ARGS="--url https://artifortress.example.com --bootstrap-token <bootstrap-token> auth issue-pat --subject platform-admin --scope repo:*:admin --ttl-minutes 60"
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> auth whoami"
+```
+
 ## Tenant Administration
 
 Tenant-wide administration uses tenant role bindings and admission policy.
@@ -142,11 +152,7 @@ Common endpoints:
 Example tenant auditor binding:
 
 ```bash
-curl -sS \
-  -H "Authorization: Bearer <admin-token>" \
-  -H "Content-Type: application/json" \
-  -X PUT https://artifortress.example.com/v1/admin/tenant-role-bindings/auditor@example.com \
-  -d '{"roles":["tenant_auditor"]}'
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> tenant roles set --subject auditor@example.com --role tenant_auditor"
 ```
 
 Change rules:
@@ -175,21 +181,13 @@ Common endpoints:
 Example local repository:
 
 ```bash
-curl -sS \
-  -H "Authorization: Bearer <admin-token>" \
-  -H "Content-Type: application/json" \
-  -X POST https://artifortress.example.com/v1/repos \
-  -d '{"repoKey":"libs-release","repoType":"local","upstreamUrl":"","memberRepos":[]}'
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> repo create --repo libs-release --type local"
 ```
 
 Example repository binding:
 
 ```bash
-curl -sS \
-  -H "Authorization: Bearer <admin-token>" \
-  -H "Content-Type: application/json" \
-  -X PUT https://artifortress.example.com/v1/repos/libs-release/bindings/team-builds \
-  -d '{"roles":["write"]}'
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> repo bindings set --repo libs-release --subject team-builds --role write"
 ```
 
 Before deleting a repository or narrowing roles:
@@ -235,15 +233,12 @@ Common endpoints:
 Evidence export:
 
 ```bash
-curl -sS \
-  -H "Authorization: Bearer <auditor-token>" \
-  "https://artifortress.example.com/v1/compliance/evidence?auditLimit=500&approvalLimit=250" \
-  -D /tmp/compliance-headers.txt \
-  -o /tmp/compliance-evidence-pack.json
+make admin-cli ARGS="--url https://artifortress.example.com --token <auditor-token> compliance evidence --audit-limit 500 --approval-limit 250"
 ```
 
-Verify the saved payload against `X-Artifortress-Compliance-Pack-SHA256` from
-the response headers.
+For header-level digest verification, call the API directly and verify the saved
+payload against `X-Artifortress-Compliance-Pack-SHA256` from the response
+headers.
 
 For control mapping and procurement review, use:
 
@@ -363,10 +358,7 @@ Use `docs/25-upgrade-rollback-runbook.md`,
 Daily checks:
 
 ```bash
-curl -sS https://artifortress.example.com/health/ready
-curl -sS \
-  -H "Authorization: Bearer <admin-token>" \
-  https://artifortress.example.com/v1/admin/ops/summary
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> preflight"
 ```
 
 Review:
@@ -462,3 +454,4 @@ closed, use this checklist plus organization-specific retention procedures.
 - `docs/67-support-intake-and-escalation.md`
 - `docs/68-slo-sli-alerting.md`
 - `docs/70-production-preflight.md`
+- `docs/76-admin-cli-operator-workflows.md`

@@ -1,6 +1,6 @@
 # Procurement Evidence Pack
 
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 
 ## Purpose
 
@@ -38,6 +38,7 @@ performance soak drills.
 | Architecture | `docs/01-system-architecture.md`, `Architecture.md` |
 | Deployment | `docs/27-deployment-architecture.md`, `docs/28-deployment-howto-staging.md`, `docs/29-deployment-howto-production.md` |
 | Operations | `docs/31-operations-howto.md`, `docs/42-operations-dashboard-and-drill-bundle.md` |
+| Admin CLI | `docs/76-admin-cli-operator-workflows.md`, `tools/Artifortress.AdminCli` |
 | HA and failure domains | `docs/40-ha-topology-and-failure-domains.md` |
 | Upgrade/rollback | `docs/25-upgrade-rollback-runbook.md`, `docs/41-migration-compatibility-policy.md`, `docs/48-upgrade-compatibility-matrix.md` |
 | Security closure | `docs/43-security-review-closure-v2.md` |
@@ -184,7 +185,6 @@ Before procurement approval for enterprise GA, the release record should include
 
 Open procurement-relevant gaps:
 
-- `EGA-19`: admin CLI for common operator workflows
 - `EGA-20`: tenant onboarding and offboarding workflow
 - `EGA-21`: cloud-specific production examples
 - `EGA-22`: air-gapped/offline install plan

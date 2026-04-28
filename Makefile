@@ -4,11 +4,12 @@ PROJECTS := \
 	src/Artifortress.Domain/Artifortress.Domain.fsproj \
 	src/Artifortress.Api/Artifortress.Api.fsproj \
 	src/Artifortress.Worker/Artifortress.Worker.fsproj \
+	tools/Artifortress.AdminCli/Artifortress.AdminCli.fsproj \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 TEST_PROJECTS := \
 	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration test-integration-full format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill reliability-drill search-soak-drill performance-workflow-baseline performance-soak-drill verify-enterprise production-preflight kind-ha-validate helm-certify release-provenance-certify upgrade-compatibility-drill mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
+.PHONY: help restore build test test-integration test-integration-full format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill reliability-drill search-soak-drill performance-workflow-baseline performance-soak-drill verify-enterprise production-preflight kind-ha-validate helm-certify release-provenance-certify upgrade-compatibility-drill admin-cli mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
 
 help:
 	@echo "Targets:"
@@ -38,6 +39,7 @@ help:
 	@echo "  helm-certify      Certify Helm install/upgrade/uninstall in local kind Kubernetes"
 	@echo "  release-provenance-certify  Verify release assets for TAG=vX.Y.Z and write evidence"
 	@echo "  upgrade-compatibility-drill  Rehearse supported baseline schema upgrades to head"
+	@echo "  admin-cli         Run the supported admin CLI (pass ARGS='...')"
 	@echo "  mutation-spike     Run F# mutation feasibility spike (wrapper CLI) and generate report"
 	@echo "  mutation-track     Run mutation wrapper default flow and generate report"
 	@echo "  mutation-fsharp-native     Run native F# mutation runtime lane and generate report"
@@ -97,12 +99,12 @@ release-provenance-certify:
 
 format:
 	@echo "Checking for tabs in source and config files..."
-	@if rg -n "\t" src tests scripts db docs .github --glob "*.fs" --glob "*.fsproj" --glob "*.md" --glob "*.sql" --glob "*.yml" --glob "*.yaml" --glob "*.sh"; then \
+	@if rg -n "\t" src tools tests scripts db docs .github --glob "*.fs" --glob "*.fsproj" --glob "*.md" --glob "*.sql" --glob "*.yml" --glob "*.yaml" --glob "*.sh"; then \
 		echo "Tabs are not allowed in tracked text files."; \
 		exit 1; \
 	fi
 	@echo "Checking for trailing whitespace..."
-	@if rg -n "[[:blank:]]$$" src tests scripts db docs .github --glob "*.fs" --glob "*.fsproj" --glob "*.md" --glob "*.sql" --glob "*.yml" --glob "*.yaml" --glob "*.sh"; then \
+	@if rg -n "[[:blank:]]$$" src tools tests scripts db docs .github --glob "*.fs" --glob "*.fsproj" --glob "*.md" --glob "*.sql" --glob "*.yml" --glob "*.yaml" --glob "*.sh"; then \
 		echo "Trailing whitespace detected."; \
 		exit 1; \
 	fi
@@ -164,6 +166,9 @@ helm-certify:
 
 upgrade-compatibility-drill:
 	./scripts/upgrade-compatibility-drill.sh
+
+admin-cli:
+	dotnet run --project tools/Artifortress.AdminCli/Artifortress.AdminCli.fsproj -- $(ARGS)
 
 mutation-spike:
 	dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- spike

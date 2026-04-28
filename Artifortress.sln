@@ -17,6 +17,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{07C2787E
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Artifortress.MutationTrack", "tools\Artifortress.MutationTrack\Artifortress.MutationTrack.fsproj", "{ADCEF2F0-66E2-48F0-9E02-BC99A39D3E9F}"
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Artifortress.AdminCli", "tools\Artifortress.AdminCli\Artifortress.AdminCli.fsproj", "{74B0F859-B883-4731-810C-2A90561AA5EB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -87,6 +89,18 @@ Global
 		{ADCEF2F0-66E2-48F0-9E02-BC99A39D3E9F}.Release|x64.Build.0 = Release|Any CPU
 		{ADCEF2F0-66E2-48F0-9E02-BC99A39D3E9F}.Release|x86.ActiveCfg = Release|Any CPU
 		{ADCEF2F0-66E2-48F0-9E02-BC99A39D3E9F}.Release|x86.Build.0 = Release|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Debug|x64.Build.0 = Debug|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Debug|x86.Build.0 = Debug|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Release|x64.ActiveCfg = Release|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Release|x64.Build.0 = Release|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Release|x86.ActiveCfg = Release|Any CPU
+		{74B0F859-B883-4731-810C-2A90561AA5EB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -97,5 +111,6 @@ Global
 		{52B29B2E-2616-41AA-971D-4E3D9E7F27C5} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{F2E906D8-3594-4C59-BB00-FFDA5F503C01} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{ADCEF2F0-66E2-48F0-9E02-BC99A39D3E9F} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{74B0F859-B883-4731-810C-2A90561AA5EB} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal
