@@ -102,6 +102,7 @@ privacy-management system.
 | Admin bootstrap | bootstrap-token pattern | implemented | `README.md` |
 | Token revocation | PAT revoke and revoke-all controls | implemented | `docs/43-security-review-closure-v2.md` |
 | Access evidence | tenant role bindings in compliance pack | implemented | `docs/49-compliance-evidence-and-legal-holds.md` |
+| Tenant lifecycle | onboarding/offboarding workflow with explicit audit markers and offboarding readiness | implemented | `docs/77-tenant-onboarding-and-offboarding-workflow.md` |
 | Periodic access review | organization-specific review workflow | customer-owned | `docs/62-enterprise-security-whitepaper.md` |
 
 ## Audit Logging

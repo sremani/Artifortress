@@ -2013,6 +2013,32 @@ type Phase1ApiTests(fixture: ApiFixture) =
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
         fixture.Client.Send(request)
 
+    let deleteTenantRoleBinding (token: string) (subject: string) =
+        use request = new HttpRequestMessage(HttpMethod.Delete, $"/v1/admin/tenant-role-bindings/{subject}")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
+    let markTenantLifecycle (token: string) (step: string) (status: string) (subject: string) (reason: string) =
+        use request = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/tenant-lifecycle/events")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+
+        request.Content <-
+            JsonContent.Create(
+                {| Step = step
+                   Status = status
+                   Subject = subject
+                   RepoKey = ""
+                   Reason = reason
+                   RetentionUntilUtc = "" |}
+            )
+
+        fixture.Client.Send(request)
+
+    let getTenantOffboardingReadiness (token: string) =
+        use request = new HttpRequestMessage(HttpMethod.Get, "/v1/admin/tenant-lifecycle/offboarding-readiness")
+        request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
+        fixture.Client.Send(request)
+
     let createUploadSessionWithToken (token: string) (repoKey: string) (expectedDigest: string) (expectedLength: int64) =
         use request = new HttpRequestMessage(HttpMethod.Post, $"/v1/repos/{repoKey}/uploads")
         request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", token)
@@ -2952,6 +2978,63 @@ type Phase1ApiTests(fixture: ApiFixture) =
 
         use operatorAuditResponse = getAuditWithToken operatorToken 20
         ensureStatus HttpStatusCode.Forbidden operatorAuditResponse |> ignore
+
+    [<Fact>]
+    member _.``ER-205 tenant lifecycle events are audited and offboarding readiness reports blockers`` () =
+        fixture.RequireAvailable()
+
+        let adminToken, _ = issuePat (makeSubject "er205-admin") [| "repo:*:admin" |] 60
+        let auditorSubject = makeSubject "er205-auditor"
+        use bindingResponse = putTenantRoleBinding adminToken auditorSubject [| "auditor" |]
+        ensureStatus HttpStatusCode.OK bindingResponse |> ignore
+
+        let auditorToken, _ = issuePat auditorSubject [||] 60
+        let correlationId = Guid.NewGuid()
+
+        use markerRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/admin/tenant-lifecycle/events")
+        markerRequest.Headers.Authorization <- AuthenticationHeaderValue("Bearer", adminToken)
+        markerRequest.Headers.Add("X-Correlation-Id", correlationId.ToString())
+
+        markerRequest.Content <-
+            JsonContent.Create(
+                {| Step = "offboarding.started"
+                   Status = "started"
+                   Subject = auditorSubject
+                   RepoKey = ""
+                   Reason = "contract ended"
+                   RetentionUntilUtc = "" |}
+            )
+
+        use markerResponse = fixture.Client.Send(markerRequest)
+        let markerBody = ensureStatus HttpStatusCode.OK markerResponse
+        use markerDoc = JsonDocument.Parse(markerBody)
+        Assert.Equal("offboarding.started", markerDoc.RootElement.GetProperty("step").GetString())
+
+        use readinessResponse = getTenantOffboardingReadiness adminToken
+        let readinessBody = ensureStatus HttpStatusCode.OK readinessResponse
+        use readinessDoc = JsonDocument.Parse(readinessBody)
+        Assert.False(readinessDoc.RootElement.GetProperty("accessRevocationComplete").GetBoolean())
+        Assert.False(readinessDoc.RootElement.GetProperty("readyForDeletion").GetBoolean())
+        Assert.True(readinessDoc.RootElement.GetProperty("counts").GetProperty("activePats").GetInt32() > 0)
+        Assert.True(readinessDoc.RootElement.GetProperty("counts").GetProperty("tenantRoleBindings").GetInt32() > 0)
+
+        use auditResponse = getAuditWithToken auditorToken 200
+        let auditBody = ensureStatus HttpStatusCode.OK auditResponse
+        use auditDoc = JsonDocument.Parse(auditBody)
+
+        let lifecycleAuditPresent =
+            auditDoc.RootElement.EnumerateArray()
+            |> Seq.exists (fun entry ->
+                entry.GetProperty("action").GetString() = "tenant.lifecycle.offboarding.started"
+                && entry.GetProperty("resourceType").GetString() = "tenant_lifecycle"
+                && entry.GetProperty("correlationId").GetGuid() = correlationId)
+
+        Assert.True(lifecycleAuditPresent, "Expected tenant lifecycle audit marker with preserved correlation id.")
+
+        use deleteBindingResponse = deleteTenantRoleBinding adminToken auditorSubject
+        let deleteBindingBody = ensureStatus HttpStatusCode.OK deleteBindingResponse
+        use deleteBindingDoc = JsonDocument.Parse(deleteBindingBody)
+        Assert.True(deleteBindingDoc.RootElement.GetProperty("deleted").GetBoolean())
 
     [<Fact>]
     member _.``P1-11 create repo rejects repo keys containing colon`` () =

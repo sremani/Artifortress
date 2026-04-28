@@ -186,6 +186,16 @@ type UpdateRepoGovernancePolicyRequest = {
 }
 
 [<CLIMutable>]
+type RecordTenantLifecycleEventRequest = {
+    Step: string
+    Status: string
+    Subject: string
+    RepoKey: string
+    Reason: string
+    RetentionUntilUtc: string
+}
+
+[<CLIMutable>]
 type UpsertArtifactProtectionRequest = {
     Mode: string
     Reason: string
@@ -868,6 +878,40 @@ let validateRepoGovernancePolicyRequest (request: UpdateRepoGovernancePolicyRequ
                 None
 
         minRetentionDays, dualControlForTombstone, dualControlForQuarantine)
+
+let private validTenantLifecycleSteps =
+    Set.ofList
+        [ "tenant.created"
+          "roles.bound"
+          "identity.mapped"
+          "quotas.assigned"
+          "repository.created"
+          "evidence.exported"
+          "legal_holds.reviewed"
+          "offboarding.started"
+          "access.revoked"
+          "retention.reviewed"
+          "deletion.blocked"
+          "deletion.completed"
+          "offboarding.completed" ]
+
+let validateTenantLifecycleEventRequest (request: RecordTenantLifecycleEventRequest) =
+    let step = normalizeText request.Step |> fun value -> value.ToLowerInvariant()
+    let status = normalizeText request.Status |> fun value -> if String.IsNullOrWhiteSpace value then "completed" else value.ToLowerInvariant()
+    let subject = normalizeSubject request.Subject
+    let repoKey = normalizeRepoKey request.RepoKey
+    let reason = normalizeText request.Reason
+    let retentionUntilUtc = normalizeText request.RetentionUntilUtc
+
+    if not (Set.contains step validTenantLifecycleSteps) then
+        let allowedSteps = String.concat ", " (validTenantLifecycleSteps |> Set.toList)
+        Error $"step must be one of: {allowedSteps}."
+    elif status <> "planned" && status <> "started" && status <> "completed" && status <> "blocked" then
+        Error "status must be one of: planned, started, completed, blocked."
+    elif step.Contains("offboarding") && String.IsNullOrWhiteSpace reason then
+        Error "reason is required for offboarding lifecycle steps."
+    else
+        Ok(step, status, subject, repoKey, reason, retentionUntilUtc)
 
 let validateArtifactProtectionRequest (request: UpsertArtifactProtectionRequest) =
     let mode = normalizeText request.Mode |> fun value -> value.ToLowerInvariant()
@@ -6808,6 +6852,26 @@ order by rb.subject;
 
     loop ()
 
+let deleteRoleBindingForRepo (tenantId: Guid) (repoKey: string) (subject: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+delete from role_bindings rb
+using repos r
+where rb.tenant_id = @tenant_id
+  and rb.subject = @subject
+  and r.tenant_id = rb.tenant_id
+  and r.repo_id = rb.repo_id
+  and r.repo_key = @repo_key;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("repo_key", repoKey) |> ignore
+    cmd.Parameters.AddWithValue("subject", subject) |> ignore
+    Ok(cmd.ExecuteNonQuery() > 0)
+
 let upsertTenantRoleBinding
     (tenantId: Guid)
     (subject: string)
@@ -6890,6 +6954,59 @@ order by subject;
             Ok(bindings |> Seq.toList)
 
     loop ()
+
+let deleteTenantRoleBinding (tenantId: Guid) (subject: string) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+delete from tenant_role_bindings
+where tenant_id = @tenant_id
+  and subject = @subject;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    cmd.Parameters.AddWithValue("subject", subject) |> ignore
+    Ok(cmd.ExecuteNonQuery() > 0)
+
+let countRepoRoleBindingsForTenant (tenantId: Guid) (conn: NpgsqlConnection) =
+    use cmd =
+        new NpgsqlCommand(
+            """
+select count(*)
+from role_bindings
+where tenant_id = @tenant_id;
+""",
+            conn
+        )
+
+    cmd.Parameters.AddWithValue("tenant_id", tenantId) |> ignore
+    let scalar = cmd.ExecuteScalar()
+
+    match scalar with
+    | :? int64 as count -> Ok(int count)
+    | :? int32 as count -> Ok count
+    | _ -> Error "Could not count repository role bindings."
+
+let readTenantOffboardingReadiness (tenantId: Guid) (conn: NpgsqlConnection) =
+    readActiveLegalHolds tenantId conn
+    |> Result.bind (fun legalHolds ->
+        readPatInventory tenantId conn
+        |> Result.bind (fun pats ->
+            readTenantRoleBindings tenantId conn
+            |> Result.bind (fun tenantRoleBindings ->
+                readReposForTenant tenantId conn
+                |> Result.bind (fun repos ->
+                    countRepoRoleBindingsForTenant tenantId conn
+                    |> Result.map (fun repoRoleBindingCount ->
+                        let now = nowUtc ()
+
+                        let activePats =
+                            pats
+                            |> List.filter (fun pat -> pat.RevokedAtUtc.IsNone && pat.ExpiresAtUtc > now)
+
+                        legalHolds, activePats, tenantRoleBindings, repos, repoRoleBindingCount)))))
 
 let createGovernanceApproval
     (tenantId: Guid)
@@ -8147,6 +8264,35 @@ let main args =
     )
     |> ignore
 
+    app.MapDelete(
+        "/v1/admin/tenant-role-bindings/{subject}",
+        Func<HttpContext, IResult>(fun ctx ->
+            let subject = normalizeSubject (ctx.Request.RouteValues["subject"].ToString())
+
+            if String.IsNullOrWhiteSpace subject then
+                badRequest "subject route parameter is required."
+            else
+                match requireTenantRole state ctx TenantRole.TenantAdmin with
+                | Error result -> result
+                | Ok principal ->
+                    match withConnection state (deleteTenantRoleBinding principal.TenantId subject) with
+                    | Error err -> serviceUnavailable err
+                    | Ok deleted ->
+                        match
+                            writeAudit
+                                state
+                                principal.TenantId
+                                principal.Subject
+                                "tenant.role_binding.deleted"
+                                "tenant_role_binding"
+                                subject
+                                Map.empty
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok() -> Results.Ok({| subject = subject; deleted = deleted |}))
+    )
+    |> ignore
+
     app.MapGet(
         "/v1/admin/tenant-role-bindings",
         Func<HttpContext, IResult>(fun ctx ->
@@ -8165,6 +8311,116 @@ let main args =
                         )
                         |> List.toArray
                     ))
+    )
+    |> ignore
+
+    app.MapPost(
+        "/v1/admin/tenant-lifecycle/events",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
+            | Error result -> result
+            | Ok principal ->
+                match readJsonBody<RecordTenantLifecycleEventRequest> ctx with
+                | Error err -> badRequest err
+                | Ok request ->
+                    match validateTenantLifecycleEventRequest request with
+                    | Error err -> badRequest err
+                    | Ok(step, status, subject, repoKey, reason, retentionUntilUtc) ->
+                        let details =
+                            [ "status", status
+                              "step", step
+                              if not (String.IsNullOrWhiteSpace subject) then
+                                  "subject", subject
+                              if not (String.IsNullOrWhiteSpace repoKey) then
+                                  "repoKey", repoKey
+                              if not (String.IsNullOrWhiteSpace reason) then
+                                  "reason", reason
+                              if not (String.IsNullOrWhiteSpace retentionUntilUtc) then
+                                  "retentionUntilUtc", retentionUntilUtc ]
+                            |> Map.ofList
+
+                        match
+                            writeAudit
+                                state
+                                principal.TenantId
+                                principal.Subject
+                                $"tenant.lifecycle.{step}"
+                                "tenant_lifecycle"
+                                (principal.TenantId.ToString())
+                                details
+                        with
+                        | Error err -> serviceUnavailable err
+                        | Ok() ->
+                            Results.Ok(
+                                {| tenantId = principal.TenantId
+                                   step = step
+                                   status = status
+                                   subject = if String.IsNullOrWhiteSpace subject then None else Some subject
+                                   repoKey = if String.IsNullOrWhiteSpace repoKey then None else Some repoKey
+                                   reason = if String.IsNullOrWhiteSpace reason then None else Some reason
+                                   retentionUntilUtc =
+                                    if String.IsNullOrWhiteSpace retentionUntilUtc then None else Some retentionUntilUtc |}
+                            ))
+    )
+    |> ignore
+
+    app.MapGet(
+        "/v1/admin/tenant-lifecycle/offboarding-readiness",
+        Func<HttpContext, IResult>(fun ctx ->
+            match requireTenantRole state ctx TenantRole.TenantAdmin with
+            | Error result -> result
+            | Ok principal ->
+                match withConnection state (readTenantOffboardingReadiness principal.TenantId) with
+                | Error err -> serviceUnavailable err
+                | Ok(legalHolds, activePats, tenantRoleBindings, repos, repoRoleBindingCount) ->
+                    let legalHoldSafe = legalHolds.IsEmpty
+                    let accessRevocationComplete = activePats.IsEmpty && tenantRoleBindings.IsEmpty && repoRoleBindingCount = 0
+                    let readyForDeletion = legalHoldSafe && accessRevocationComplete
+
+                    let blockers =
+                        [ if not legalHoldSafe then
+                              $"active_legal_holds={legalHolds.Length}"
+                          if not activePats.IsEmpty then
+                              $"active_pats={activePats.Length}"
+                          if not tenantRoleBindings.IsEmpty then
+                              $"tenant_role_bindings={tenantRoleBindings.Length}"
+                          if repoRoleBindingCount > 0 then
+                              $"repo_role_bindings={repoRoleBindingCount}" ]
+
+                    Results.Ok(
+                        {| tenantId = principal.TenantId
+                           checkedAtUtc = nowUtc ()
+                           legalHoldSafe = legalHoldSafe
+                           accessRevocationComplete = accessRevocationComplete
+                           readyForDeletion = readyForDeletion
+                           retentionDisposition =
+                            if not legalHoldSafe then
+                                "blocked_by_legal_hold"
+                            elif not accessRevocationComplete then
+                                "access_revocation_required"
+                            else
+                                "retention_review_required_before_physical_delete"
+                           blockers = blockers |> List.toArray
+                           counts =
+                            {| activeLegalHolds = legalHolds.Length
+                               activePats = activePats.Length
+                               tenantRoleBindings = tenantRoleBindings.Length
+                               repoRoleBindings = repoRoleBindingCount
+                               repositories = repos.Length |}
+                           activeLegalHolds =
+                            legalHolds
+                            |> List.map (fun hold ->
+                                {| protectionId = hold.ProtectionId
+                                   repoKey = hold.RepoKey
+                                   versionId = hold.VersionId
+                                   packageName = hold.PackageName
+                                   version = hold.Version
+                                   reason = hold.Reason
+                                   protectedBySubject = hold.ProtectedBySubject
+                                   protectedAtUtc = hold.ProtectedAtUtc
+                                   retentionUntilUtc = hold.RetentionUntilUtc |})
+                            |> List.toArray |})
+        )
     )
     |> ignore
 
@@ -8308,6 +8564,42 @@ let main args =
                                                roles = binding.Roles |> Seq.map RepoRole.value |> Seq.toArray
                                                updatedAtUtc = binding.UpdatedAtUtc |}
                                         ))
+    )
+    |> ignore
+
+    app.MapDelete(
+        "/v1/repos/{repoKey}/bindings/{subject}",
+        Func<HttpContext, IResult>(fun ctx ->
+            let repoKey = normalizeRepoKey (ctx.Request.RouteValues["repoKey"].ToString())
+            let subject = normalizeSubject (ctx.Request.RouteValues["subject"].ToString())
+
+            if String.IsNullOrWhiteSpace repoKey || String.IsNullOrWhiteSpace subject then
+                badRequest "repoKey and subject route parameters are required."
+            else
+                match requireRole state ctx repoKey RepoRole.Admin with
+                | Error result -> result
+                | Ok principal ->
+                    match withConnection state (repoExistsForTenant principal.TenantId repoKey) with
+                    | Error err -> serviceUnavailable err
+                    | Ok false -> Results.NotFound({| error = "not_found"; message = "Repository was not found." |})
+                    | Ok true ->
+                        match withConnection state (deleteRoleBindingForRepo principal.TenantId repoKey subject) with
+                        | Error err -> serviceUnavailable err
+                        | Ok deleted ->
+                            let key = $"{repoKey}:{subject}"
+
+                            match
+                                writeAudit
+                                    state
+                                    principal.TenantId
+                                    principal.Subject
+                                    "repo.binding.deleted"
+                                    "repo_binding"
+                                    key
+                                    Map.empty
+                            with
+                            | Error err -> serviceUnavailable err
+                            | Ok() -> Results.Ok({| repoKey = repoKey; subject = subject; deleted = deleted |}))
     )
     |> ignore
 

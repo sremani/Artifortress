@@ -78,7 +78,7 @@ following without direct maintainer intervention:
 | EGA-17 | Add vulnerability disclosure and patch SLA policy | P1 | Security/Support | done |
 | EGA-18 | Add diagnostic error catalog and operator playbooks | P1 | Supportability | done |
 | EGA-19 | Add admin CLI for common operator workflows | P1 | UX/Ops | done |
-| EGA-20 | Add tenant onboarding and offboarding workflow | P1 | Tenant Ops | todo |
+| EGA-20 | Add tenant onboarding and offboarding workflow | P1 | Tenant Ops | done |
 | EGA-21 | Add cloud-specific production examples | P1 | Deployment | todo |
 | EGA-22 | Add air-gapped/offline install plan | P1 | Distribution | todo |
 | EGA-23 | Certify backup/restore and upgrade drills against release artifacts | P1 | Reliability | todo |
@@ -522,6 +522,16 @@ Acceptance criteria:
 - Tenant lifecycle can be completed from documented workflows.
 - Offboarding is retention-aware and legal-hold-safe.
 - Audit events clearly identify each tenant lifecycle step.
+
+Status:
+- implemented lifecycle audit marker endpoint:
+  `POST /v1/admin/tenant-lifecycle/events`
+- implemented offboarding readiness endpoint:
+  `GET /v1/admin/tenant-lifecycle/offboarding-readiness`
+- added role-binding delete operations for tenant and repository offboarding
+- exposed lifecycle and delete operations through `tools/Artifortress.AdminCli`
+- documented the supported workflow in
+  `docs/77-tenant-onboarding-and-offboarding-workflow.md`
 
 ### EGA-21: Add cloud-specific production examples
 

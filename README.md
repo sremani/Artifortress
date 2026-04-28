@@ -126,11 +126,15 @@ make mutation-trackb-compile-validate
 - `POST /v1/auth/pats`
 - `POST /v1/auth/pats/revoke`
 - `GET /v1/auth/whoami`
+- `DELETE /v1/admin/tenant-role-bindings/{subject}`
+- `GET /v1/admin/tenant-lifecycle/offboarding-readiness`
+- `POST /v1/admin/tenant-lifecycle/events`
 - `GET /v1/repos`
 - `GET /v1/repos/{repoKey}`
 - `POST /v1/repos`
 - `DELETE /v1/repos/{repoKey}`
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
+- `DELETE /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/bindings`
 - `POST /v1/repos/{repoKey}/uploads`
 - `POST /v1/repos/{repoKey}/packages/versions/drafts`
@@ -225,6 +229,7 @@ make mutation-trackb-compile-validate
 - `docs/74-object-storage-independence-and-minio-exit-plan.md`: MinIO exit plan and object-storage replacement side-project charter.
 - `docs/75-vulnerability-disclosure-and-patch-sla.md`: vulnerability intake, disclosure, and security patch SLA policy.
 - `docs/76-admin-cli-operator-workflows.md`: supported admin CLI commands and operator workflow examples.
+- `docs/77-tenant-onboarding-and-offboarding-workflow.md`: tenant lifecycle onboarding, offboarding, retention, and audit workflow.
 - `docs/reports/enterprise-verification-latest.md`: consolidated report from `make verify-enterprise`.
 - `docs/reports/release-provenance-latest.md`: release asset certification report from `make release-provenance-certify TAG=v<version>`.
 - `docs/reports/github-actions-node24-validation-latest.md`: GitHub Actions Node 24 migration evidence.

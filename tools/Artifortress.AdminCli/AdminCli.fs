@@ -71,12 +71,16 @@ Commands:
   auth pat-policy set --max-ttl-minutes <minutes> --allow-bootstrap-issuance true|false
   tenant roles list
   tenant roles set --subject <subject> --role <role>...
+  tenant roles delete --subject <subject>
   tenant admission get|set --max-logical-storage-bytes <n> --max-concurrent-upload-sessions <n> --max-pending-search-jobs <n>
   tenant governance get|set --min-tombstone-retention-days <n> --dual-control-tombstone true|false --dual-control-quarantine true|false
+  tenant lifecycle mark --step <step> [--status planned|started|completed|blocked] [--subject <subject>] [--repo <repoKey>] [--reason <reason>] [--retention-until-utc <timestamp>]
+  tenant offboarding-readiness
   repo list|get|delete --repo <repoKey>
   repo create --repo <repoKey> --type local|remote|virtual [--upstream-url <url>] [--member-repo <repoKey>]...
   repo bindings list --repo <repoKey>
   repo bindings set --repo <repoKey> --subject <subject> --role <role>...
+  repo bindings delete --repo <repoKey> --subject <subject>
   repo governance get|set --repo <repoKey> [--min-tombstone-retention-days <n>] [--dual-control-tombstone true|false] [--dual-control-quarantine true|false]
   repo approvals list|create|approve --repo <repoKey> ...
   repo protect-version --repo <repoKey> --version-id <guid> --mode protected|legal_hold --reason <reason>
@@ -289,6 +293,11 @@ Commands:
                     let roles = many "--role" |> List.toArray
                     let path = $"/v1/admin/tenant-role-bindings/{Uri.EscapeDataString(subject)}"
                     Single(request options "PUT" path (Some(serialize {| roles = roles |})) (bearer options)))
+            | [ "tenant"; "roles"; "delete" ] ->
+                requireOption "--subject" one
+                |> Result.map (fun subject ->
+                    let path = $"/v1/admin/tenant-role-bindings/{Uri.EscapeDataString(subject)}"
+                    Single(request options "DELETE" path None (bearer options)))
             | [ "tenant"; "admission"; "get" ] ->
                 Ok(Single(request options "GET" "/v1/admin/tenant-admission-policy" None (bearer options)))
             | [ "tenant"; "admission"; "set" ] ->
@@ -323,6 +332,19 @@ Commands:
                                requireDualControlForQuarantineResolution = quarantine |})))
                 |> Result.map (fun body ->
                     Single(request options "PUT" "/v1/admin/governance/policy" (Some(serialize body)) (bearer options)))
+            | [ "tenant"; "lifecycle"; "mark" ] ->
+                requireOption "--step" one
+                |> Result.map (fun step ->
+                    {| step = step
+                       status = one "--status" |> Option.defaultValue "completed"
+                       subject = one "--subject" |> Option.defaultValue ""
+                       repoKey = one "--repo" |> Option.defaultValue ""
+                       reason = one "--reason" |> Option.defaultValue ""
+                       retentionUntilUtc = one "--retention-until-utc" |> Option.defaultValue "" |})
+                |> Result.map (fun body ->
+                    Single(request options "POST" "/v1/admin/tenant-lifecycle/events" (Some(serialize body)) (bearer options)))
+            | [ "tenant"; "offboarding-readiness" ] ->
+                Ok(Single(request options "GET" "/v1/admin/tenant-lifecycle/offboarding-readiness" None (bearer options)))
             | [ "repo"; "list" ] -> Ok(Single(request options "GET" "/v1/repos" None (bearer options)))
             | [ "repo"; "get" ] ->
                 requireOption "--repo" one
@@ -353,6 +375,14 @@ Commands:
                     let path = $"/v1/repos/{Uri.EscapeDataString(repo)}/bindings/{Uri.EscapeDataString(subject)}"
                     let body = serialize {| roles = many "--role" |> List.toArray |}
                     Single(request options "PUT" path (Some body) (bearer options)))
+            | [ "repo"; "bindings"; "delete" ] ->
+                requireOption "--repo" one
+                |> Result.bind (fun repo ->
+                    requireOption "--subject" one
+                    |> Result.map (fun subject -> repo, subject))
+                |> Result.map (fun (repo, subject) ->
+                    let path = $"/v1/repos/{Uri.EscapeDataString(repo)}/bindings/{Uri.EscapeDataString(subject)}"
+                    Single(request options "DELETE" path None (bearer options)))
             | [ "repo"; "governance"; "get" ] ->
                 requireOption "--repo" one
                 |> Result.map (fun repo ->

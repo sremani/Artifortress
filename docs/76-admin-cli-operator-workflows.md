@@ -53,6 +53,14 @@ PAT and tenant administration:
 ```bash
 make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> auth pats list"
 make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> tenant roles set --subject auditor@example.com --role tenant_auditor"
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> tenant roles delete --subject departing-admin@example.com"
+```
+
+Tenant lifecycle:
+
+```bash
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> tenant lifecycle mark --step offboarding.started --status started --reason contract ended"
+make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> tenant offboarding-readiness"
 ```
 
 Compliance, legal hold, and evidence:
@@ -89,3 +97,5 @@ paths:
 - initial PAT issuance uses bootstrap-token auth and redacts returned secrets
 - GC defaults to dry-run unless `--execute` is supplied
 - preflight combines anonymous readiness with authenticated ops summary
+- tenant lifecycle markers and offboarding readiness map to supported endpoints
+- tenant role delete maps to the access-revocation endpoint

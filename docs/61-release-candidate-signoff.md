@@ -46,6 +46,7 @@ Each release candidate must record:
 | Security review | no open P0/P1 security blockers | required |
 | Vulnerability handling | `SECURITY.md` and patch SLA policy reviewed | required |
 | Admin CLI | `docs/76-admin-cli-operator-workflows.md` and smoke coverage reviewed | required |
+| Tenant lifecycle | onboarding/offboarding workflow and lifecycle audit markers reviewed | required |
 | Product envelope | `docs/59-enterprise-product-envelope.md` reviewed | required |
 | Support policy | `docs/60-versioning-support-policy.md` reviewed | required |
 | Documentation | release notes and operator-impact notes complete | required |

@@ -17,6 +17,7 @@ It is intentionally operational. Use it with:
 - `docs/68-slo-sli-alerting.md`
 - `docs/70-production-preflight.md`
 - `docs/76-admin-cli-operator-workflows.md`
+- `docs/77-tenant-onboarding-and-offboarding-workflow.md`
 
 When this handbook and the product envelope disagree, the product envelope wins.
 
@@ -144,6 +145,9 @@ Common endpoints:
 
 - `GET /v1/admin/tenant-role-bindings`
 - `PUT /v1/admin/tenant-role-bindings/{subject}`
+- `DELETE /v1/admin/tenant-role-bindings/{subject}`
+- `POST /v1/admin/tenant-lifecycle/events`
+- `GET /v1/admin/tenant-lifecycle/offboarding-readiness`
 - `GET /v1/admin/tenant-admission-policy`
 - `PUT /v1/admin/tenant-admission-policy`
 - `GET /v1/admin/governance/policy`
@@ -175,6 +179,7 @@ Common endpoints:
 - `DELETE /v1/repos/{repoKey}`
 - `GET /v1/repos/{repoKey}/bindings`
 - `PUT /v1/repos/{repoKey}/bindings/{subject}`
+- `DELETE /v1/repos/{repoKey}/bindings/{subject}`
 - `GET /v1/repos/{repoKey}/governance/policy`
 - `PUT /v1/repos/{repoKey}/governance/policy`
 
@@ -432,8 +437,8 @@ When an administrator, service account, or tenant subject is offboarded:
 6. Preserve required compliance evidence.
 7. Confirm no legal hold or governance approval ownership is left unresolved.
 
-Tenant lifecycle workflow remains a separate P1 board item. Until that ticket is
-closed, use this checklist plus organization-specific retention procedures.
+For the full supported tenant lifecycle sequence, use
+`docs/77-tenant-onboarding-and-offboarding-workflow.md`.
 
 ## Supported References
 
@@ -455,3 +460,4 @@ closed, use this checklist plus organization-specific retention procedures.
 - `docs/68-slo-sli-alerting.md`
 - `docs/70-production-preflight.md`
 - `docs/76-admin-cli-operator-workflows.md`
+- `docs/77-tenant-onboarding-and-offboarding-workflow.md`

@@ -87,3 +87,73 @@ let ``preflight combines readiness and ops summary requests`` () =
         Assert.Equal("GET", opsSummary.Method)
         Assert.Equal("/v1/admin/ops/summary", opsSummary.PathAndQuery)
     | Ok _ -> failwith "Expected a preflight request plan."
+
+[<Fact>]
+let ``tenant lifecycle marker builds explicit audit event request`` () =
+    let plan =
+        buildPlan
+            [| "--url"
+               "https://artifortress.example.com"
+               "--token"
+               "admin-token"
+               "tenant"
+               "lifecycle"
+               "mark"
+               "--step"
+               "offboarding.started"
+               "--status"
+               "started"
+               "--subject"
+               "customer-admin@example.com"
+               "--reason"
+               "contract ended" |]
+
+    match plan with
+    | Error err -> failwith err
+    | Ok(Single request) ->
+        Assert.Equal("POST", request.Method)
+        Assert.Equal("/v1/admin/tenant-lifecycle/events", request.PathAndQuery)
+        Assert.Contains("\"step\":\"offboarding.started\"", request.BodyJson.Value)
+        Assert.Contains("\"status\":\"started\"", request.BodyJson.Value)
+        Assert.Contains("\"subject\":\"customer-admin@example.com\"", request.BodyJson.Value)
+        Assert.Contains("\"reason\":\"contract ended\"", request.BodyJson.Value)
+    | Ok _ -> failwith "Expected a single request plan."
+
+[<Fact>]
+let ``tenant offboarding readiness maps to lifecycle readiness endpoint`` () =
+    let plan =
+        buildPlan
+            [| "--url"
+               "https://artifortress.example.com"
+               "--token"
+               "admin-token"
+               "tenant"
+               "offboarding-readiness" |]
+
+    match plan with
+    | Error err -> failwith err
+    | Ok(Single request) ->
+        Assert.Equal("GET", request.Method)
+        Assert.Equal("/v1/admin/tenant-lifecycle/offboarding-readiness", request.PathAndQuery)
+    | Ok _ -> failwith "Expected a single request plan."
+
+[<Fact>]
+let ``tenant role delete maps to access revocation endpoint`` () =
+    let plan =
+        buildPlan
+            [| "--url"
+               "https://artifortress.example.com"
+               "--token"
+               "admin-token"
+               "tenant"
+               "roles"
+               "delete"
+               "--subject"
+               "departing-admin@example.com" |]
+
+    match plan with
+    | Error err -> failwith err
+    | Ok(Single request) ->
+        Assert.Equal("DELETE", request.Method)
+        Assert.Equal("/v1/admin/tenant-role-bindings/departing-admin%40example.com", request.PathAndQuery)
+    | Ok _ -> failwith "Expected a single request plan."
