@@ -121,9 +121,9 @@ Backup and restore procedures are scripted and drilled. Current evidence is in
 ### Release Provenance
 
 The release provenance workflow produces release bundles, signed OCI images, a
-signed Helm chart package, checksums, SBOMs, and cosign verification material. A
-real signed-tag provenance run remains a P0 GA ticket before procurement review
-should be considered complete.
+signed Helm chart package, checksums, SBOMs, and cosign verification material.
+The latest signed-tag evidence is in
+`docs/reports/release-provenance-latest.md`.
 
 ### Vulnerability Handling
 
@@ -186,7 +186,6 @@ Open procurement-relevant gaps:
 - `EGA-10`: support bundle collection workflow
 - `EGA-11`: SLOs, SLIs, and alert routing guidance
 - `EGA-12`: HA deployment validation in Kubernetes reference environment
-- `EGA-13`: release provenance on a real signed tag
 - `EGA-14`: GitHub Actions Node 20 deprecation cleanup
 - `EGA-17`: vulnerability disclosure and patch SLA policy
 - `EGA-27`: support intake, severity, and escalation model

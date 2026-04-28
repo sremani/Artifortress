@@ -208,14 +208,11 @@ Evidence:
 - `.github/workflows/release-provenance.yml`
 - `scripts/verify-release-artifacts.sh`
 - `docs/44-release-provenance-and-verification.md`
+- `docs/reports/release-provenance-latest.md`
 
 Known residual release risks:
 
-- release provenance workflow still needs execution on a real signed tag before
-  procurement review
 - GitHub Actions Node 20 deprecation warnings remain tracked as a P0 GA item
-- signed OCI image and signed Helm chart distribution require a real signed-tag
-  release provenance run before GA promotion
 
 ## Availability And Resilience
 
@@ -253,7 +250,7 @@ Primary enterprise threat classes and current closure:
 | token sprawl | PAT policy, inventory, revoke-by-subject, revoke-all | closed |
 | secret leakage | centralized redaction coverage for audit and worker errors | closed |
 | replay or restart corruption | idempotency and lease reclaim drills | closed |
-| unverifiable releases | provenance workflow, SBOMs, cosign verification helper | partially closed pending real signed tag |
+| unverifiable releases | signed-tag provenance workflow, SBOMs, cosign verification helper | closed |
 
 Open P0/P1 security blockers in the current security closure document: `0`.
 

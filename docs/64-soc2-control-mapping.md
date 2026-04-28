@@ -90,7 +90,7 @@ privacy-management system.
 | Release gates | RC checklist and sign-off board | implemented | `docs/61-release-candidate-signoff.md` |
 | Migration policy | migration classes and rollback assumptions | implemented | `docs/41-migration-compatibility-policy.md` |
 | Release evidence | consolidated enterprise verification report | implemented | `docs/reports/enterprise-verification-latest.md` |
-| Release provenance | signed bundles, images, chart, and SBOM workflow | partial | `docs/44-release-provenance-and-verification.md`, `EGA-13` |
+| Release provenance | signed bundles, images, chart, and SBOM workflow | implemented | `docs/44-release-provenance-and-verification.md`, `docs/reports/release-provenance-latest.md` |
 | CI deprecation risk | Node 20 cleanup | gap | `EGA-14` |
 
 ## Access Control
@@ -126,8 +126,8 @@ privacy-management system.
 
 | Control Theme | Artifortress Control | Status | Evidence |
 |---|---|---|---|
-| SBOM | CycloneDX SBOM workflow for bundles, images, and chart | partial | `docs/44-release-provenance-and-verification.md`, `EGA-13` |
-| Artifact signing | cosign signatures for release bundles, images, chart, and SBOMs | partial | `docs/44-release-provenance-and-verification.md`, `EGA-13` |
+| SBOM | CycloneDX SBOM workflow for bundles, images, and chart | implemented | `docs/44-release-provenance-and-verification.md`, `docs/reports/release-provenance-latest.md` |
+| Artifact signing | cosign signatures for release bundles, images, chart, and SBOMs | implemented | `docs/44-release-provenance-and-verification.md`, `docs/reports/release-provenance-latest.md` |
 | Dependency ownership | NuGet and platform dependency review | customer-owned | `docs/63-procurement-evidence-pack.md` |
 | Container signing | signed OCI image distribution | implemented | `.github/workflows/release-provenance.yml` |
 | Helm chart signing | signed chart distribution | implemented | `.github/workflows/release-provenance.yml` |
@@ -141,7 +141,6 @@ privacy-management system.
 | support bundle collection workflow | `EGA-10` |
 | diagnostic error catalog and operator playbooks | `EGA-18` |
 | support intake, severity, and escalation model | `EGA-27` |
-| real signed-tag release provenance evidence | `EGA-13` |
 | GitHub Actions Node 20 deprecation cleanup | `EGA-14` |
 | Helm install/upgrade/uninstall certification | `EGA-08` |
 | HA deployment validation in Kubernetes reference environment | `EGA-12` |

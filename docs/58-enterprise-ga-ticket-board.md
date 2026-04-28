@@ -68,7 +68,7 @@ following without direct maintainer intervention:
 | EGA-10 | Add support bundle collection workflow | P0 | Supportability | done |
 | EGA-11 | Define SLOs, SLIs, and alert routing guidance | P0 | Operations | done |
 | EGA-12 | Validate HA deployment in Kubernetes reference environment | P0 | Reliability | done |
-| EGA-13 | Run release provenance on a real signed tag | P0 | Supply Chain | in_progress |
+| EGA-13 | Run release provenance on a real signed tag | P0 | Supply Chain | done |
 | EGA-14 | Resolve GitHub Actions Node 20 deprecation risk | P0 | CI/Supply Chain | todo |
 | EGA-31 | Persist consolidated enterprise verification evidence | P0 | Release Evidence | done |
 | EGA-32 | Define artifortress.com production hosting hardware plan | P0 | Launch Infrastructure | in_progress |
@@ -313,11 +313,14 @@ Acceptance criteria:
 - Any manual gaps in the release process become tickets before GA.
 
 Status:
-- in_progress with certification helper in
+- done for signed tag `v0.1.0-rc.1`
+- release workflow run: `25078042079`
+- certification helper:
   `scripts/release-provenance-certify.sh`
 - repeatable command: `make release-provenance-certify TAG=v<version>`
-- actual signed-tag run is blocked until the current GA work is committed and
-  git tag signing is configured
+- latest evidence: `docs/reports/release-provenance-latest.md`
+- manual gap found: GitHub Actions emitted Node 20 deprecation warnings,
+  tracked by `EGA-14`
 
 ### EGA-14: Resolve GitHub Actions Node 20 deprecation risk
 
