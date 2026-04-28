@@ -200,6 +200,28 @@ make mutation-trackb-compile-validate
 - `docs/36-phase7-identity-integration-tickets.md`: Phase 7 identity federation ticket board and implementation notes.
 - `docs/37-phase7-runbook.md`: executable Phase 7 identity runbook (OIDC + SAML) and troubleshooting guide.
 - `docs/38-phase7-rollout-gates.md`: Phase 7 rollout gates and fallback-control checklist.
+- `docs/39-enterprise-readiness-roadmap.md`: enterprise hardening roadmap and completed readiness phases.
+- `docs/58-enterprise-ga-ticket-board.md`: enterprise GA productization ticket board and launch gates.
+- `docs/59-enterprise-product-envelope.md`: supported enterprise product envelope and explicit non-claims.
+- `docs/60-versioning-support-policy.md`: versioning, compatibility, deprecation, and support-window policy.
+- `docs/61-release-candidate-signoff.md`: release candidate checklist and enterprise GA sign-off board.
+- `docs/62-enterprise-security-whitepaper.md`: enterprise security model, controls, residual risks, and responsibilities.
+- `docs/63-procurement-evidence-pack.md`: procurement/security-review evidence index and questionnaire answers.
+- `docs/64-soc2-control-mapping.md`: SOC 2-style control mapping with evidence and gap register.
+- `docs/65-support-bundle-workflow.md`: redacted support bundle collection workflow.
+- `docs/66-diagnostic-error-catalog.md`: diagnostic states, common errors, and operator playbooks.
+- `docs/67-support-intake-and-escalation.md`: support severity, intake, escalation, and closure model.
+- `docs/68-slo-sli-alerting.md`: SLO, SLI, alert routing, and release gate guidance.
+- `docs/69-ha-kubernetes-validation-plan.md`: Kubernetes HA validation plan and evidence template.
+- `docs/70-production-preflight.md`: production preflight workflow and cutover gate.
+- `docs/71-administrator-handbook.md`: day-0, day-1, and day-2 administrator workflows.
+- `docs/72-installation-and-production-cutover-guide.md`: clean-cluster install and production cutover workflow.
+- `docs/73-artifortress-com-production-hosting-plan.md`: initial `artifortress.com` hosting hardware and infrastructure plan.
+- `docs/74-object-storage-independence-and-minio-exit-plan.md`: MinIO exit plan and object-storage replacement side-project charter.
+- `docs/reports/enterprise-verification-latest.md`: consolidated report from `make verify-enterprise`.
+- `docs/reports/release-provenance-latest.md`: release asset certification report from `make release-provenance-certify TAG=v<version>`.
+- `docs/reports/ha-kubernetes-validation-latest.md`: latest kind-based Kubernetes HA validation report.
+- `docs/reports/helm-certification-latest.md`: latest Helm install/upgrade/uninstall certification report.
 - `docs/reports/phase2-load-baseline-latest.md`: generated raw baseline report from `make phase2-load`.
 - `docs/reports/mutation-spike-fsharp-latest.md`: latest F# mutation feasibility report artifact.
 - `docs/reports/mutation-track-latest.md`: latest wrapper default mutation run report artifact.

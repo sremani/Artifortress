@@ -1,0 +1,21 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+COPY Artifortress.sln ./
+COPY Directory.Build.props ./
+COPY src/Artifortress.Domain/Artifortress.Domain.fsproj src/Artifortress.Domain/
+COPY src/Artifortress.Worker/Artifortress.Worker.fsproj src/Artifortress.Worker/
+
+RUN dotnet restore src/Artifortress.Worker/Artifortress.Worker.fsproj -p:NuGetAudit=false
+
+COPY src/Artifortress.Domain src/Artifortress.Domain
+COPY src/Artifortress.Worker src/Artifortress.Worker
+
+RUN dotnet publish src/Artifortress.Worker/Artifortress.Worker.fsproj \
+    --configuration Release \
+    --output /app/publish
+
+FROM mcr.microsoft.com/dotnet/runtime:10.0
+WORKDIR /app
+COPY --from=build /app/publish ./
+ENTRYPOINT ["dotnet", "Artifortress.Worker.dll"]

@@ -5,10 +5,19 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer-compatible release version for manual artifact generation"
+        required: false
+        default: "0.0.0-dev"
 
 permissions:
   contents: write
   id-token: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
   release:
@@ -17,6 +26,44 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          owner_lc="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          short_sha="${GITHUB_SHA::12}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            version="${{ github.event.inputs.version }}"
+            release_tag="v${version}"
+          fi
+
+          if [[ "${version}" == *+* ]]; then
+            echo "Release version '${version}' includes '+', which cannot be used in Docker tags."
+            exit 1
+          fi
+
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release version '${version}' must be SemVer-like, for example 1.2.3 or 1.2.3-rc.1."
+            exit 1
+          fi
+
+          api_image="${REGISTRY}/${owner_lc}/artifortress-api"
+          worker_image="${REGISTRY}/${owner_lc}/artifortress-worker"
+
+          {
+            echo "version=${version}"
+            echo "release_tag=${release_tag}"
+            echo "short_sha=${short_sha}"
+            echo "api_image=${api_image}"
+            echo "worker_image=${worker_image}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -40,20 +87,101 @@ jobs:
           mkdir -p dist
           tar -C out/api -czf dist/artifortress-api-linux-x64.tar.gz .
           tar -C out/worker -czf dist/artifortress-worker-linux-x64.tar.gz .
-          sha256sum dist/artifortress-api-linux-x64.tar.gz dist/artifortress-worker-linux-x64.tar.gz > dist/SHA256SUMS
+          (
+            cd dist
+            sha256sum artifortress-api-linux-x64.tar.gz artifortress-worker-linux-x64.tar.gz > SHA256SUMS
+          )
 
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0
 
-      - name: Generate SBOMs
+      - name: Generate bundle SBOMs
         run: |
           syft packages dir:out/api -o cyclonedx-json > dist/artifortress-api.sbom.cdx.json
           syft packages dir:out/worker -o cyclonedx-json > dist/artifortress-worker.sbom.cdx.json
 
+      - name: Login to GHCR
+        run: echo "${{ github.token }}" | docker login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push OCI images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx create --use --name artifortress-release-builder || docker buildx use artifortress-release-builder
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --file deploy/kind/Dockerfile.api \
+            --tag "${{ steps.meta.outputs.api_image }}:${{ steps.meta.outputs.version }}" \
+            --tag "${{ steps.meta.outputs.api_image }}:sha-${{ steps.meta.outputs.short_sha }}" \
+            --metadata-file dist/artifortress-api-image.metadata.json \
+            --push \
+            .
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --file deploy/kind/Dockerfile.worker \
+            --tag "${{ steps.meta.outputs.worker_image }}:${{ steps.meta.outputs.version }}" \
+            --tag "${{ steps.meta.outputs.worker_image }}:sha-${{ steps.meta.outputs.short_sha }}" \
+            --metadata-file dist/artifortress-worker-image.metadata.json \
+            --push \
+            .
+
+          api_digest="$(jq -r '."containerimage.digest"' dist/artifortress-api-image.metadata.json)"
+          worker_digest="$(jq -r '."containerimage.digest"' dist/artifortress-worker-image.metadata.json)"
+
+          if [[ -z "${api_digest}" || "${api_digest}" == "null" ]]; then
+            echo "API image digest was not produced by docker buildx."
+            exit 1
+          fi
+
+          if [[ -z "${worker_digest}" || "${worker_digest}" == "null" ]]; then
+            echo "Worker image digest was not produced by docker buildx."
+            exit 1
+          fi
+
+          {
+            echo "api image: ${{ steps.meta.outputs.api_image }}@${api_digest}"
+            echo "api version tag: ${{ steps.meta.outputs.api_image }}:${{ steps.meta.outputs.version }}"
+            echo "api commit tag: ${{ steps.meta.outputs.api_image }}:sha-${{ steps.meta.outputs.short_sha }}"
+            echo "worker image: ${{ steps.meta.outputs.worker_image }}@${worker_digest}"
+            echo "worker version tag: ${{ steps.meta.outputs.worker_image }}:${{ steps.meta.outputs.version }}"
+            echo "worker commit tag: ${{ steps.meta.outputs.worker_image }}:sha-${{ steps.meta.outputs.short_sha }}"
+          } > dist/OCI-IMAGES.txt
+
+          {
+            echo "api_digest=${api_digest}"
+            echo "worker_digest=${worker_digest}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Generate OCI image SBOMs
+        run: |
+          syft packages "${{ steps.meta.outputs.api_image }}@${api_digest}" -o cyclonedx-json > dist/artifortress-api-image.sbom.cdx.json
+          syft packages "${{ steps.meta.outputs.worker_image }}@${worker_digest}" -o cyclonedx-json > dist/artifortress-worker-image.sbom.cdx.json
+
+      - name: Package Helm chart
+        run: |
+          helm package deploy/helm/artifortress \
+            --version "${{ steps.meta.outputs.version }}" \
+            --app-version "${{ steps.meta.outputs.version }}" \
+            --destination dist
+
+          chart_package="dist/artifortress-${{ steps.meta.outputs.version }}.tgz"
+          syft packages "${chart_package}" -o cyclonedx-json > dist/artifortress-helm-chart.sbom.cdx.json
+          (
+            cd dist
+            sha256sum \
+              "artifortress-${{ steps.meta.outputs.version }}.tgz" \
+              artifortress-api-image.sbom.cdx.json \
+              artifortress-worker-image.sbom.cdx.json \
+              artifortress-helm-chart.sbom.cdx.json >> SHA256SUMS
+          )
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign release bundles
+      - name: Sign release artifacts
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
@@ -61,10 +189,38 @@ jobs:
           cosign sign-blob --yes dist/artifortress-worker-linux-x64.tar.gz --output-signature dist/artifortress-worker-linux-x64.tar.gz.sig --output-certificate dist/artifortress-worker-linux-x64.tar.gz.crt
           cosign sign-blob --yes dist/artifortress-api.sbom.cdx.json --output-signature dist/artifortress-api.sbom.cdx.json.sig --output-certificate dist/artifortress-api.sbom.cdx.json.crt
           cosign sign-blob --yes dist/artifortress-worker.sbom.cdx.json --output-signature dist/artifortress-worker.sbom.cdx.json.sig --output-certificate dist/artifortress-worker.sbom.cdx.json.crt
+          cosign sign --yes "${{ steps.meta.outputs.api_image }}@${api_digest}"
+          cosign sign --yes "${{ steps.meta.outputs.worker_image }}@${worker_digest}"
+          cosign sign-blob --yes dist/artifortress-api-image.sbom.cdx.json --output-signature dist/artifortress-api-image.sbom.cdx.json.sig --output-certificate dist/artifortress-api-image.sbom.cdx.json.crt
+          cosign sign-blob --yes dist/artifortress-worker-image.sbom.cdx.json --output-signature dist/artifortress-worker-image.sbom.cdx.json.sig --output-certificate dist/artifortress-worker-image.sbom.cdx.json.crt
+          cosign sign-blob --yes "dist/artifortress-${{ steps.meta.outputs.version }}.tgz" --output-signature "dist/artifortress-${{ steps.meta.outputs.version }}.tgz.sig" --output-certificate "dist/artifortress-${{ steps.meta.outputs.version }}.tgz.crt"
+          cosign sign-blob --yes dist/artifortress-helm-chart.sbom.cdx.json --output-signature dist/artifortress-helm-chart.sbom.cdx.json.sig --output-certificate dist/artifortress-helm-chart.sbom.cdx.json.crt
+          (
+            cd dist
+            sha256sum \
+              artifortress-api-linux-x64.tar.gz.sig \
+              artifortress-api-linux-x64.tar.gz.crt \
+              artifortress-worker-linux-x64.tar.gz.sig \
+              artifortress-worker-linux-x64.tar.gz.crt \
+              artifortress-api.sbom.cdx.json.sig \
+              artifortress-api.sbom.cdx.json.crt \
+              artifortress-worker.sbom.cdx.json.sig \
+              artifortress-worker.sbom.cdx.json.crt \
+              artifortress-api-image.sbom.cdx.json.sig \
+              artifortress-api-image.sbom.cdx.json.crt \
+              artifortress-worker-image.sbom.cdx.json.sig \
+              artifortress-worker-image.sbom.cdx.json.crt \
+              "artifortress-${{ steps.meta.outputs.version }}.tgz.sig" \
+              "artifortress-${{ steps.meta.outputs.version }}.tgz.crt" \
+              artifortress-helm-chart.sbom.cdx.json.sig \
+              artifortress-helm-chart.sbom.cdx.json.crt \
+              OCI-IMAGES.txt >> SHA256SUMS
+          )
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.release_tag }}
           generate_release_notes: true
           files: |
             dist/artifortress-api-linux-x64.tar.gz
@@ -79,4 +235,17 @@ jobs:
             dist/artifortress-worker.sbom.cdx.json
             dist/artifortress-worker.sbom.cdx.json.sig
             dist/artifortress-worker.sbom.cdx.json.crt
+            dist/artifortress-api-image.sbom.cdx.json
+            dist/artifortress-api-image.sbom.cdx.json.sig
+            dist/artifortress-api-image.sbom.cdx.json.crt
+            dist/artifortress-worker-image.sbom.cdx.json
+            dist/artifortress-worker-image.sbom.cdx.json.sig
+            dist/artifortress-worker-image.sbom.cdx.json.crt
+            dist/artifortress-helm-chart.sbom.cdx.json
+            dist/artifortress-helm-chart.sbom.cdx.json.sig
+            dist/artifortress-helm-chart.sbom.cdx.json.crt
+            dist/artifortress-${{ steps.meta.outputs.version }}.tgz
+            dist/artifortress-${{ steps.meta.outputs.version }}.tgz.sig
+            dist/artifortress-${{ steps.meta.outputs.version }}.tgz.crt
+            dist/OCI-IMAGES.txt
             dist/SHA256SUMS

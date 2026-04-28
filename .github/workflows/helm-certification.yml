@@ -1,0 +1,89 @@
+name: helm-certification
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_chart:
+        description: "Optional previous supported chart package/path for upgrade certification"
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - ".github/workflows/helm-certification.yml"
+      - "deploy/helm/**"
+      - "deploy/kind/**"
+      - "db/migrations/**"
+      - "scripts/helm-certify.sh"
+      - "scripts/production-preflight.sh"
+      - "src/**"
+      - "Artifortress.sln"
+      - "Directory.Build.props"
+      - "global.json"
+  push:
+    branches:
+      - master
+      - main
+      - "codex/**"
+    paths:
+      - ".github/workflows/helm-certification.yml"
+      - "deploy/helm/**"
+      - "deploy/kind/**"
+      - "db/migrations/**"
+      - "scripts/helm-certify.sh"
+      - "scripts/production-preflight.sh"
+      - "src/**"
+      - "Artifortress.sln"
+      - "Directory.Build.props"
+      - "global.json"
+
+permissions:
+  contents: read
+
+jobs:
+  helm-certification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          sudo mv /tmp/kubectl /usr/local/bin/kubectl
+
+      - name: Install Helm
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Run Helm certification
+        env:
+          HELM_CERT_BASE_CHART: ${{ github.event.inputs.base_chart }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${HELM_CERT_BASE_CHART:-}" ]; then
+            unset HELM_CERT_BASE_CHART
+          fi
+
+          make helm-certify
+
+      - name: Publish Helm certification report
+        if: always()
+        run: |
+          if [ -f docs/reports/helm-certification-latest.md ]; then
+            cat docs/reports/helm-certification-latest.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Helm certification report was not generated." >> "${GITHUB_STEP_SUMMARY}"
+          fi
