@@ -186,7 +186,6 @@ Open procurement-relevant gaps:
 - `EGA-10`: support bundle collection workflow
 - `EGA-11`: SLOs, SLIs, and alert routing guidance
 - `EGA-12`: HA deployment validation in Kubernetes reference environment
-- `EGA-14`: GitHub Actions Node 20 deprecation cleanup
 - `EGA-17`: vulnerability disclosure and patch SLA policy
 - `EGA-27`: support intake, severity, and escalation model
 

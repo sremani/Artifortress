@@ -212,7 +212,8 @@ Evidence:
 
 Known residual release risks:
 
-- GitHub Actions Node 20 deprecation warnings remain tracked as a P0 GA item
+- no residual release-provenance runtime deprecation risk is known after
+  `EGA-14`
 
 ## Availability And Resilience
 

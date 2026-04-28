@@ -116,12 +116,12 @@ Do not promote a release candidate unless all are true:
 
 ## Known Follow-up
 
-- upgrade workflow actions to Node 24-compatible upstream releases before GitHub removes Node 20 from hosted runners
+- none for release provenance at this time
 
 ## Latest Evidence
 
-- signed tag: `v0.1.0-rc.1`
-- release workflow run: `25078042079`
+- signed tag: `v0.1.0-rc.2`
+- release workflow run: `25079528537`
 - GitHub Release type: prerelease
 - evidence report: `docs/reports/release-provenance-latest.md`
 - status: `PASS`

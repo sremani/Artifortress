@@ -1,10 +1,10 @@
 # GitHub Actions Node 24 Validation Report
 
-Generated at: 2026-04-28T21:30:00Z
+Generated at: 2026-04-28T21:53:28Z
 
 ## Summary
 
-- overall status: pending remote workflow validation
+- overall status: PASS
 - ticket: `EGA-14`
 - purpose: remove GitHub Actions Node 20 runtime deprecation risk
 
@@ -42,11 +42,20 @@ Generated at: 2026-04-28T21:30:00Z
 
 ## Remote Validation
 
-Remote validation should include:
+| Workflow | Run | Trigger | Status | Notes |
+|---|---:|---|---|---|
+| `ci.yml` | `25079146581` | push to `master` | PASS | build, test, format, and integration tests passed |
+| `helm-certification.yml` | `25079049857` | push to `master` | PASS | Helm certification passed on upgraded checkout action |
+| `mutation-track.yml` | `25079314883` | `workflow_dispatch` | PASS | workflow passed; Track B remains continue-on-error, native lane passed |
+| `release-provenance.yml` | `25079528537` | signed tag `v0.1.0-rc.2` | PASS | release workflow passed after action upgrades |
 
-- `ci.yml` on `master`
-- `mutation-track.yml` via `workflow_dispatch`
-- `release-provenance.yml` on the next signed release-candidate tag
+## Release Validation
+
+- signed validation tag: `v0.1.0-rc.2`
+- release: `https://github.com/sremani/Artifortress/releases/tag/v0.1.0-rc.2`
+- release provenance evidence: `docs/reports/release-provenance-latest.md`
+- release asset certification: PASS
 
 The prior real release workflow run `25078042079` succeeded but emitted Node 20
-warnings before these action upgrades.
+warnings before these action upgrades. The validation release run `25079528537`
+completed after the upgrades without a Node 20 deprecation annotation.

@@ -69,7 +69,7 @@ following without direct maintainer intervention:
 | EGA-11 | Define SLOs, SLIs, and alert routing guidance | P0 | Operations | done |
 | EGA-12 | Validate HA deployment in Kubernetes reference environment | P0 | Reliability | done |
 | EGA-13 | Run release provenance on a real signed tag | P0 | Supply Chain | done |
-| EGA-14 | Resolve GitHub Actions Node 20 deprecation risk | P0 | CI/Supply Chain | in_progress |
+| EGA-14 | Resolve GitHub Actions Node 20 deprecation risk | P0 | CI/Supply Chain | done |
 | EGA-31 | Persist consolidated enterprise verification evidence | P0 | Release Evidence | done |
 | EGA-32 | Define artifortress.com production hosting hardware plan | P0 | Launch Infrastructure | in_progress |
 | EGA-33 | Remove MinIO as strategic object-storage dependency | P0 | Storage/Launch Risk | in_progress |
@@ -313,14 +313,13 @@ Acceptance criteria:
 - Any manual gaps in the release process become tickets before GA.
 
 Status:
-- done for signed tag `v0.1.0-rc.1`
-- release workflow run: `25078042079`
+- done for signed tag `v0.1.0-rc.2`
+- release workflow run: `25079528537`
 - certification helper:
   `scripts/release-provenance-certify.sh`
 - repeatable command: `make release-provenance-certify TAG=v<version>`
 - latest evidence: `docs/reports/release-provenance-latest.md`
-- manual gap found: GitHub Actions emitted Node 20 deprecation warnings,
-  tracked by `EGA-14`
+- prior Node 20 warning from `v0.1.0-rc.1` closed by `EGA-14`
 
 ### EGA-14: Resolve GitHub Actions Node 20 deprecation risk
 
@@ -334,11 +333,17 @@ Acceptance criteria:
 - Release provenance workflow is included in validation.
 
 Status:
-- in_progress with workflow action upgrades applied
+- done
 - evidence report: `docs/reports/github-actions-node24-validation-latest.md`
 - upgraded `actions/checkout`, `actions/setup-dotnet`, `actions/cache`,
   `actions/upload-artifact`, and `softprops/action-gh-release` to current
   Node 24-compatible major versions
+- validation runs:
+  - CI: `25079146581`
+  - Helm certification: `25079049857`
+  - mutation: `25079314883`
+  - release provenance: `25079528537`
+- validation release: signed tag `v0.1.0-rc.2`
 
 ### EGA-31: Persist consolidated enterprise verification evidence
 
