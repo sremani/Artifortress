@@ -4,13 +4,14 @@ Last updated: 2026-04-06
 
 ## Purpose
 
-Define deterministic upgrade and rollback procedures for Artifortress GA operations.
+Define deterministic upgrade and rollback procedures for Kublai GA operations.
 
 ## Preconditions
 
 - deployment window approved
 - latest backup snapshot available
 - CI green on target commit
+- release provenance evidence exists for the target tag
 - rollback owner and comms channel assigned
 
 ## Upgrade Procedure
@@ -50,10 +51,19 @@ curl -sS http://127.0.0.1:8086/health/ready
 make upgrade-compatibility-drill
 ```
 
-8. Declare upgrade successful only when:
+9. For release certification, validate artifact metadata in the generated drill
+   reports:
+
+```bash
+make release-artifact-drill-validate
+```
+
+10. Declare upgrade successful only when:
 - readiness stable
 - error budget impact acceptable
 - no unexpected backlog growth
+- drill reports reference the same release tag and artifact digests as the
+  release provenance report
 
 ## Rollback Triggers
 
@@ -70,7 +80,7 @@ Rollback immediately if any of the following occurs:
 3. If schema/data rollback is required, restore from latest backup:
 
 ```bash
-RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore
+RESTORE_PATH=/tmp/kublai-backup.sql make db-restore
 ```
 
 4. Re-run migrations compatible with rollback baseline (if needed).
@@ -92,3 +102,4 @@ RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore
 
 - `docs/41-migration-compatibility-policy.md`
 - `docs/48-upgrade-compatibility-matrix.md`
+- `docs/79-release-artifact-drill-certification.md`

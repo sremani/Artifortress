@@ -4,18 +4,18 @@ Last updated: 2026-04-01
 
 ## Purpose
 
-Define the supported high-availability topology for Artifortress and make the failure-domain assumptions explicit enough for enterprise deployment review.
+Define the supported high-availability topology for Kublai and make the failure-domain assumptions explicit enough for enterprise deployment review.
 
 ## Supported Production Shape
 
 ### Control Plane
 
-- `artifortress-api`
+- `kublai-api`
   - minimum `3` replicas
   - spread across at least `2` availability zones
   - fronted by a regional load balancer
   - readiness-gated before receiving traffic
-- `artifortress-worker`
+- `kublai-worker`
   - minimum `2` replicas
   - spread across at least `2` availability zones
   - safe to scale horizontally because outbox/job claims use `FOR UPDATE SKIP LOCKED`
@@ -131,6 +131,6 @@ Do not declare a production topology healthy until all are true:
 ## Evidence Artifacts
 
 - `deploy/kubernetes/production/*`
-- `deploy/helm/artifortress/*`
+- `deploy/helm/kublai/*`
 - `docs/41-migration-compatibility-policy.md`
 - `docs/42-operations-dashboard-and-drill-bundle.md`

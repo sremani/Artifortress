@@ -4,7 +4,7 @@ Last updated: 2026-02-13
 
 ## 1. Goal
 
-Ship Artifortress to staging and production with:
+Ship Kublai to staging and production with:
 - deterministic rollout and rollback paths,
 - dependency-backed health checks,
 - repeatable migration + recovery procedures,
@@ -13,8 +13,8 @@ Ship Artifortress to staging and production with:
 ## 2. Scope
 
 In scope:
-- API deployment (`src/Artifortress.Api`).
-- Worker deployment (`src/Artifortress.Worker`).
+- API deployment (`src/Kublai.Api`).
+- Worker deployment (`src/Kublai.Worker`).
 - PostgreSQL and object storage dependency readiness.
 - migration, backup, restore, and DR drill workflows.
 - environment configuration and operational runbooks.

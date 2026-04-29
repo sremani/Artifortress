@@ -1,6 +1,6 @@
 # Phase 2 Throughput Baseline Report
 
-Generated at: 2026-04-28T03:19:17Z
+Generated at: 2026-04-29T02:25:22Z
 
 ## Workload
 
@@ -8,7 +8,7 @@ Generated at: 2026-04-28T03:19:17Z
 - Upload iterations: 12
 - Download iterations: 36
 - Payload size per object: 262144 bytes
-- Repository: p2-load-1777346355-16668
+- Repository: p2-load-1777429521-2572
 
 ## Environment
 
@@ -27,14 +27,14 @@ Generated at: 2026-04-28T03:19:17Z
 | Metric | Value |
 |---|---|
 | Upload total bytes | 3145728 |
-| Upload elapsed (ms) | 699 |
-| Upload throughput (MiB/s) | 4.29 |
-| Upload requests/sec | 17.17 |
+| Upload elapsed (ms) | 580 |
+| Upload throughput (MiB/s) | 5.17 |
+| Upload requests/sec | 20.69 |
 | Upload target result | PASS |
 | Download total bytes | 9437184 |
-| Download elapsed (ms) | 348 |
-| Download throughput (MiB/s) | 25.86 |
-| Download requests/sec | 103.45 |
+| Download elapsed (ms) | 287 |
+| Download throughput (MiB/s) | 31.36 |
+| Download requests/sec | 125.44 |
 | Download target result | PASS |
 
 ## Reproduce

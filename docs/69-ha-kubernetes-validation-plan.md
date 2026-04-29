@@ -15,17 +15,17 @@ Kubernetes environment and the resulting evidence report is committed under
 Minimum cluster shape:
 
 - Kubernetes cluster with at least `2` schedulable nodes
-- namespace dedicated to Artifortress validation
+- namespace dedicated to Kublai validation
 - managed or cluster-local PostgreSQL reachable by API and worker
 - S3-compatible object storage reachable by API
 - ingress or load balancer for API traffic
 - Helm available for install/upgrade validation when the release claims Helm
   production support
 
-Minimum Artifortress shape:
+Minimum Kublai shape:
 
-- `artifortress-api`: `3` replicas
-- `artifortress-worker`: `2` replicas
+- `kublai-api`: `3` replicas
+- `kublai-worker`: `2` replicas
 - readiness probes enabled
 - production-like secrets injected from Kubernetes secrets or equivalent
 - dashboard and alert thresholds available to operators
@@ -35,18 +35,18 @@ Minimum Artifortress shape:
 Prepare:
 
 ```bash
-kubectl create namespace artifortress-ha-validation
-helm upgrade --install artifortress deploy/helm/artifortress \
-  --namespace artifortress-ha-validation \
+kubectl create namespace kublai-ha-validation
+helm upgrade --install kublai deploy/helm/kublai \
+  --namespace kublai-ha-validation \
   --values <environment-values.yaml>
 ```
 
 Validate rollout:
 
 ```bash
-kubectl -n artifortress-ha-validation rollout status deployment/artifortress-api
-kubectl -n artifortress-ha-validation rollout status deployment/artifortress-worker
-kubectl -n artifortress-ha-validation get pods -o wide
+kubectl -n kublai-ha-validation rollout status deployment/kublai-api
+kubectl -n kublai-ha-validation rollout status deployment/kublai-worker
+kubectl -n kublai-ha-validation get pods -o wide
 ```
 
 Run production preflight:
@@ -54,8 +54,8 @@ Run production preflight:
 ```bash
 API_URL=https://<api-host> \
 ADMIN_TOKEN=<admin-token> \
-KUBE_NAMESPACE=artifortress-ha-validation \
-HELM_RELEASE=artifortress \
+KUBE_NAMESPACE=kublai-ha-validation \
+HELM_RELEASE=kublai \
 scripts/production-preflight.sh
 ```
 
@@ -75,8 +75,8 @@ Acceptance:
 Procedure:
 
 ```bash
-kubectl -n artifortress-ha-validation rollout restart deployment/artifortress-api
-kubectl -n artifortress-ha-validation rollout restart deployment/artifortress-worker
+kubectl -n kublai-ha-validation rollout restart deployment/kublai-api
+kubectl -n kublai-ha-validation rollout restart deployment/kublai-worker
 ```
 
 Acceptance:
@@ -90,7 +90,7 @@ Acceptance:
 Procedure:
 
 ```bash
-kubectl -n artifortress-ha-validation scale deployment/artifortress-worker --replicas=0
+kubectl -n kublai-ha-validation scale deployment/kublai-worker --replicas=0
 ```
 
 Acceptance:
@@ -102,7 +102,7 @@ Acceptance:
 Restore:
 
 ```bash
-kubectl -n artifortress-ha-validation scale deployment/artifortress-worker --replicas=2
+kubectl -n kublai-ha-validation scale deployment/kublai-worker --replicas=2
 ```
 
 ### API Replica Loss
@@ -110,7 +110,7 @@ kubectl -n artifortress-ha-validation scale deployment/artifortress-worker --rep
 Procedure:
 
 ```bash
-kubectl -n artifortress-ha-validation scale deployment/artifortress-api --replicas=1
+kubectl -n kublai-ha-validation scale deployment/kublai-api --replicas=1
 ```
 
 Acceptance:
@@ -121,7 +121,7 @@ Acceptance:
 Restore:
 
 ```bash
-kubectl -n artifortress-ha-validation scale deployment/artifortress-api --replicas=3
+kubectl -n kublai-ha-validation scale deployment/kublai-api --replicas=3
 ```
 
 ### Dependency Outage
@@ -147,7 +147,7 @@ Required sections:
 
 - cluster name/context
 - date/time
-- Artifortress commit and image/chart versions
+- Kublai commit and image/chart versions
 - Kubernetes version
 - namespace
 - node count and pod placement
@@ -176,5 +176,5 @@ make kind-ha-validate
 ```
 
 The current evidence validates a local kind HA shape. Managed-cloud Kubernetes
-validation remains stronger evidence if Artifortress later claims a specific
+validation remains stronger evidence if Kublai later claims a specific
 cloud provider or production capacity profile.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 report_path="${REPORT_PATH:-docs/reports/search-soak-drill-latest.md}"
-test_project="${TEST_PROJECT:-tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj}"
+test_project="${TEST_PROJECT:-tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj}"
 configuration="${CONFIGURATION:-Debug}"
 
 drill_names=(

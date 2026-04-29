@@ -4,7 +4,7 @@ set -euo pipefail
 repo_url="${STRYKER_REPO_URL:-https://github.com/stryker-mutator/stryker-net.git}"
 workspace_dir="${STRYKER_WORKSPACE_DIR:-.cache/stryker-net}"
 base_ref="${STRYKER_BASE_REF:-c3e2701e}"
-branch_name="${STRYKER_BRANCH_NAME:-artifortress/mutation-trackb-experimental}"
+branch_name="${STRYKER_BRANCH_NAME:-kublai/mutation-trackb-experimental}"
 patch_dir="${STRYKER_PATCH_DIR:-patches/stryker-net}"
 
 if [ ! -d "$patch_dir" ]; then

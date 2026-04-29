@@ -4,7 +4,7 @@ Last updated: 2026-04-28
 
 ## Purpose
 
-This document defines the supported tenant lifecycle workflow for Artifortress
+This document defines the supported tenant lifecycle workflow for Kublai
 enterprise operators. It covers tenant creation posture, role binding, identity
 mapping, quota assignment, initial repositories, evidence export, legal-hold
 review, offboarding, and deletion/retention behavior.
@@ -16,7 +16,7 @@ be performed through the supported admin CLI.
 
 ## Audit Model
 
-Every lifecycle milestone should use a shared `ARTIFORTRESS_CORRELATION_ID`.
+Every lifecycle milestone should use a shared `KUBLAI_CORRELATION_ID`.
 Operators must record explicit lifecycle markers with:
 
 ```bash
@@ -47,9 +47,9 @@ These markers emit `tenant.lifecycle.<step>` audit events with resource type
 1. Assign a lifecycle correlation id:
 
 ```bash
-export ARTIFORTRESS_URL=https://artifortress.example.com
-export ARTIFORTRESS_TOKEN=<admin-token>
-export ARTIFORTRESS_CORRELATION_ID=$(uuidgen)
+export KUBLAI_URL=https://kublai.example.com
+export KUBLAI_TOKEN=<admin-token>
+export KUBLAI_CORRELATION_ID=$(uuidgen)
 ```
 
 2. Confirm the environment tenant slug/name are configured and the API is
@@ -104,7 +104,7 @@ make admin-cli ARGS="tenant lifecycle mark --step evidence.exported --status com
 1. Start offboarding with an explicit reason:
 
 ```bash
-export ARTIFORTRESS_CORRELATION_ID=$(uuidgen)
+export KUBLAI_CORRELATION_ID=$(uuidgen)
 make admin-cli ARGS="tenant lifecycle mark --step offboarding.started --status started --reason contract ended"
 ```
 
@@ -134,7 +134,7 @@ make admin-cli ARGS="tenant lifecycle mark --step access.revoked --status comple
 
 Remove or narrow every repository role binding before final retention review. If
 the identity provider grants access through groups, remove those group
-memberships outside Artifortress and record the external change ticket in the
+memberships outside Kublai and record the external change ticket in the
 lifecycle marker reason.
 
 4. Export final evidence:
@@ -153,7 +153,7 @@ make admin-cli ARGS="tenant lifecycle mark --step retention.reviewed --status co
 
 ## Deletion And Retention Behavior
 
-Artifortress does not support blind tenant hard-delete as a routine operation.
+Kublai does not support blind tenant hard-delete as a routine operation.
 Deletion must be retention-aware:
 
 - active legal holds block destructive deletion

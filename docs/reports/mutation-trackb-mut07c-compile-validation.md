@@ -4,8 +4,8 @@ Generated at: 2026-02-11T20:33:14Z
 
 ## Inputs
 
-- project path: `src/Artifortress.Domain/Artifortress.Domain.fsproj`
-- source file path: `src/Artifortress.Domain/Library.fs`
+- project path: `src/Kublai.Domain/Kublai.Domain.fsproj`
+- source file path: `src/Kublai.Domain/Library.fs`
 - max mutants: `9`
 - scratch root: `artifacts/mutation/mut07c-compile`
 

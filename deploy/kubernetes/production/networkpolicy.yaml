@@ -1,11 +1,11 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: artifortress-api
+  name: kublai-api
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: artifortress-api
+      app.kubernetes.io/name: kublai-api
   policyTypes:
     - Ingress
     - Egress

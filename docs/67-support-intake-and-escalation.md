@@ -5,7 +5,7 @@ Last updated: 2026-04-27
 ## Purpose
 
 This document defines the customer-facing support intake, severity, and
-escalation model for Artifortress enterprise releases.
+escalation model for Kublai enterprise releases.
 
 It sets support expectations. It does not replace a customer-specific contract
 or SLA.

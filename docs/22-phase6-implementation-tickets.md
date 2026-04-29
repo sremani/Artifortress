@@ -40,7 +40,7 @@ Status key:
   - Added audit action:
     - `ops.summary.read`
 - P6-03 completed:
-  - Added integration tests in `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`:
+  - Added integration tests in `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`:
     - `P6-01 readiness endpoint reports healthy postgres and object storage dependencies`
     - `P6-02 ops summary endpoint enforces authz and emits audit`
   - Added stress coverage for operations-summary counters:
@@ -83,8 +83,8 @@ Status key:
 Latest local verification:
 - `make build`
 - `make test`
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`70` passing integration tests)
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`163` total tests)
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`70` passing integration tests)
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` (`163` total tests)
 - `make format`
 
 ## Ticket Details

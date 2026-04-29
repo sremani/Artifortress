@@ -2,20 +2,20 @@
 set -euo pipefail
 
 report_path="${REPORT_PATH:-docs/reports/mutation-spike-fsharp-latest.md}"
-log_path="${LOG_PATH:-/tmp/artifortress-mutation-fsharp-spike.log}"
+log_path="${LOG_PATH:-/tmp/kublai-mutation-fsharp-spike.log}"
 
 mkdir -p "$(dirname "$report_path")"
 mkdir -p "$(dirname "$log_path")"
 
 echo "[mutation-spike] Running mutation-only test project baseline..."
-dotnet test tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj --configuration Debug -v minimal >/tmp/artifortress-mutation-tests.log 2>&1
+dotnet test tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj --configuration Debug -v minimal >/tmp/kublai-mutation-tests.log 2>&1
 
 echo "[mutation-spike] Running Stryker feasibility probe on F# project..."
 set +e
 dotnet tool run dotnet-stryker -- \
-  -tp tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj \
-  -p src/Artifortress.Domain/Artifortress.Domain.fsproj \
-  -m "src/Artifortress.Domain/Library.fs{8..102}" \
+  -tp tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj \
+  -p src/Kublai.Domain/Kublai.Domain.fsproj \
+  -m "src/Kublai.Domain/Library.fs{8..102}" \
   -l Basic \
   -c 1 \
   -r ClearText \
@@ -51,9 +51,9 @@ fi
   echo
   echo "## Inputs"
   echo
-  echo "- test project: \`tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj\`"
-  echo "- project under mutation: \`src/Artifortress.Domain/Artifortress.Domain.fsproj\`"
-  echo "- mutate scope: \`src/Artifortress.Domain/Library.fs{8..102}\`"
+  echo "- test project: \`tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj\`"
+  echo "- project under mutation: \`src/Kublai.Domain/Kublai.Domain.fsproj\`"
+  echo "- mutate scope: \`src/Kublai.Domain/Library.fs{8..102}\`"
   echo
   echo "## Outcome"
   echo

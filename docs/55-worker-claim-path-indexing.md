@@ -9,7 +9,7 @@ This tranche closes the first worker optimization phase:
 - `WO-1-04` capture `EXPLAIN` evidence for the worker claim queries
 
 Relevant code:
-- `src/Artifortress.Worker/Program.fs`
+- `src/Kublai.Worker/Program.fs`
 
 Relevant migration:
 - `db/migrations/0015_worker_claim_path_indexes.sql`

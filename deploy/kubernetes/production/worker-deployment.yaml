@@ -1,27 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: artifortress-worker
+  name: kublai-worker
 spec:
   replicas: 2
   revisionHistoryLimit: 10
   selector:
     matchLabels:
-      app.kubernetes.io/name: artifortress-worker
+      app.kubernetes.io/name: kublai-worker
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: artifortress-worker
+        app.kubernetes.io/name: kublai-worker
     spec:
       containers:
         - name: worker
-          image: ghcr.io/sremani/artifortress-worker:latest
+          image: ghcr.io/sremani/kublai-worker:latest
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
-                name: artifortress-config
+                name: kublai-config
             - secretRef:
-                name: artifortress-secrets
+                name: kublai-secrets
           resources:
             requests:
               cpu: 250m

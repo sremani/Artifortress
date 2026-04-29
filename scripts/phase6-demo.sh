@@ -2,10 +2,10 @@
 set -euo pipefail
 
 api_url="${API_URL:-http://127.0.0.1:8086}"
-connection_string="${CONNECTION_STRING:-Host=localhost;Port=5432;Username=artifortress;Password=artifortress;Database=artifortress}"
+connection_string="${CONNECTION_STRING:-Host=localhost;Port=5432;Username=kublai;Password=kublai;Database=kublai}"
 bootstrap_token="${BOOTSTRAP_TOKEN:-phase6-demo-bootstrap}"
-api_dll="src/Artifortress.Api/bin/Debug/net10.0/Artifortress.Api.dll"
-api_log_file="/tmp/artifortress-phase6-demo-api.log"
+api_dll="src/Kublai.Api/bin/Debug/net10.0/Kublai.Api.dll"
+api_log_file="/tmp/kublai-phase6-demo-api.log"
 report_path="${REPORT_PATH:-docs/reports/phase6-ga-readiness-latest.md}"
 
 if [ ! -f "$api_dll" ]; then

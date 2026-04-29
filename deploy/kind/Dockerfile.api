@@ -1,17 +1,17 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-COPY Artifortress.sln ./
+COPY Kublai.sln ./
 COPY Directory.Build.props ./
-COPY src/Artifortress.Domain/Artifortress.Domain.fsproj src/Artifortress.Domain/
-COPY src/Artifortress.Api/Artifortress.Api.fsproj src/Artifortress.Api/
+COPY src/Kublai.Domain/Kublai.Domain.fsproj src/Kublai.Domain/
+COPY src/Kublai.Api/Kublai.Api.fsproj src/Kublai.Api/
 
-RUN dotnet restore src/Artifortress.Api/Artifortress.Api.fsproj -p:NuGetAudit=false
+RUN dotnet restore src/Kublai.Api/Kublai.Api.fsproj -p:NuGetAudit=false
 
-COPY src/Artifortress.Domain src/Artifortress.Domain
-COPY src/Artifortress.Api src/Artifortress.Api
+COPY src/Kublai.Domain src/Kublai.Domain
+COPY src/Kublai.Api src/Kublai.Api
 
-RUN dotnet publish src/Artifortress.Api/Artifortress.Api.fsproj \
+RUN dotnet publish src/Kublai.Api/Kublai.Api.fsproj \
     --configuration Release \
     --output /app/publish
 
@@ -19,4 +19,4 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app/publish ./
 EXPOSE 8086
-ENTRYPOINT ["dotnet", "Artifortress.Api.dll"]
+ENTRYPOINT ["dotnet", "Kublai.Api.dll"]

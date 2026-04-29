@@ -4,8 +4,8 @@ Generated at: 2026-02-11T21:49:25Z
 
 ## Inputs
 
-- source file path: `src/Artifortress.Domain/Library.fs`
-- test project path: `tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj`
+- source file path: `src/Kublai.Domain/Library.fs`
+- test project path: `tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj`
 - max mutants: `6`
 - scratch root: `artifacts/mutation/native-fsharp-runtime`
 

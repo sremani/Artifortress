@@ -4,12 +4,12 @@ Last updated: 2026-04-01
 
 ## Purpose
 
-Provide the baseline operational pack required for on-call ownership of Artifortress in an enterprise environment.
+Provide the baseline operational pack required for on-call ownership of Kublai in an enterprise environment.
 
 ## Included Assets
 
 - dashboard definition:
-  - `deploy/grafana-artifortress-operations-dashboard.json`
+  - `deploy/grafana-kublai-operations-dashboard.json`
 - alert thresholds:
   - `deploy/enterprise-ops-alert-thresholds.yaml`
   - `deploy/phase6-alert-thresholds.yaml`

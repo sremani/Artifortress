@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-db_user="${POSTGRES_USER:-artifortress}"
-db_name="${POSTGRES_DB:-artifortress}"
-backup_path="${BACKUP_PATH:-/tmp/artifortress-backup-$(date +%Y%m%d-%H%M%S).sql}"
+db_user="${POSTGRES_USER:-kublai}"
+db_name="${POSTGRES_DB:-kublai}"
+backup_path="${BACKUP_PATH:-/tmp/kublai-backup-$(date +%Y%m%d-%H%M%S).sql}"
 
 mkdir -p "$(dirname "$backup_path")"
 

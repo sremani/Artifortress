@@ -4,19 +4,19 @@ Last updated: 2026-04-28
 
 ## Purpose
 
-Describe how Artifortress release artifacts are produced and how operators verify them before promotion.
+Describe how Kublai release artifacts are produced and how operators verify them before promotion.
 
 ## Release Artifacts
 
 The release workflow publishes:
 
-- `artifortress-api-linux-x64.tar.gz`
-- `artifortress-worker-linux-x64.tar.gz`
-- `ghcr.io/<owner>/artifortress-api:<version>`
-- `ghcr.io/<owner>/artifortress-worker:<version>`
+- `kublai-api-linux-x64.tar.gz`
+- `kublai-worker-linux-x64.tar.gz`
+- `ghcr.io/<owner>/kublai-api:<version>`
+- `ghcr.io/<owner>/kublai-worker:<version>`
 - immutable commit tags for API and worker images: `sha-<short-commit>`
 - digest-pinned image references in `OCI-IMAGES.txt`
-- packaged Helm chart: `artifortress-<version>.tgz`
+- packaged Helm chart: `kublai-<version>.tgz`
 - `SHA256SUMS`
 - CycloneDX SBOMs for API and worker bundle contents
 - CycloneDX SBOMs for API and worker OCI images
@@ -43,7 +43,7 @@ Release provenance certification helper:
 1. create signed git tag from a clean release-candidate commit:
 
 ```bash
-git tag -s v<version> -m "Artifortress v<version>"
+git tag -s v<version> -m "Kublai v<version>"
 git push origin v<version>
 ```
 
@@ -67,14 +67,14 @@ GitHub Release assets.
 ./scripts/verify-release-artifacts.sh checksum SHA256SUMS
 
 ./scripts/verify-release-artifacts.sh \
-  artifortress-api-linux-x64.tar.gz \
-  artifortress-api-linux-x64.tar.gz.sig \
-  artifortress-api-linux-x64.tar.gz.crt
+  kublai-api-linux-x64.tar.gz \
+  kublai-api-linux-x64.tar.gz.sig \
+  kublai-api-linux-x64.tar.gz.crt
 
 ./scripts/verify-release-artifacts.sh blob \
-  artifortress-<version>.tgz \
-  artifortress-<version>.tgz.sig \
-  artifortress-<version>.tgz.crt
+  kublai-<version>.tgz \
+  kublai-<version>.tgz.sig \
+  kublai-<version>.tgz.crt
 ```
 
 Image verification:
@@ -91,14 +91,14 @@ SBOM verification examples:
 
 ```bash
 ./scripts/verify-release-artifacts.sh blob \
-  artifortress-api-image.sbom.cdx.json \
-  artifortress-api-image.sbom.cdx.json.sig \
-  artifortress-api-image.sbom.cdx.json.crt
+  kublai-api-image.sbom.cdx.json \
+  kublai-api-image.sbom.cdx.json.sig \
+  kublai-api-image.sbom.cdx.json.crt
 
 ./scripts/verify-release-artifacts.sh blob \
-  artifortress-helm-chart.sbom.cdx.json \
-  artifortress-helm-chart.sbom.cdx.json.sig \
-  artifortress-helm-chart.sbom.cdx.json.crt
+  kublai-helm-chart.sbom.cdx.json \
+  kublai-helm-chart.sbom.cdx.json.sig \
+  kublai-helm-chart.sbom.cdx.json.crt
 ```
 
 ## Promotion Gate

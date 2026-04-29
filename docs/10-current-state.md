@@ -1,4 +1,4 @@
-# Artifortress Current State
+# Kublai Current State
 
 Last updated: 2026-02-23
 
@@ -72,9 +72,9 @@ Persistence:
 Automated checks currently passing:
 - `make format`.
 - `make test` (non-integration filter) with `109` passing tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `86` passing integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` with `195` passing tests.
-- property-based test suite expansion in `tests/Artifortress.Domain.Tests/PropertyTests.fs`:
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` with `86` passing integration tests.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` with `195` passing tests.
+- property-based test suite expansion in `tests/Kublai.Domain.Tests/PropertyTests.fs`:
   - `91` FsCheck properties across domain, lifecycle/policy request validation, API, object storage config, and extracted worker internals (three extraction waves + post-GA search validation helpers).
 - `make phase2-load` baseline run:
   - upload throughput: `1.22 MiB/s` (`4.89 req/s`) with `12` upload iterations at `262144` bytes/object.
@@ -114,8 +114,8 @@ Demonstration assets:
   - `docs/30-deployment-config-reference.md`
   - `docs/31-operations-howto.md`
 - mutation track assets:
-  - `tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj`
-  - `tools/Artifortress.MutationTrack/Program.fs`
+  - `tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj`
+  - `tools/Kublai.MutationTrack/Program.fs`
   - `patches/stryker-net/0001-mut06-fsharp-analyzer-pipeline.patch`
   - `patches/stryker-net/0002-mut07a-fsharp-mutator-registration.patch`
   - `patches/stryker-net/0003-mut07b-fsharp-operator-candidate-planner.patch`

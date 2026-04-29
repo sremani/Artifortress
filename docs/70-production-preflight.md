@@ -4,7 +4,7 @@ Last updated: 2026-04-27
 
 ## Purpose
 
-This document defines the production preflight workflow for Artifortress.
+This document defines the production preflight workflow for Kublai.
 
 Preflight is the deterministic cutover gate that verifies required files,
 configuration shape, runtime health, operational evidence, and optional
@@ -13,11 +13,11 @@ Kubernetes/Helm state before declaring an environment production-ready.
 ## Command
 
 ```bash
-API_URL=https://artifortress.example.com \
+API_URL=https://kublai.example.com \
 ADMIN_TOKEN=<admin-token> \
 ConnectionStrings__Postgres='<redacted>' \
 ObjectStorage__Endpoint=https://object-storage.example.com \
-ObjectStorage__Bucket=artifortress-prod \
+ObjectStorage__Bucket=kublai-prod \
 Auth__BootstrapToken='<redacted>' \
 ASPNETCORE_ENVIRONMENT=Production \
 scripts/production-preflight.sh
@@ -26,8 +26,8 @@ scripts/production-preflight.sh
 Optional Kubernetes and Helm checks:
 
 ```bash
-KUBE_NAMESPACE=artifortress-prod \
-HELM_RELEASE=artifortress \
+KUBE_NAMESPACE=kublai-prod \
+HELM_RELEASE=kublai \
 scripts/production-preflight.sh
 ```
 
@@ -35,11 +35,11 @@ Offline documentation/evidence smoke:
 
 ```bash
 PREFLIGHT_OFFLINE=true \
-API_URL=https://artifortress.example.com \
+API_URL=https://kublai.example.com \
 ADMIN_TOKEN=redacted \
 ConnectionStrings__Postgres=redacted \
 ObjectStorage__Endpoint=https://object-storage.example.com \
-ObjectStorage__Bucket=artifortress-prod \
+ObjectStorage__Bucket=kublai-prod \
 Auth__BootstrapToken=redacted \
 scripts/production-preflight.sh
 ```

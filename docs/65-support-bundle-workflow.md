@@ -4,7 +4,7 @@ Last updated: 2026-04-27
 
 ## Purpose
 
-This document defines the supported Artifortress support bundle workflow.
+This document defines the supported Kublai support bundle workflow.
 
 The goal is to give operators and support staff a repeatable diagnostic package
 without requiring direct database access or sharing raw secrets.
@@ -20,7 +20,7 @@ scripts/support-bundle.sh
 Optional environment:
 
 ```bash
-API_URL=https://artifortress.example.com \
+API_URL=https://kublai.example.com \
 ADMIN_TOKEN=<admin-token> \
 scripts/support-bundle.sh
 ```

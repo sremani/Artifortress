@@ -49,8 +49,8 @@ Optional overrides:
 - `API_URL` (default: `http://127.0.0.1:8086`)
 - `CONNECTION_STRING` (default local Postgres connection)
 - `BOOTSTRAP_TOKEN` (default: `phase4-demo-bootstrap`)
-- `POSTGRES_USER` (default: `artifortress`)
-- `POSTGRES_DB` (default: `artifortress`)
+- `POSTGRES_USER` (default: `kublai`)
+- `POSTGRES_DB` (default: `kublai`)
 
 Example:
 
@@ -61,9 +61,9 @@ BOOTSTRAP_TOKEN=my-bootstrap-token API_URL=http://127.0.0.1:8087 ./scripts/phase
 ## Troubleshooting
 
 - If API does not become healthy:
-  - inspect `/tmp/artifortress-phase4-demo-api.log`
+  - inspect `/tmp/kublai-phase4-demo-api.log`
 - If worker validations fail:
-  - inspect `/tmp/artifortress-phase4-demo-worker.log`
+  - inspect `/tmp/kublai-phase4-demo-worker.log`
 - If SQL operations fail:
   - ensure Postgres container is up (`make dev-up`)
   - ensure migrations are current (`make db-migrate`)

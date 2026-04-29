@@ -5,7 +5,7 @@ workspace_dir="${STRYKER_WORKSPACE_DIR:-.cache/stryker-net}"
 configuration="${STRYKER_BUILD_CONFIGURATION:-Release}"
 report_path="${REPORT_PATH:-docs/reports/mutation-trackb-mut06-latest.md}"
 result_json="${RESULT_JSON:-artifacts/mutation/mut06-trackb-latest.json}"
-log_path="${LOG_PATH:-/tmp/artifortress-mutation-trackb-mut06.log}"
+log_path="${LOG_PATH:-/tmp/kublai-mutation-trackb-mut06.log}"
 output_path="${OUTPUT_PATH:-artifacts/mutation/mut06-trackb}"
 
 ./scripts/mutation-trackb-bootstrap.sh
@@ -18,7 +18,7 @@ if [ -z "$cli_dll" ]; then
   exit 1
 fi
 
-dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- run \
+dotnet run --project tools/Kublai.MutationTrack/Kublai.MutationTrack.fsproj -- run \
   --stryker-cli "$cli_dll" \
   --output "$output_path" \
   --log "$log_path" \

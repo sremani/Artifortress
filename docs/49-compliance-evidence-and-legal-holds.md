@@ -58,7 +58,7 @@ Response characteristics:
 
 - content type: `application/json`
 - `Content-Disposition: attachment; filename=compliance-evidence-pack.json`
-- `X-Artifortress-Compliance-Pack-SHA256`
+- `X-Kublai-Compliance-Pack-SHA256`
   - SHA-256 digest of the returned JSON payload
 
 Included evidence:
@@ -79,12 +79,12 @@ The endpoint also emits an audit event:
 ```bash
 curl -sS \
   -H "Authorization: Bearer $TOKEN" \
-  "https://artifortress.example.com/v1/compliance/evidence?auditLimit=500&approvalLimit=250" \
+  "https://kublai.example.com/v1/compliance/evidence?auditLimit=500&approvalLimit=250" \
   -D /tmp/compliance-headers.txt \
   -o /tmp/compliance-evidence-pack.json
 ```
 
-Then verify the digest in `X-Artifortress-Compliance-Pack-SHA256` against the
+Then verify the digest in `X-Kublai-Compliance-Pack-SHA256` against the
 saved payload.
 
 ## Acceptance Notes

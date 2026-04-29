@@ -4,7 +4,7 @@ Last updated: 2026-04-06
 
 ## Purpose
 
-Record the replay and duplicate-delivery guarantees for Artifortress background processing.
+Record the replay and duplicate-delivery guarantees for Kublai background processing.
 
 ## Reviewed Paths
 

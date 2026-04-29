@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Artifortress enterprise security support follows
+Kublai enterprise security support follows
 `docs/60-versioning-support-policy.md`.
 
 Supported lines:
@@ -21,13 +21,13 @@ public pull requests.
 Preferred private channels:
 
 - GitHub private vulnerability reporting for this repository, when enabled
-- `security@artifortress.com`, once the mailbox is provisioned
+- `security@kublai.com`, once the mailbox is provisioned
 - maintainer escalation through the enterprise support intake path in
   `docs/67-support-intake-and-escalation.md`
 
 Include:
 
-- affected Artifortress version, tag, or commit
+- affected Kublai version, tag, or commit
 - deployment shape, if relevant
 - vulnerability class and suspected impact
 - reproduction steps or proof of concept
@@ -59,7 +59,7 @@ complete.
 
 ## Disclosure
 
-Artifortress follows coordinated vulnerability disclosure.
+Kublai follows coordinated vulnerability disclosure.
 
 Advisories should include:
 

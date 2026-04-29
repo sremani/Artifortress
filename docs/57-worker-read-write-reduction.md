@@ -6,11 +6,11 @@ churn on the search indexing path.
 ## Scope
 
 Files changed:
-- `src/Artifortress.Worker/Program.fs`
+- `src/Kublai.Worker/Program.fs`
 - `docs/54-worker-indexing-optimization-board.md`
 
 Validated with:
-- `dotnet build Artifortress.sln -c Debug`
+- `dotnet build Kublai.sln -c Debug`
 - `make test-integration`
 - `bash scripts/reliability-drill.sh`
 - `bash scripts/search-soak-drill.sh`

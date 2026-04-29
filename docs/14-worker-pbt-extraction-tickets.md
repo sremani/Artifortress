@@ -28,7 +28,7 @@ Status key:
 
 ## W-PBT-01 Scope
 
-- Introduce dedicated pure helper modules in `src/Artifortress.Worker` for:
+- Introduce dedicated pure helper modules in `src/Kublai.Worker` for:
   - outbox event version-id resolution (aggregate id + payload JSON)
   - retry backoff schedule calculation
   - environment integer parsing with defaults
@@ -67,18 +67,18 @@ Acceptance criteria:
 ## Implementation Notes (2026-02-11)
 
 - W-PBT-01 completed:
-  - Added `src/Artifortress.Worker/WorkerInternals.fs` with pure helper modules:
+  - Added `src/Kublai.Worker/WorkerInternals.fs` with pure helper modules:
     - `WorkerOutboxParsing.tryResolveVersionId`
     - `WorkerRetryPolicy` (backoff and schedule helpers)
     - `WorkerEnvParsing.parsePositiveIntOrDefault`
-  - Updated `src/Artifortress.Worker/Program.fs` to use extracted helpers in:
+  - Updated `src/Kublai.Worker/Program.fs` to use extracted helpers in:
     - outbox sweep version-id resolution
     - job-failure retry scheduling
     - environment integer parsing for worker config
-  - Updated compile order in `src/Artifortress.Worker/Artifortress.Worker.fsproj`.
+  - Updated compile order in `src/Kublai.Worker/Kublai.Worker.fsproj`.
 
 - W-PBT-02 / W-PBT-03 / W-PBT-04 completed:
-  - Added FsCheck properties in `tests/Artifortress.Domain.Tests/PropertyTests.fs` for:
+  - Added FsCheck properties in `tests/Kublai.Domain.Tests/PropertyTests.fs` for:
     - outbox aggregate-id fast path and JSON fallback path invariants
     - malformed payload rejection behavior
     - retry backoff monotonicity/cap invariants and deterministic scheduling
@@ -89,14 +89,14 @@ Acceptance criteria:
   - Updated `docs/10-current-state.md` verification and extraction notes.
 
 - W-PBT-06 / W-PBT-07 / W-PBT-08 completed:
-  - Added DB-adjacent pure helper modules in `src/Artifortress.Worker/WorkerInternals.fs`:
+  - Added DB-adjacent pure helper modules in `src/Kublai.Worker/WorkerInternals.fs`:
     - `WorkerDbParameters` for batch-size/max-attempt normalization.
     - `WorkerOutboxFlow` for enqueue-vs-requeue routing decisions.
     - `WorkerJobFlow` for complete-vs-fail decision planning with deterministic failure payload.
-  - Rewired `src/Artifortress.Worker/Program.fs` to consume these modules in claim parameter binding and per-row sweep logic.
+  - Rewired `src/Kublai.Worker/Program.fs` to consume these modules in claim parameter binding and per-row sweep logic.
 
 - W-PBT-09 completed:
-  - Added FsCheck properties in `tests/Artifortress.Domain.Tests/PropertyTests.fs` for:
+  - Added FsCheck properties in `tests/Kublai.Domain.Tests/PropertyTests.fs` for:
     - DB parameter normalization invariants.
     - outbox routing precedence and fallback behavior.
     - job processing decision determinism and failure-shape invariants.
@@ -105,10 +105,10 @@ Acceptance criteria:
   - Updated this ticket board with second-wave implementation status.
 
 - W-PBT-11 / W-PBT-12 / W-PBT-13 completed:
-  - Added third-wave helper modules in `src/Artifortress.Worker/WorkerInternals.fs`:
+  - Added third-wave helper modules in `src/Kublai.Worker/WorkerInternals.fs`:
     - `WorkerDataShapes` (claimed outbox/job row constructors).
     - `WorkerSweepMetrics` (pure reducers for outbox/job counters).
-  - Rewired `src/Artifortress.Worker/Program.fs` sweep loops to consume:
+  - Rewired `src/Kublai.Worker/Program.fs` sweep loops to consume:
     - `WorkerDataShapes.createClaimedOutboxEvent`
     - `WorkerDataShapes.createClaimedSearchJob`
     - `WorkerSweepMetrics.recordRequeue`
@@ -117,7 +117,7 @@ Acceptance criteria:
     - `WorkerSweepMetrics.recordFailed`
 
 - W-PBT-14 completed:
-  - Added FsCheck properties in `tests/Artifortress.Domain.Tests/PropertyTests.fs` for:
+  - Added FsCheck properties in `tests/Kublai.Domain.Tests/PropertyTests.fs` for:
     - row-shape constructor field-preservation invariants.
     - outbox/job sweep reducer increment and fold invariants.
 
@@ -126,7 +126,7 @@ Acceptance criteria:
 
 ## Validation Snapshot (2026-02-11)
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo` -> `122` passed, `0` failed.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -nologo` -> `122` passed, `0` failed.
 - `make format` -> passed.
 - `make test` (non-integration) -> `84` passed, `0` failed.
-- Property-based coverage count in `tests/Artifortress.Domain.Tests/PropertyTests.fs` -> `75` properties.
+- Property-based coverage count in `tests/Kublai.Domain.Tests/PropertyTests.fs` -> `75` properties.

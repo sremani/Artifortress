@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_file="${SOURCE_FILE:-src/Artifortress.Domain/Library.fs}"
-test_project="${TEST_PROJECT:-tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj}"
+source_file="${SOURCE_FILE:-src/Kublai.Domain/Library.fs}"
+test_project="${TEST_PROJECT:-tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj}"
 max_mutants="${MAX_MUTANTS:-12}"
 scratch_root="${SCRATCH_ROOT:-artifacts/mutation/native-fsharp-runtime}"
 report_path="${REPORT_PATH:-docs/reports/mutation-native-fsharp-latest.md}"
@@ -11,7 +11,7 @@ summary_path="${SUMMARY_PATH:-artifacts/ci/mutation-native-fsharp-summary.txt}"
 metrics_json_path="${METRICS_JSON_PATH:-artifacts/ci/mutation-native-fsharp-metrics.json}"
 
 set +e
-dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- run-fsharp-native \
+dotnet run --project tools/Kublai.MutationTrack/Kublai.MutationTrack.fsproj -- run-fsharp-native \
   --source-file "$source_file" \
   --test-project "$test_project" \
   --max-mutants "$max_mutants" \

@@ -5,7 +5,7 @@ Last updated: 2026-04-28
 ## Purpose
 
 This guide is the supported end-to-end path from a clean Kubernetes namespace to
-a production-ready Artifortress deployment.
+a production-ready Kublai deployment.
 
 It covers:
 
@@ -40,7 +40,7 @@ Before starting, collect:
 
 - target release version, commit, and image tags or digests
 - Kubernetes context for the production cluster
-- namespace name, usually `artifortress-prod`
+- namespace name, usually `kublai-prod`
 - managed PostgreSQL endpoint and credentials
 - dedicated managed S3-compatible object-storage endpoint, bucket, and
   credentials
@@ -58,22 +58,22 @@ Select the target cluster and create a dedicated namespace:
 
 ```bash
 kubectl config use-context <production-context>
-kubectl create namespace artifortress-prod
+kubectl create namespace kublai-prod
 ```
 
 Label the namespace for ownership and environment tracking:
 
 ```bash
-kubectl label namespace artifortress-prod \
-  app.kubernetes.io/part-of=artifortress \
-  artifortress.io/environment=production
+kubectl label namespace kublai-prod \
+  app.kubernetes.io/part-of=kublai \
+  kublai.io/environment=production
 ```
 
 Confirm no old release is present:
 
 ```bash
-helm list --namespace artifortress-prod
-kubectl get all --namespace artifortress-prod
+helm list --namespace kublai-prod
+kubectl get all --namespace kublai-prod
 ```
 
 If resources exist, stop and reconcile ownership before continuing.
@@ -94,7 +94,7 @@ Prepare dependencies before installing the chart:
 Dependency validation is not complete until production preflight passes.
 
 Do not use MinIO community artifacts as the production object-store dependency
-for `artifortress.com`. Use managed S3-compatible storage until the MinIO exit
+for `kublai.com`. Use managed S3-compatible storage until the MinIO exit
 plan in `docs/74-object-storage-independence-and-minio-exit-plan.md` is closed.
 
 ## TLS And Ingress Setup
@@ -102,8 +102,8 @@ plan in `docs/74-object-storage-independence-and-minio-exit-plan.md` is closed.
 If TLS is supplied as an existing Kubernetes secret:
 
 ```bash
-kubectl create secret tls artifortress-tls \
-  --namespace artifortress-prod \
+kubectl create secret tls kublai-tls \
+  --namespace kublai-prod \
   --cert=/secure/path/tls.crt \
   --key=/secure/path/tls.key
 ```
@@ -112,7 +112,7 @@ If certificate-manager or another controller owns TLS, create the controller's
 required issuer/certificate resources before chart installation and set the Helm
 ingress annotations accordingly.
 
-Do not cut production DNS to Artifortress until readiness, preflight, smoke, and
+Do not cut production DNS to Kublai until readiness, preflight, smoke, and
 backup gates pass.
 
 ## Helm Values
@@ -120,43 +120,43 @@ backup gates pass.
 Create a production values file outside the repository, for example:
 
 ```bash
-install -m 0600 /dev/null /secure/path/artifortress-prod.values.yaml
+install -m 0600 /dev/null /secure/path/kublai-prod.values.yaml
 ```
 
 Populate only environment-specific values. Start from
-`deploy/helm/artifortress/values.yaml`, then override:
+`deploy/helm/kublai/values.yaml`, then override:
 
 ```yaml
-namespaceOverride: artifortress-prod
+namespaceOverride: kublai-prod
 
 api:
   replicaCount: 3
   image:
-    repository: <internal-registry>/artifortress-api
+    repository: <internal-registry>/kublai-api
     tag: <release-tag-or-digest>
     pullPolicy: IfNotPresent
 
 worker:
   replicaCount: 2
   image:
-    repository: <internal-registry>/artifortress-worker
+    repository: <internal-registry>/kublai-worker
     tag: <release-tag-or-digest>
     pullPolicy: IfNotPresent
 
 ingress:
   enabled: true
   className: nginx
-  host: artifortress.example.com
+  host: kublai.example.com
   tls:
     enabled: true
-    secretName: artifortress-tls
+    secretName: kublai-tls
 
 config:
   ASPNETCORE_ENVIRONMENT: Production
   ASPNETCORE_URLS: http://0.0.0.0:8086
   Auth__Oidc__Enabled: "true"
   Auth__Oidc__Issuer: https://idp.example.com
-  Auth__Oidc__Audience: artifortress-api
+  Auth__Oidc__Audience: kublai-api
   Auth__Oidc__JwksUrl: https://idp.example.com/.well-known/jwks.json
   Auth__Oidc__JwksRefreshIntervalSeconds: "300"
   Auth__Oidc__JwksRefreshTimeoutSeconds: "10"
@@ -164,10 +164,10 @@ config:
   Auth__Oidc__RoleMappings: groups|af-admins|*|admin
   Auth__Saml__Enabled: "false"
   ObjectStorage__Endpoint: https://object-storage.example.com
-  ObjectStorage__Bucket: artifortress-prod
+  ObjectStorage__Bucket: kublai-prod
 
 secretConfig:
-  ConnectionStrings__Postgres: Host=<postgres-host>;Port=5432;Username=<username>;Password=<password>;Database=artifortress
+  ConnectionStrings__Postgres: Host=<postgres-host>;Port=5432;Username=<username>;Password=<password>;Database=kublai
   Auth__BootstrapToken: <redacted-production-bootstrap-token>
   ObjectStorage__AccessKey: <redacted-access-key>
   ObjectStorage__SecretKey: <redacted-secret-key>
@@ -182,10 +182,10 @@ documented in `docs/30-deployment-config-reference.md`.
 Render the chart before applying it:
 
 ```bash
-helm template artifortress deploy/helm/artifortress \
-  --namespace artifortress-prod \
-  -f /secure/path/artifortress-prod.values.yaml \
-  >/tmp/artifortress-prod-rendered.yaml
+helm template kublai deploy/helm/kublai \
+  --namespace kublai-prod \
+  -f /secure/path/kublai-prod.values.yaml \
+  >/tmp/kublai-prod-rendered.yaml
 ```
 
 Review:
@@ -223,13 +223,13 @@ Follow rollback guidance in `docs/25-upgrade-rollback-runbook.md`.
 
 ## Install
 
-Install or update Artifortress:
+Install or update Kublai:
 
 ```bash
-helm upgrade --install artifortress deploy/helm/artifortress \
-  --namespace artifortress-prod \
+helm upgrade --install kublai deploy/helm/kublai \
+  --namespace kublai-prod \
   --create-namespace \
-  -f /secure/path/artifortress-prod.values.yaml \
+  -f /secure/path/kublai-prod.values.yaml \
   --wait \
   --timeout 10m
 ```
@@ -238,14 +238,14 @@ Verify Kubernetes state:
 
 ```bash
 kubectl get deploy,pod,svc,ingress,pdb,networkpolicy \
-  --namespace artifortress-prod
+  --namespace kublai-prod
 
-kubectl rollout status deployment/artifortress-api \
-  --namespace artifortress-prod \
+kubectl rollout status deployment/kublai-api \
+  --namespace kublai-prod \
   --timeout=5m
 
-kubectl rollout status deployment/artifortress-worker \
-  --namespace artifortress-prod \
+kubectl rollout status deployment/kublai-worker \
+  --namespace kublai-prod \
   --timeout=5m
 ```
 
@@ -257,8 +257,8 @@ environment and inspect pod events, readiness output, and logs.
 Check health from the operator network or through the ingress path:
 
 ```bash
-curl -sS https://artifortress.example.com/health/live
-curl -sS https://artifortress.example.com/health/ready
+curl -sS https://kublai.example.com/health/live
+curl -sS https://kublai.example.com/health/ready
 ```
 
 Pass criteria:
@@ -281,7 +281,7 @@ Issue a short-lived administrative PAT only after the API is reachable:
 curl -sS \
   -H "X-Bootstrap-Token: <bootstrap-token>" \
   -H "Content-Type: application/json" \
-  -X POST https://artifortress.example.com/v1/auth/pats \
+  -X POST https://kublai.example.com/v1/auth/pats \
   -d '{"subject":"platform-admin","scopes":["repo:*:admin"],"ttlMinutes":60}'
 ```
 
@@ -291,7 +291,7 @@ identity:
 ```bash
 curl -sS \
   -H "Authorization: Bearer <admin-token>" \
-  https://artifortress.example.com/v1/auth/whoami
+  https://kublai.example.com/v1/auth/whoami
 ```
 
 Reduce bootstrap exposure after OIDC or SAML administration is validated. Use
@@ -325,8 +325,8 @@ Check privileged operations posture:
 ```bash
 curl -sS \
   -H "Authorization: Bearer <admin-token>" \
-  https://artifortress.example.com/v1/admin/ops/summary \
-  >/tmp/artifortress-ops-summary.json
+  https://kublai.example.com/v1/admin/ops/summary \
+  >/tmp/kublai-ops-summary.json
 ```
 
 Pass criteria:
@@ -344,7 +344,7 @@ and summarized in `docs/68-slo-sli-alerting.md`.
 
 Import dashboard and alert assets before cutover:
 
-- dashboard: `deploy/grafana-artifortress-operations-dashboard.json`
+- dashboard: `deploy/grafana-kublai-operations-dashboard.json`
 - alert thresholds: `deploy/enterprise-ops-alert-thresholds.yaml`
 - operational drill bundle: `docs/42-operations-dashboard-and-drill-bundle.md`
 
@@ -378,15 +378,15 @@ Run the production preflight after Helm install, readiness checks, identity
 validation, dashboard wiring, and smoke tests:
 
 ```bash
-API_URL=https://artifortress.example.com \
+API_URL=https://kublai.example.com \
 ADMIN_TOKEN=<admin-token> \
 ConnectionStrings__Postgres='<redacted>' \
 ObjectStorage__Endpoint=https://object-storage.example.com \
-ObjectStorage__Bucket=artifortress-prod \
+ObjectStorage__Bucket=kublai-prod \
 Auth__BootstrapToken='<redacted>' \
 ASPNETCORE_ENVIRONMENT=Production \
-KUBE_NAMESPACE=artifortress-prod \
-HELM_RELEASE=artifortress \
+KUBE_NAMESPACE=kublai-prod \
+HELM_RELEASE=kublai \
 scripts/production-preflight.sh
 ```
 
@@ -448,7 +448,7 @@ Rollback immediately if any of these occur during cutover:
 Rollback procedure:
 
 1. stop or route traffic away from the new release
-2. run `helm rollback artifortress <previous-revision> --namespace artifortress-prod`
+2. run `helm rollback kublai <previous-revision> --namespace kublai-prod`
 3. restore previous image or values if Helm rollback is not sufficient
 4. restore database from the approved backup only when required by the migration
    class and rollback runbook
@@ -467,7 +467,7 @@ If cutover triggers an incident:
 3. collect a redacted support bundle:
 
 ```bash
-API_URL=https://artifortress.example.com \
+API_URL=https://kublai.example.com \
 ADMIN_TOKEN=<admin-token> \
 scripts/support-bundle.sh
 ```

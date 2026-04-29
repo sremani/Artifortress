@@ -2,8 +2,8 @@
 set -euo pipefail
 
 api_url="${API_URL:-http://127.0.0.1:8085}"
-log_file="/tmp/artifortress-api-smoke.log"
-api_dll="src/Artifortress.Api/bin/Debug/net10.0/Artifortress.Api.dll"
+log_file="/tmp/kublai-api-smoke.log"
+api_dll="src/Kublai.Api/bin/Debug/net10.0/Kublai.Api.dll"
 
 if [ ! -f "$api_dll" ]; then
   echo "Missing API binary at $api_dll. Run 'make build' first."

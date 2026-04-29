@@ -2,14 +2,14 @@
 set -euo pipefail
 
 api_url="${API_URL:-http://127.0.0.1:8086}"
-connection_string="${CONNECTION_STRING:-Host=localhost;Port=5432;Username=artifortress;Password=artifortress;Database=artifortress}"
+connection_string="${CONNECTION_STRING:-Host=localhost;Port=5432;Username=kublai;Password=kublai;Database=kublai}"
 bootstrap_token="${BOOTSTRAP_TOKEN:-phase4-demo-bootstrap}"
-db_user="${POSTGRES_USER:-artifortress}"
-db_name="${POSTGRES_DB:-artifortress}"
-api_dll="src/Artifortress.Api/bin/Debug/net10.0/Artifortress.Api.dll"
-worker_dll="src/Artifortress.Worker/bin/Debug/net10.0/Artifortress.Worker.dll"
-api_log_file="/tmp/artifortress-phase4-demo-api.log"
-worker_log_file="/tmp/artifortress-phase4-demo-worker.log"
+db_user="${POSTGRES_USER:-kublai}"
+db_name="${POSTGRES_DB:-kublai}"
+api_dll="src/Kublai.Api/bin/Debug/net10.0/Kublai.Api.dll"
+worker_dll="src/Kublai.Worker/bin/Debug/net10.0/Kublai.Worker.dll"
+api_log_file="/tmp/kublai-phase4-demo-api.log"
+worker_log_file="/tmp/kublai-phase4-demo-worker.log"
 
 if [ ! -f "$api_dll" ]; then
   echo "Missing API binary at $api_dll. Run 'make build' first."

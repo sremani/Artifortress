@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: artifortress-api
+  name: kublai-api
 spec:
   selector:
-    app.kubernetes.io/name: artifortress-api
+    app.kubernetes.io/name: kublai-api
   ports:
     - name: http
       port: 80

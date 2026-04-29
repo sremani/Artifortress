@@ -2,8 +2,8 @@
 set -euo pipefail
 
 run_spike="${RUN_SPIKE:-false}"
-project_path="${PROJECT_PATH:-src/Artifortress.Domain/Artifortress.Domain.fsproj}"
-source_file="${SOURCE_FILE:-src/Artifortress.Domain/Library.fs}"
+project_path="${PROJECT_PATH:-src/Kublai.Domain/Kublai.Domain.fsproj}"
+source_file="${SOURCE_FILE:-src/Kublai.Domain/Library.fs}"
 max_mutants="${MAX_MUTANTS:-9}"
 result_json="${RESULT_JSON:-artifacts/mutation/mut07c-compile-validation.json}"
 report_path="${REPORT_PATH:-docs/reports/mutation-trackb-mut07c-compile-validation.md}"
@@ -15,7 +15,7 @@ if [ "$run_spike" = "true" ]; then
 fi
 
 set +e
-dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- validate-fsharp-mutants \
+dotnet run --project tools/Kublai.MutationTrack/Kublai.MutationTrack.fsproj -- validate-fsharp-mutants \
   --project "$project_path" \
   --source-file "$source_file" \
   --max-mutants "$max_mutants" \

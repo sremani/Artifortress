@@ -1,15 +1,15 @@
 CONFIGURATION := Debug
-TEST_DLL := tests/Artifortress.Domain.Tests/bin/$(CONFIGURATION)/net10.0/Artifortress.Domain.Tests.dll
+TEST_DLL := tests/Kublai.Domain.Tests/bin/$(CONFIGURATION)/net10.0/Kublai.Domain.Tests.dll
 PROJECTS := \
-	src/Artifortress.Domain/Artifortress.Domain.fsproj \
-	src/Artifortress.Api/Artifortress.Api.fsproj \
-	src/Artifortress.Worker/Artifortress.Worker.fsproj \
-	tools/Artifortress.AdminCli/Artifortress.AdminCli.fsproj \
-	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
+	src/Kublai.Domain/Kublai.Domain.fsproj \
+	src/Kublai.Api/Kublai.Api.fsproj \
+	src/Kublai.Worker/Kublai.Worker.fsproj \
+	tools/Kublai.AdminCli/Kublai.AdminCli.fsproj \
+	tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj
 TEST_PROJECTS := \
-	tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj
+	tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj
 
-.PHONY: help restore build test test-integration test-integration-full format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill reliability-drill search-soak-drill performance-workflow-baseline performance-soak-drill verify-enterprise production-preflight kind-ha-validate helm-certify release-provenance-certify upgrade-compatibility-drill admin-cli mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
+.PHONY: help restore build test test-integration test-integration-full format dev-up dev-down dev-logs wait-db storage-bootstrap db-migrate db-smoke db-backup db-restore phase6-drill reliability-drill search-soak-drill performance-workflow-baseline performance-soak-drill verify-enterprise production-preflight kind-ha-validate helm-certify helm-cloud-examples-validate release-provenance-certify upgrade-compatibility-drill release-artifact-drill-validate offline-install-plan-validate admin-cli mutation-spike mutation-track mutation-fsharp-native mutation-fsharp-native-score mutation-fsharp-native-trend mutation-fsharp-native-burnin mutation-trackb-bootstrap mutation-trackb-build mutation-trackb-spike mutation-trackb-assert mutation-trackb-compile-validate smoke phase1-demo phase2-demo phase2-load phase3-demo phase4-demo phase5-demo phase6-demo phase7-demo
 
 help:
 	@echo "Targets:"
@@ -37,8 +37,11 @@ help:
 	@echo "  production-preflight  Run production readiness preflight checks"
 	@echo "  kind-ha-validate  Run local kind-based HA Kubernetes validation"
 	@echo "  helm-certify      Certify Helm install/upgrade/uninstall in local kind Kubernetes"
+	@echo "  helm-cloud-examples-validate  Lint/template cloud-specific Helm example values"
 	@echo "  release-provenance-certify  Verify release assets for TAG=vX.Y.Z and write evidence"
 	@echo "  upgrade-compatibility-drill  Rehearse supported baseline schema upgrades to head"
+	@echo "  release-artifact-drill-validate  Verify drill reports include release artifact metadata"
+	@echo "  offline-install-plan-validate  Verify offline install plan and manifest shape"
 	@echo "  admin-cli         Run the supported admin CLI (pass ARGS='...')"
 	@echo "  mutation-spike     Run F# mutation feasibility spike (wrapper CLI) and generate report"
 	@echo "  mutation-track     Run mutation wrapper default flow and generate report"
@@ -83,7 +86,7 @@ test-integration:
 	@if [ ! -f "$(TEST_DLL)" ]; then \
 		echo "Missing integration test binary at $(TEST_DLL)."; \
 		echo "Attempting no-restore build for tests project..."; \
-		dotnet build tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration $(CONFIGURATION) --no-restore -v minimal || \
+		dotnet build tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --configuration $(CONFIGURATION) --no-restore -v minimal || \
 		( echo "No-restore build failed; running full build."; $(MAKE) build ); \
 	fi
 	@for project in $(TEST_PROJECTS); do \
@@ -164,17 +167,26 @@ kind-ha-validate:
 helm-certify:
 	./scripts/helm-certify.sh
 
+helm-cloud-examples-validate:
+	./scripts/helm-cloud-examples-validate.sh
+
 upgrade-compatibility-drill:
 	./scripts/upgrade-compatibility-drill.sh
 
+release-artifact-drill-validate:
+	./scripts/release-artifact-drill-validate.sh
+
+offline-install-plan-validate:
+	./scripts/offline-install-plan-validate.sh
+
 admin-cli:
-	dotnet run --project tools/Artifortress.AdminCli/Artifortress.AdminCli.fsproj -- $(ARGS)
+	dotnet run --project tools/Kublai.AdminCli/Kublai.AdminCli.fsproj -- $(ARGS)
 
 mutation-spike:
-	dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- spike
+	dotnet run --project tools/Kublai.MutationTrack/Kublai.MutationTrack.fsproj -- spike
 
 mutation-track:
-	dotnet run --project tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj -- run
+	dotnet run --project tools/Kublai.MutationTrack/Kublai.MutationTrack.fsproj -- run
 
 mutation-fsharp-native:
 	./scripts/mutation-fsharp-native-run.sh

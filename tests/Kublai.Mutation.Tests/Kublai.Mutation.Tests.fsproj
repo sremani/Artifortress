@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <IsPackable>false</IsPackable>
+    <GenerateProgramFile>false</GenerateProgramFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Kublai.Domain.Tests\Tests.fs" Link="Tests.fs" />
+    <Compile Include="..\Kublai.Domain.Tests\PropertyTests.fs" Link="PropertyTests.fs" />
+    <Compile Include="..\Kublai.Domain.Tests\Program.fs" Link="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FsCheck.Xunit" Version="3.3.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Kublai.Api\Kublai.Api.fsproj" />
+    <ProjectReference Include="..\..\src\Kublai.Domain\Kublai.Domain.fsproj" />
+    <ProjectReference Include="..\..\src\Kublai.Worker\Kublai.Worker.fsproj" />
+  </ItemGroup>
+
+</Project>

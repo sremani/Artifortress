@@ -1,23 +1,23 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: artifortress
+  name: kublai
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: 512m
 spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - artifortress.example.com
-      secretName: artifortress-tls
+        - kublai.example.com
+      secretName: kublai-tls
   rules:
-    - host: artifortress.example.com
+    - host: kublai.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: artifortress-api
+                name: kublai-api
                 port:
                   name: http

@@ -20,7 +20,7 @@ require_cosign() {
   fi
 }
 
-identity_regexp_default='https://github.com/.*/Artifortress/.*'
+identity_regexp_default='https://github.com/.*/Kublai/.*'
 issuer='https://token.actions.githubusercontent.com'
 
 if [[ $# -lt 1 ]]; then

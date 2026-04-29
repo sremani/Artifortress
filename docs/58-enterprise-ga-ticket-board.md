@@ -5,7 +5,7 @@ Last updated: 2026-04-28
 ## Purpose
 
 This board turns the existing enterprise-hardening work into a productization
-plan for an enterprise-ready Artifortress release.
+plan for an enterprise-ready Kublai release.
 
 The repository already has substantial enterprise engineering closure:
 
@@ -25,7 +25,7 @@ support for with low ambiguity.
 
 ## Enterprise Ready Definition
 
-Artifortress is enterprise ready when a target customer can complete all of the
+Kublai is enterprise ready when a target customer can complete all of the
 following without direct maintainer intervention:
 
 1. evaluate the security model, support envelope, and architecture
@@ -71,19 +71,25 @@ following without direct maintainer intervention:
 | EGA-13 | Run release provenance on a real signed tag | P0 | Supply Chain | done |
 | EGA-14 | Resolve GitHub Actions Node 20 deprecation risk | P0 | CI/Supply Chain | done |
 | EGA-31 | Persist consolidated enterprise verification evidence | P0 | Release Evidence | done |
-| EGA-32 | Define artifortress.com production hosting hardware plan | P0 | Launch Infrastructure | in_progress |
+| EGA-32 | Define kublai.com production hosting hardware plan | P0 | Launch Infrastructure | in_progress |
 | EGA-33 | Remove MinIO as strategic object-storage dependency | P0 | Storage/Launch Risk | in_progress |
+| EGA-34 | Complete Kublai deep rebrand | P0 | Product/Branding | done |
+| EGA-34T | Validate Kublai rebrand coverage | P0 | Validation | done |
 | EGA-15 | Create procurement evidence pack | P1 | Procurement/Compliance | done |
 | EGA-16 | Map controls to SOC 2-style evidence | P1 | Compliance | done |
 | EGA-17 | Add vulnerability disclosure and patch SLA policy | P1 | Security/Support | done |
 | EGA-18 | Add diagnostic error catalog and operator playbooks | P1 | Supportability | done |
 | EGA-19 | Add admin CLI for common operator workflows | P1 | UX/Ops | done |
 | EGA-20 | Add tenant onboarding and offboarding workflow | P1 | Tenant Ops | done |
-| EGA-21 | Add cloud-specific production examples | P1 | Deployment | todo |
-| EGA-22 | Add air-gapped/offline install plan | P1 | Distribution | todo |
-| EGA-23 | Certify backup/restore and upgrade drills against release artifacts | P1 | Reliability | todo |
+| EGA-21 | Add cloud-specific production examples | P1 | Deployment | done |
+| EGA-21T | Validate cloud-specific production examples | P1 | Validation | done |
+| EGA-22 | Add air-gapped/offline install plan | P1 | Distribution | done |
+| EGA-22T | Validate air-gapped/offline install plan | P1 | Validation | done |
+| EGA-23 | Certify backup/restore and upgrade drills against release artifacts | P1 | Reliability | in_progress |
+| EGA-23T | Add release-artifact drill validation evidence | P1 | Validation | in_progress |
 | EGA-24 | Publish capacity certification on non-local infrastructure | P1 | Performance | todo |
-| EGA-25 | Add package-format compatibility strategy | P1 | Product/API | todo |
+| EGA-25 | Add package-format compatibility strategy | P1 | Product/API | done |
+| EGA-25T | Validate package-format compatibility strategy | P1 | Validation | done |
 | EGA-26 | Add enterprise trial/evaluation path | P2 | Product | todo |
 | EGA-27 | Add support intake, severity, and escalation model | P2 | Support | done |
 | EGA-28 | Add customer-facing migration guide from incumbent repositories | P2 | Adoption | todo |
@@ -95,7 +101,7 @@ following without direct maintainer intervention:
 ### EGA-01: Define supported enterprise product envelope
 
 Scope:
-- Define what Artifortress supports at GA and what it explicitly does not.
+- Define what Kublai supports at GA and what it explicitly does not.
 - Include supported deployment topology, dependency versions, scale profiles,
   package/API surface, identity modes, compliance posture, and upgrade paths.
 - Convert unsupported claims from existing docs into a customer-facing support
@@ -154,7 +160,7 @@ Scope:
   cutover criteria.
 
 Acceptance criteria:
-- The guide starts from a clean cluster and ends with a ready Artifortress
+- The guide starts from a clean cluster and ends with a ready Kublai
   deployment.
 - Cutover cannot be declared until readiness, ops summary, smoke test, and
   backup evidence gates pass.
@@ -374,10 +380,10 @@ Status:
 - done in `scripts/verify-enterprise.sh`
 - latest evidence: `docs/reports/enterprise-verification-latest.md`
 
-### EGA-32: Define artifortress.com production hosting hardware plan
+### EGA-32: Define kublai.com production hosting hardware plan
 
 Scope:
-- Select the launch hosting shape for `artifortress.com`.
+- Select the launch hosting shape for `kublai.com`.
 - Define Dev, PreProd, and Prod compute, database, object storage, ingress,
   Cloudflare, observability, backup, and DNS/TLS requirements.
 - Estimate monthly run cost and identify account/provider decisions that must be
@@ -392,14 +398,14 @@ Acceptance criteria:
 - The plan includes budgetary cost ranges and provider pricing references.
 - Dev, PreProd, and Prod are separated by namespace, database, bucket, DNS, and
   credentials.
-- Cutover to `artifortress.com` is blocked until preflight, smoke tests,
+- Cutover to `kublai.com` is blocked until preflight, smoke tests,
   backup/restore evidence, release provenance, and rollback ownership are
   complete.
 - Open provider/account decisions are listed explicitly.
 
 Status:
 - in_progress with initial plan in
-  `docs/73-artifortress-com-production-hosting-plan.md`
+  `docs/73-kublai-com-production-hosting-plan.md`
 - preferred candidate updated to Akamai Cloud/Linode with Cloudflare fronting
   production traffic
 - environment topology added for Dev, PreProd, and Prod isolation
@@ -408,19 +414,19 @@ Status:
 
 Scope:
 - Stop treating MinIO community artifacts as a safe long-term default dependency.
-- Define the immediate `artifortress.com` managed object-storage path.
+- Define the immediate `kublai.com` managed object-storage path.
 - Identify every local, kind, Helm, and documentation path that still depends on
   MinIO.
-- Create a side-project charter for an Artifortress-owned S3-compatible object
+- Create a side-project charter for an Kublai-owned S3-compatible object
   store if maintained third-party options are not acceptable.
 
 Acceptance criteria:
 - Production deployment guidance recommends managed S3-compatible object
-  storage for `artifortress.com`.
+  storage for `kublai.com`.
 - MinIO usage in local validation is documented as temporary test
   infrastructure.
 - A compatibility/conformance plan exists for object-storage providers.
-- A side-project decision record exists for a potential Artifortress-owned
+- A side-project decision record exists for a potential Kublai-owned
   replacement.
 - Follow-up implementation tickets exist before removing MinIO from validation
   scripts.
@@ -504,12 +510,12 @@ Acceptance criteria:
 - CLI has smoke coverage for the highest-risk commands.
 
 Status:
-- implemented `tools/Artifortress.AdminCli` as the supported API-backed
+- implemented `tools/Kublai.AdminCli` as the supported API-backed
   operator CLI
 - added `make admin-cli ARGS="..."` wrapper
 - documented workflows in `docs/76-admin-cli-operator-workflows.md`
 - smoke coverage added in
-  `tests/Artifortress.Domain.Tests/AdminCliSmokeTests.fs`
+  `tests/Kublai.Domain.Tests/AdminCliSmokeTests.fs`
 
 ### EGA-20: Add tenant onboarding and offboarding workflow
 
@@ -529,7 +535,7 @@ Status:
 - implemented offboarding readiness endpoint:
   `GET /v1/admin/tenant-lifecycle/offboarding-readiness`
 - added role-binding delete operations for tenant and repository offboarding
-- exposed lifecycle and delete operations through `tools/Artifortress.AdminCli`
+- exposed lifecycle and delete operations through `tools/Kublai.AdminCli`
 - documented the supported workflow in
   `docs/77-tenant-onboarding-and-offboarding-workflow.md`
 
@@ -546,6 +552,34 @@ Acceptance criteria:
 - Cloud-specific assumptions are separated from generic Helm defaults.
 - The support envelope states which parts are examples vs certified targets.
 
+Status:
+- added Akamai/Linode LKE example values for PreProd and Prod:
+  `deploy/helm/kublai/values-lke-preprod.example.yaml` and
+  `deploy/helm/kublai/values-lke-production.example.yaml`
+- added external runtime Secret support through Helm `secrets.create` and
+  `secrets.existingSecretName`
+- documented substitutions, managed dependencies, backup posture, and support
+  boundary in `docs/78-cloud-production-examples.md`
+- linked the examples from the deployment config reference, product envelope,
+  and README documentation map
+
+### EGA-21T: Validate cloud-specific production examples
+
+Scope:
+- Add an automated validation path for cloud-specific Helm example values.
+- Ensure the examples render without committing runtime secrets.
+
+Acceptance criteria:
+- PreProd and Prod cloud example values pass Helm lint.
+- PreProd and Prod cloud example values render with the expected external
+  Secret reference.
+- The validation command is available to operators and CI.
+
+Status:
+- added `scripts/helm-cloud-examples-validate.sh`
+- added `make helm-cloud-examples-validate`
+- wired the validation into the Helm certification workflow
+
 ### EGA-22: Add air-gapped/offline install plan
 
 Scope:
@@ -559,6 +593,31 @@ Acceptance criteria:
 - Verification still works offline.
 - Unsupported offline assumptions are listed explicitly.
 
+Status:
+- added `docs/81-airgapped-offline-install-plan.md`
+- added `deploy/offline/release-manifest.example.env`
+- documented bundle contents, mirroring, offline verification, install,
+  upgrade, and unsupported assumptions
+- linked the support boundary from the product envelope and README
+
+### EGA-22T: Validate air-gapped/offline install plan
+
+Scope:
+- Add a validation path for the offline installation plan.
+- Verify that mirrored image, chart, SBOM, signature, and provenance inputs are
+  sufficient without public-registry pulls.
+
+Acceptance criteria:
+- A documented dry-run checklist exists for offline install validation.
+- Offline signature verification is exercised against mirrored artifacts.
+- Unsupported offline assumptions are captured as explicit warnings.
+
+Status:
+- added `scripts/offline-install-plan-validate.sh`
+- added `make offline-install-plan-validate`
+- wired the validation into the CI workflow
+- validation checks required plan sections and release manifest keys
+
 ### EGA-23: Certify backup/restore and upgrade drills against release artifacts
 
 Scope:
@@ -571,6 +630,33 @@ Acceptance criteria:
 - Drill evidence references release version and artifact digest.
 - Results match the published upgrade and rollback policy.
 - Any source-tree-only assumptions are removed from production docs.
+
+Status:
+- added release artifact metadata fields to `make phase6-drill` and
+  `make upgrade-compatibility-drill` reports
+- added certification guidance in
+  `docs/79-release-artifact-drill-certification.md`
+- updated the upgrade and rollback runbook to require artifact metadata
+  validation for release certification
+- pending: run the drills against a verified release artifact set and capture
+  passing evidence before moving this ticket to `done`
+
+### EGA-23T: Add release-artifact drill validation evidence
+
+Scope:
+- Add validation evidence that backup/restore and upgrade drills used packaged
+  release artifacts instead of local source-tree builds.
+
+Acceptance criteria:
+- Drill report records release tag, image digest, chart digest, and SBOM path.
+- Restore and upgrade checks are traceable to the same release artifact set.
+- CI or operator scripts fail clearly when artifact metadata is missing.
+
+Status:
+- added `scripts/release-artifact-drill-validate.sh`
+- added `make release-artifact-drill-validate`
+- pending: run against release-generated drill reports with non-placeholder
+  metadata
 
 ### EGA-24: Publish capacity certification on non-local infrastructure
 
@@ -598,6 +684,36 @@ Acceptance criteria:
   future work.
 - Incompatible or unsupported package manager expectations are not left implied.
 - Follow-up protocol tickets exist for any format selected for GA.
+
+Status:
+- documented the GA support boundary in
+  `docs/80-package-format-compatibility-strategy.md`
+- declared day-one support for the Kublai HTTP API and admin CLI only
+- listed native package-manager protocols as future compatibility tracks
+- added follow-up `PFC-*` protocol tickets and a required compatibility test
+  matrix before any future protocol support claim
+- linked the strategy from the product envelope, procurement evidence pack, and
+  README documentation map
+
+### EGA-25T: Validate package-format compatibility strategy
+
+Scope:
+- Add validation criteria for the package-format compatibility strategy.
+- Ensure day-one API support and future package-manager protocol claims are
+  testable.
+
+Acceptance criteria:
+- Strategy includes an explicit test matrix for each supported or deferred
+  package format.
+- Future protocol tickets include acceptance tests before any GA claim is made.
+- Procurement and product-envelope docs link to the same support boundary.
+
+Status:
+- validation matrix is defined in
+  `docs/80-package-format-compatibility-strategy.md`
+- `PFC-02` and `PFC-04` require compatibility/conformance tests before future
+  protocol claims
+- procurement and product-envelope links now point to the same support boundary
 
 ### EGA-26: Add enterprise trial/evaluation path
 
@@ -645,7 +761,7 @@ Scope:
   cluster resources.
 
 Acceptance criteria:
-- Module is versioned independently or clearly tied to Artifortress releases.
+- Module is versioned independently or clearly tied to Kublai releases.
 - It creates only documented dependencies and values.
 - It includes destroy/teardown guidance and state-safety notes.
 
@@ -660,11 +776,59 @@ Acceptance criteria:
 - Future multi-region work is scoped as a separate roadmap.
 - Customer expectations are bounded before procurement review.
 
+### EGA-34: Complete Kublai deep rebrand
+
+Scope:
+- Make Kublai the product, code, documentation, deployment, and release name.
+- Cover source namespaces, project files, solution name, test projects, tools,
+  documentation, CLI display text, Helm chart metadata, image/release names,
+  domain references, support/procurement material, and operator examples.
+- Rename source-controlled directories and files to Kublai naming.
+- Establish a naming policy for any generated artifacts or external resources.
+
+Acceptance criteria:
+- Public-facing docs consistently use Kublai according to an explicit naming
+  policy.
+- Source-controlled code, docs, scripts, tests, chart files, and deployment
+  examples contain no legacy brand references.
+- Release, Helm, image, CLI, and domain naming decisions are documented before
+  the next public release candidate.
+- Procurement, security, support, and install docs agree on the brand name.
+
+Status:
+- renamed solution, source projects, test projects, tools, namespaces, Helm
+  chart, chart values, deployment examples, scripts, docs, reports, and public
+  copy to Kublai naming
+- added `docs/82-kublai-branding-and-rename-policy.md`
+- retained generated `bin`, `obj`, release artifact cache, and trace output as
+  non-source artifacts
+
+### EGA-34T: Validate Kublai rebrand coverage
+
+Scope:
+- Add automated checks for public-facing brand consistency.
+- Guard against accidental legacy brand references in customer-facing
+  documentation, code, scripts, and release surfaces.
+
+Acceptance criteria:
+- A validation script or unit test inventories source-controlled content and
+  paths for legacy brand references.
+- CI fails when public-facing docs introduce unapproved legacy brand references.
+- Test coverage asserts the rebrand naming policy exists and is linked from the
+  ticket board.
+
+Status:
+- added unit coverage in `tests/Kublai.Domain.Tests`
+- brand scan excludes generated `bin`, `obj`, `artifacts`, `.git`, and trace
+  files
+- rebrand validation runs as part of `make test`
+
 ## Recommended Execution Order
 
 1. Close P0 product envelope, release, install, support, SLO, HA, provenance,
-   and durable verification-evidence tickets: `EGA-01` through `EGA-14`, plus
-   `EGA-31`.
+   durable verification-evidence, launch infrastructure, storage-risk, and
+   branding tickets: `EGA-01` through `EGA-14`, plus `EGA-31` through
+   `EGA-34`.
 2. Close P1 procurement, compliance, security response, operator UX, tenant
    lifecycle, cloud examples, release-artifact drills, capacity certification,
    and package compatibility strategy: `EGA-15` through `EGA-25`.
@@ -675,7 +839,7 @@ Acceptance criteria:
 
 ## Launch Gate
 
-Do not call Artifortress enterprise GA until all P0 tickets are closed and the
+Do not call Kublai enterprise GA until all P0 tickets are closed and the
 following evidence exists for a release candidate tag:
 
 - passing CI and integration tests

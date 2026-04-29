@@ -1,4 +1,4 @@
-# Artifortress System Architecture
+# Kublai System Architecture
 
 Last updated: 2026-02-11
 
@@ -105,7 +105,7 @@ Target:
 ## 8. Deployment Topology (Current + Planned)
 
 Current:
-- API service process (`src/Artifortress.Api`).
+- API service process (`src/Kublai.Api`).
 - PostgreSQL + MinIO + Redis + telemetry stack through `docker-compose`.
 
 Planned:

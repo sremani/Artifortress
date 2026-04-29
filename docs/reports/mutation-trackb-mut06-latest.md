@@ -4,9 +4,9 @@ Generated at: 2026-02-11T19:57:11Z
 
 ## Inputs
 
-- test project: `tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj`
-- project under mutation: `src/Artifortress.Domain/Artifortress.Domain.fsproj`
-- mutate scope: `src/Artifortress.Domain/Library.fs`
+- test project: `tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj`
+- project under mutation: `src/Kublai.Domain/Kublai.Domain.fsproj`
+- mutate scope: `src/Kublai.Domain/Library.fs`
 - mutation level: `Basic`
 - concurrency: `1`
 - baseline tests executed: `True`
@@ -19,7 +19,7 @@ Generated at: 2026-02-11T19:57:11Z
 - summary: Mutants were generated and quarantined as compile errors pending runtime activation.
 - started at: `2026-02-11T19:57:11Z`
 - finished at: `2026-02-11T19:57:11Z`
-- log: `/tmp/artifortress-mutation-trackb-mut06.log`
+- log: `/tmp/kublai-mutation-trackb-mut06.log`
 - output path: `artifacts/mutation/mut01-domain`
 
 ## Extracted Metrics

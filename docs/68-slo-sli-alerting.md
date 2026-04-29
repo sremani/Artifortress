@@ -5,7 +5,7 @@ Last updated: 2026-04-27
 ## Purpose
 
 This guide defines the initial enterprise SLO/SLI and alert-routing model for
-Artifortress.
+Kublai.
 
 These objectives are operational targets, not contractual SLAs. Contractual
 SLAs must be agreed separately.

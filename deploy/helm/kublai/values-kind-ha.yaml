@@ -1,0 +1,81 @@
+config:
+  ASPNETCORE_ENVIRONMENT: Production
+  ASPNETCORE_URLS: http://0.0.0.0:8086
+  Auth__Oidc__Enabled: "false"
+  Auth__Oidc__Issuer: ""
+  Auth__Oidc__Audience: ""
+  Auth__Oidc__JwksUrl: ""
+  Auth__Oidc__RoleMappings: ""
+  Auth__Saml__Enabled: "false"
+  Auth__Saml__IdpMetadataUrl: ""
+  Auth__Saml__ExpectedIssuer: ""
+  Auth__Saml__ServiceProviderEntityId: ""
+  Auth__Saml__RoleMappings: ""
+  ObjectStorage__Endpoint: http://minio:9000
+  ObjectStorage__Bucket: kublai-dev
+  ObjectStorage__PresignPartTtlSeconds: "900"
+  Policy__EvaluationTimeoutMs: "250"
+  Lifecycle__DefaultTombstoneRetentionDays: "30"
+  Lifecycle__DefaultGcRetentionGraceHours: "24"
+  Lifecycle__DefaultGcBatchSize: "200"
+  Worker__PollSeconds: "5"
+  Worker__BatchSize: "100"
+  Worker__SearchJobMaxAttempts: "5"
+  Worker__SearchJobLeaseSeconds: "60"
+
+secretConfig:
+  ConnectionStrings__Postgres: Host=postgres;Port=5432;Username=kublai;Password=kublai;Database=kublai
+  Auth__BootstrapToken: kind-ha-bootstrap
+  Auth__Oidc__Hs256SharedSecret: ""
+  Auth__Saml__IdpMetadataXml: ""
+  ObjectStorage__AccessKey: kublai
+  ObjectStorage__SecretKey: kublai-secret
+
+api:
+  replicaCount: 3
+  image:
+    repository: kublai-api
+    tag: kind-ha
+    pullPolicy: IfNotPresent
+  probes:
+    readinessInitialDelaySeconds: 5
+    livenessInitialDelaySeconds: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+worker:
+  replicaCount: 2
+  image:
+    repository: kublai-worker
+    tag: kind-ha
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+ingress:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 10001
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL

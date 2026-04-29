@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_db="${POSTGRES_DB:-artifortress}"
-db_user="${POSTGRES_USER:-artifortress}"
-drill_db="${DRILL_DB:-artifortress_drill}"
-backup_path="${BACKUP_PATH:-/tmp/artifortress-phase6-drill-$(date +%Y%m%d-%H%M%S).sql}"
+source_db="${POSTGRES_DB:-kublai}"
+db_user="${POSTGRES_USER:-kublai}"
+drill_db="${DRILL_DB:-kublai_drill}"
+backup_path="${BACKUP_PATH:-/tmp/kublai-phase6-drill-$(date +%Y%m%d-%H%M%S).sql}"
 report_path="${REPORT_PATH:-docs/reports/phase6-rto-rpo-drill-latest.md}"
+release_tag="${KUBLAI_RELEASE_TAG:-<unset>}"
+api_image_digest="${KUBLAI_API_IMAGE_DIGEST:-<unset>}"
+worker_image_digest="${KUBLAI_WORKER_IMAGE_DIGEST:-<unset>}"
+helm_chart_digest="${KUBLAI_HELM_CHART_DIGEST:-<unset>}"
+release_sbom_path="${KUBLAI_RELEASE_SBOM_PATH:-<unset>}"
+release_provenance_report="${KUBLAI_RELEASE_PROVENANCE_REPORT:-docs/reports/release-provenance-latest.md}"
 
 required_tables=(
   schema_migrations
@@ -85,6 +91,15 @@ mkdir -p "$(dirname "$report_path")"
   echo "- backup file: \`${backup_path}\`"
   echo "- RTO target (seconds): ${rto_target_seconds}"
   echo "- RPO target (seconds): ${rpo_target_seconds}"
+  echo
+  echo "## Release Artifact Inputs"
+  echo
+  echo "- release tag: \`${release_tag}\`"
+  echo "- API image digest: \`${api_image_digest}\`"
+  echo "- worker image digest: \`${worker_image_digest}\`"
+  echo "- Helm chart digest: \`${helm_chart_digest}\`"
+  echo "- SBOM path: \`${release_sbom_path}\`"
+  echo "- release provenance report: \`${release_provenance_report}\`"
   echo
   echo "## Results"
   echo

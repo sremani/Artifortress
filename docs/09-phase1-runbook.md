@@ -42,7 +42,7 @@ make phase1-demo
 
 ## Troubleshooting
 
-- If API does not start, inspect `/tmp/artifortress-phase1-demo.log`.
+- If API does not start, inspect `/tmp/kublai-phase1-demo.log`.
 - If PAT issue returns `503`, ensure dependencies are up and migration state is current:
   - `make dev-up`
   - `make db-migrate`

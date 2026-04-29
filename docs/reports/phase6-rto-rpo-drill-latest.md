@@ -4,9 +4,9 @@ Generated at: 2026-04-28T03:19:22Z
 
 ## Inputs
 
-- source DB: `artifortress`
-- drill DB: `artifortress_drill`
-- backup file: `/tmp/artifortress-phase6-drill-20260427-221917.sql`
+- source DB: `kublai`
+- drill DB: `kublai_drill`
+- backup file: `/tmp/kublai-phase6-drill-20260427-221917.sql`
 - RTO target (seconds): 900
 - RPO target (seconds): 300
 

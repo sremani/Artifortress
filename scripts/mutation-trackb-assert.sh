@@ -4,7 +4,7 @@ set -euo pipefail
 run_spike="${RUN_SPIKE:-true}"
 result_json="${RESULT_JSON:-artifacts/mutation/mut06-trackb-latest.json}"
 report_path="${REPORT_PATH:-docs/reports/mutation-trackb-mut06-latest.md}"
-log_path="${LOG_PATH:-/tmp/artifortress-mutation-trackb-mut06.log}"
+log_path="${LOG_PATH:-/tmp/kublai-mutation-trackb-mut06.log}"
 summary_path="${SUMMARY_PATH:-artifacts/ci/mutation-trackb-assert-summary.txt}"
 metrics_json_path="${METRICS_JSON_PATH:-artifacts/ci/mutation-trackb-assert-metrics.json}"
 

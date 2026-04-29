@@ -4,7 +4,7 @@ Last updated: 2026-04-06
 
 ## Purpose
 
-Define the supported upgrade and rollback paths for currently supported Artifortress baselines.
+Define the supported upgrade and rollback paths for currently supported Kublai baselines.
 
 ## Supported Upgrade Paths
 

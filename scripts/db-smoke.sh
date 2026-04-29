@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-db_user="${POSTGRES_USER:-artifortress}"
-db_name="${POSTGRES_DB:-artifortress}"
+db_user="${POSTGRES_USER:-kublai}"
+db_name="${POSTGRES_DB:-kublai}"
 
 psql_exec() {
   docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" "$@"

@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kublai.fullname" . }}-worker
+  namespace: {{ include "kublai.namespace" . }}
+  labels:
+{{ include "kublai.labels" . | indent 4 }}
+    app.kubernetes.io/name: kublai-worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kublai-worker
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+{{ include "kublai.labels" . | indent 8 }}
+        app.kubernetes.io/name: kublai-worker
+    spec:
+      imagePullSecrets:
+{{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: worker
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "kublai.fullname" . }}-config
+            - secretRef:
+                name: {{ include "kublai.secretName" . }}
+          resources:
+{{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+{{- toYaml .Values.securityContext | nindent 12 }}

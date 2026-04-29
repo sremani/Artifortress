@@ -9,7 +9,7 @@ Status key:
 
 ## Objective
 
-This roadmap defines the execution path to make Artifortress fully enterprise-ready.
+This roadmap defines the execution path to make Kublai fully enterprise-ready.
 
 Current program state:
 - `ER-1` through `ER-7` are complete in this repository.
@@ -17,7 +17,7 @@ Current program state:
 
 The intent is not to broaden feature scope arbitrarily. The intent is to close the
 remaining trust gaps that determine whether a large organization can adopt
-Artifortress for production artifact management:
+Kublai for production artifact management:
 - identity and security closure
 - hard multi-tenant isolation
 - operational reliability and HA

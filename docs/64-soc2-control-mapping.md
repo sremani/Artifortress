@@ -4,7 +4,7 @@ Last updated: 2026-04-28
 
 ## Purpose
 
-This document maps Artifortress repository evidence to SOC 2-style control
+This document maps Kublai repository evidence to SOC 2-style control
 themes. It is not a SOC 2 report and does not claim auditor attestation.
 
 The goal is to make procurement and compliance review faster by identifying:
@@ -24,7 +24,7 @@ The goal is to make procurement and compliance review faster by identifying:
 
 ## Security
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Authentication | bootstrap token, PATs, OIDC, SAML | implemented | `docs/37-phase7-runbook.md`, `docs/43-security-review-closure-v2.md` |
 | SAML trust | signed assertion verification | implemented | `docs/43-security-review-closure-v2.md` |
@@ -38,11 +38,11 @@ The goal is to make procurement and compliance review faster by identifying:
 
 ## Availability
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Readiness | dependency-backed `/health/ready` | implemented | `docs/27-deployment-architecture.md` |
 | Operational health | `/v1/admin/ops/summary` | implemented | `docs/42-operations-dashboard-and-drill-bundle.md` |
-| Operator CLI | supported JSON-first admin CLI for routine workflows | implemented | `tools/Artifortress.AdminCli`, `docs/76-admin-cli-operator-workflows.md` |
+| Operator CLI | supported JSON-first admin CLI for routine workflows | implemented | `tools/Kublai.AdminCli`, `docs/76-admin-cli-operator-workflows.md` |
 | HA topology | multi-replica API/worker shape | implemented | `docs/40-ha-topology-and-failure-domains.md`, `docs/69-ha-kubernetes-validation-plan.md`, `docs/reports/ha-kubernetes-validation-latest.md` |
 | Backup/restore | scripted drill evidence | implemented | `docs/reports/phase6-rto-rpo-drill-latest.md` |
 | Upgrade compatibility | supported baseline upgrade drill | implemented | `docs/reports/upgrade-compatibility-drill-latest.md` |
@@ -52,7 +52,7 @@ The goal is to make procurement and compliance review faster by identifying:
 
 ## Confidentiality
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Token storage | PAT hashes only | implemented | `docs/62-enterprise-security-whitepaper.md` |
 | Secret handling | environment-injected secrets | implemented | `docs/27-deployment-architecture.md` |
@@ -63,7 +63,7 @@ The goal is to make procurement and compliance review faster by identifying:
 
 ## Processing Integrity
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Upload integrity | digest and length verification | implemented | `README.md`, `docs/10-current-state.md` |
 | Content addressing | SHA-256 digest identity and dedupe | implemented | `README.md` |
@@ -74,10 +74,10 @@ The goal is to make procurement and compliance review faster by identifying:
 
 ## Privacy
 
-Artifortress is an artifact repository and does not currently claim to be a
+Kublai is an artifact repository and does not currently claim to be a
 privacy-management system.
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Data minimization | product stores artifact metadata and audit data needed for operation | partial | `docs/63-procurement-evidence-pack.md` |
 | Privacy request workflow | data subject request workflow | gap | future product decision |
@@ -85,7 +85,7 @@ privacy-management system.
 
 ## Change Management
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Versioning policy | SemVer and support windows | implemented | `docs/60-versioning-support-policy.md` |
 | Release gates | RC checklist and sign-off board | implemented | `docs/61-release-candidate-signoff.md` |
@@ -96,7 +96,7 @@ privacy-management system.
 
 ## Access Control
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Least privilege | repo roles and tenant delegated roles | implemented | `docs/45-tenant-isolation-and-admission-controls.md` |
 | Admin bootstrap | bootstrap-token pattern | implemented | `README.md` |
@@ -107,7 +107,7 @@ privacy-management system.
 
 ## Audit Logging
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Audit persistence | privileged operations emit audit records | implemented | `docs/10-current-state.md` |
 | Audit query | tenant-scoped audit endpoint | implemented | `README.md` |
@@ -117,7 +117,7 @@ privacy-management system.
 
 ## Incident Response
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | Operations runbook | incident response flow | implemented | `docs/31-operations-howto.md`, `docs/42-operations-dashboard-and-drill-bundle.md` |
 | Recovery drills | backup/restore and reliability drills | implemented | `docs/reports/phase6-rto-rpo-drill-latest.md`, `docs/reports/reliability-drill-latest.md` |
@@ -126,7 +126,7 @@ privacy-management system.
 
 ## Vendor And Supply Chain Risk
 
-| Control Theme | Artifortress Control | Status | Evidence |
+| Control Theme | Kublai Control | Status | Evidence |
 |---|---|---|---|
 | SBOM | CycloneDX SBOM workflow for bundles, images, and chart | implemented | `docs/44-release-provenance-and-verification.md`, `docs/reports/release-provenance-latest.md` |
 | Artifact signing | cosign signatures for release bundles, images, chart, and SBOMs | implemented | `docs/44-release-provenance-and-verification.md`, `docs/reports/release-provenance-latest.md` |

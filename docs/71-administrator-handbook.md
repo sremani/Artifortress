@@ -5,7 +5,7 @@ Last updated: 2026-04-28
 ## Purpose
 
 This handbook is the supported day-0, day-1, and day-2 administrator guide for
-an Artifortress enterprise environment.
+an Kublai enterprise environment.
 
 It is intentionally operational. Use it with:
 
@@ -40,7 +40,7 @@ supported routine workflow.
 
 ## Access Model
 
-Artifortress supports these administrator access paths:
+Kublai supports these administrator access paths:
 
 - bootstrap token for initial PAT issuance
 - PATs for service and emergency administrative access
@@ -100,8 +100,8 @@ After the API and worker are deployed but before production traffic:
 2. Verify liveness and readiness:
 
 ```bash
-curl -sS https://artifortress.example.com/health/live
-curl -sS https://artifortress.example.com/health/ready
+curl -sS https://kublai.example.com/health/live
+curl -sS https://kublai.example.com/health/ready
 ```
 
 3. Issue the initial bounded administrative PAT using the bootstrap path:
@@ -110,7 +110,7 @@ curl -sS https://artifortress.example.com/health/ready
 curl -sS \
   -H "X-Bootstrap-Token: <bootstrap-token>" \
   -H "Content-Type: application/json" \
-  -X POST https://artifortress.example.com/v1/auth/pats \
+  -X POST https://kublai.example.com/v1/auth/pats \
   -d '{"subject":"platform-admin","scopes":["repo:*:admin"],"ttlMinutes":60}'
 ```
 
@@ -119,7 +119,7 @@ curl -sS \
 ```bash
 curl -sS \
   -H "Authorization: Bearer <admin-token>" \
-  https://artifortress.example.com/v1/auth/whoami
+  https://kublai.example.com/v1/auth/whoami
 ```
 
 5. Configure OIDC or SAML for routine human administration.
@@ -132,9 +132,9 @@ For identity rollout and fallback details, use `docs/37-phase7-runbook.md` and
 The supported CLI equivalents are:
 
 ```bash
-make admin-cli ARGS="--url https://artifortress.example.com health ready"
-make admin-cli ARGS="--url https://artifortress.example.com --bootstrap-token <bootstrap-token> auth issue-pat --subject platform-admin --scope repo:*:admin --ttl-minutes 60"
-make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> auth whoami"
+make admin-cli ARGS="--url https://kublai.example.com health ready"
+make admin-cli ARGS="--url https://kublai.example.com --bootstrap-token <bootstrap-token> auth issue-pat --subject platform-admin --scope repo:*:admin --ttl-minutes 60"
+make admin-cli ARGS="--url https://kublai.example.com --token <admin-token> auth whoami"
 ```
 
 ## Tenant Administration
@@ -156,7 +156,7 @@ Common endpoints:
 Example tenant auditor binding:
 
 ```bash
-make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> tenant roles set --subject auditor@example.com --role tenant_auditor"
+make admin-cli ARGS="--url https://kublai.example.com --token <admin-token> tenant roles set --subject auditor@example.com --role tenant_auditor"
 ```
 
 Change rules:
@@ -186,13 +186,13 @@ Common endpoints:
 Example local repository:
 
 ```bash
-make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> repo create --repo libs-release --type local"
+make admin-cli ARGS="--url https://kublai.example.com --token <admin-token> repo create --repo libs-release --type local"
 ```
 
 Example repository binding:
 
 ```bash
-make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> repo bindings set --repo libs-release --subject team-builds --role write"
+make admin-cli ARGS="--url https://kublai.example.com --token <admin-token> repo bindings set --repo libs-release --subject team-builds --role write"
 ```
 
 Before deleting a repository or narrowing roles:
@@ -238,11 +238,11 @@ Common endpoints:
 Evidence export:
 
 ```bash
-make admin-cli ARGS="--url https://artifortress.example.com --token <auditor-token> compliance evidence --audit-limit 500 --approval-limit 250"
+make admin-cli ARGS="--url https://kublai.example.com --token <auditor-token> compliance evidence --audit-limit 500 --approval-limit 250"
 ```
 
 For header-level digest verification, call the API directly and verify the saved
-payload against `X-Artifortress-Compliance-Pack-SHA256` from the response
+payload against `X-Kublai-Compliance-Pack-SHA256` from the response
 headers.
 
 For control mapping and procurement review, use:
@@ -363,7 +363,7 @@ Use `docs/25-upgrade-rollback-runbook.md`,
 Daily checks:
 
 ```bash
-make admin-cli ARGS="--url https://artifortress.example.com --token <admin-token> preflight"
+make admin-cli ARGS="--url https://kublai.example.com --token <admin-token> preflight"
 ```
 
 Review:
@@ -396,7 +396,7 @@ Default incident flow:
 Collect diagnostics:
 
 ```bash
-API_URL=https://artifortress.example.com \
+API_URL=https://kublai.example.com \
 ADMIN_TOKEN=<admin-token> \
 scripts/support-bundle.sh
 ```

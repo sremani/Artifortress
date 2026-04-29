@@ -34,7 +34,7 @@ Status key:
     - `Auth:Oidc:RoleMappings` with `claimName|claimValue|repoKey|role` entries.
   - JWT claims and mapped scopes are merged and deduplicated.
   - Scope resolution now accepts:
-    - explicit scope claims (`scope`, `scp`, `artifortress_scopes`)
+    - explicit scope claims (`scope`, `scp`, `kublai_scopes`)
     - mapped role grants (for example `groups|af-admins|*|admin`)
 - P7-05:
   - Added SAML metadata endpoint:
@@ -75,6 +75,6 @@ Status key:
 
 - `make format`
 - `make test` (`109` passing non-integration tests)
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`81` passing integration tests)
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`195` total passing tests)
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` (`11` passing Phase 7 tests)
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`81` passing integration tests)
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` (`195` total passing tests)
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` (`11` passing Phase 7 tests)

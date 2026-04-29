@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-02-10
-- Decision Makers: Artifortress founding team
+- Decision Makers: Kublai founding team
 
 ## Context
 
@@ -10,7 +10,7 @@ Artifact repositories fail in hard-to-repair ways when metadata and blob lifecyc
 
 ## Decision
 
-Artifortress will:
+Kublai will:
 
 - Treat PostgreSQL as the single source of truth for metadata, permissions, policies, audit, and events.
 - Store artifact bytes in immutable object-store blobs keyed by sha256 digest.

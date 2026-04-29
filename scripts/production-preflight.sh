@@ -100,8 +100,8 @@ require_file README.md
 require_file Makefile
 require_file docker-compose.yml
 require_file deploy/enterprise-ops-alert-thresholds.yaml
-require_file deploy/grafana-artifortress-operations-dashboard.json
-require_dir deploy/helm/artifortress
+require_file deploy/grafana-kublai-operations-dashboard.json
+require_dir deploy/helm/kublai
 require_dir deploy/kubernetes/production
 require_file docs/59-enterprise-product-envelope.md
 require_file docs/60-versioning-support-policy.md
@@ -199,16 +199,16 @@ else
 fi
 
 if has_command kubectl && [ -n "${KUBE_NAMESPACE:-}" ]; then
-  if kubectl -n "$KUBE_NAMESPACE" get deployment artifortress-api >/dev/null 2>&1; then
-    record "kubernetes api deployment" PASS "artifortress-api deployment exists"
+  if kubectl -n "$KUBE_NAMESPACE" get deployment kublai-api >/dev/null 2>&1; then
+    record "kubernetes api deployment" PASS "kublai-api deployment exists"
   else
-    record "kubernetes api deployment" FAIL "artifortress-api deployment missing"
+    record "kubernetes api deployment" FAIL "kublai-api deployment missing"
   fi
 
-  if kubectl -n "$KUBE_NAMESPACE" get deployment artifortress-worker >/dev/null 2>&1; then
-    record "kubernetes worker deployment" PASS "artifortress-worker deployment exists"
+  if kubectl -n "$KUBE_NAMESPACE" get deployment kublai-worker >/dev/null 2>&1; then
+    record "kubernetes worker deployment" PASS "kublai-worker deployment exists"
   else
-    record "kubernetes worker deployment" FAIL "artifortress-worker deployment missing"
+    record "kubernetes worker deployment" FAIL "kublai-worker deployment missing"
   fi
 else
   record "kubernetes deployment checks" WARN "kubectl or KUBE_NAMESPACE unavailable"

@@ -4,11 +4,11 @@ Last updated: 2026-04-28
 
 ## Purpose
 
-This document tracks the Artifortress plan to remove MinIO as a strategic
+This document tracks the Kublai plan to remove MinIO as a strategic
 dependency after the upstream open-source repository was archived and made
 read-only.
 
-Artifortress should continue to support S3-compatible object storage as an
+Kublai should continue to support S3-compatible object storage as an
 interface, but the project should not depend on unmaintained MinIO community
 artifacts as the default validation or self-hosted production path.
 
@@ -24,7 +24,7 @@ The repository currently uses MinIO in local and kind validation paths:
 
 Production guidance already permits managed S3-compatible object storage such
 as cloud object storage. That remains the preferred near-term path for
-`artifortress.com`.
+`kublai.com`.
 
 Risk posture:
 
@@ -35,7 +35,7 @@ Risk posture:
 
 ## Near-Term Deployment Decision
 
-For `artifortress.com`, do not self-host object storage.
+For `kublai.com`, do not self-host object storage.
 
 Use a managed S3-compatible provider:
 
@@ -43,28 +43,28 @@ Use a managed S3-compatible provider:
 - AWS S3 if the production region/provider moves to AWS
 - Cloudflare R2 if egress cost and Cloudflare integration dominate
 
-The Artifortress deployment must validate against the selected managed object
+The Kublai deployment must validate against the selected managed object
 store before production cutover.
 
 ## Side Project Proposal
 
-Create a separate side project for an Artifortress-owned object store:
+Create a separate side project for an Kublai-owned object store:
 
 - working name: `FortressStore`
-- purpose: small, boring, S3-compatible object storage for Artifortress
+- purpose: small, boring, S3-compatible object storage for Kublai
   deployments and tests
 - license: choose deliberately before coding
 - implementation language: TBD
 - first target: single-node durable object storage with the exact S3 subset
-  Artifortress needs
+  Kublai needs
 
-This should be a separate repository, not a subdirectory in Artifortress, so the
+This should be a separate repository, not a subdirectory in Kublai, so the
 object store can evolve with its own release cadence, security policy, and
 compatibility test suite.
 
 ## Minimum S3 Compatibility Surface
 
-Artifortress currently needs:
+Kublai currently needs:
 
 - bucket existence and creation for local/dev paths
 - object put/get/delete
@@ -82,7 +82,7 @@ Nice-to-have later:
 - replication
 - admin API and web console
 
-Do not start with a full S3 clone. Start with the subset Artifortress actually
+Do not start with a full S3 clone. Start with the subset Kublai actually
 uses and prove it with contract tests.
 
 ## Migration Plan
@@ -91,8 +91,8 @@ Phase 1: dependency boundary
 
 - Add an object-storage compatibility matrix.
 - Keep MinIO only as a temporary test fixture.
-- Add a managed-object-store certification path for `artifortress.com`.
-- Ensure Artifortress docs say "S3-compatible object storage" rather than
+- Add a managed-object-store certification path for `kublai.com`.
+- Ensure Kublai docs say "S3-compatible object storage" rather than
   recommending MinIO.
 
 Phase 2: replacement evaluation
@@ -106,7 +106,7 @@ Phase 3: side-project bootstrap
 
 - Create the `FortressStore` repository.
 - Define the S3 subset contract.
-- Build an Artifortress object-storage conformance test suite.
+- Build an Kublai object-storage conformance test suite.
 - Implement single-node local mode.
 - Add Docker image and Helm/Compose examples.
 
@@ -117,7 +117,7 @@ Phase 4: production hardening
 - Add metrics and health checks.
 - Add security review and release provenance.
 
-## Artifortress Changes Needed
+## Kublai Changes Needed
 
 - Remove MinIO language from customer-facing production recommendations.
 - Keep `deploy/kind/dependencies.yaml` explicitly marked as temporary local
@@ -127,7 +127,7 @@ Phase 4: production hardening
 - Add contract tests that can run against MinIO, managed S3-compatible storage,
   and future `FortressStore`.
 - Add a release gate requiring object-storage provider certification for
-  `artifortress.com`.
+  `kublai.com`.
 
 ## Acceptance Criteria
 
@@ -135,14 +135,14 @@ Phase 4: production hardening
 - Production hosting plan stops implying MinIO for production.
 - Local validation docs identify MinIO as temporary.
 - A side-project decision record exists for `FortressStore`.
-- Artifortress has an object-storage compatibility test plan.
-- `artifortress.com` production cutover uses managed object storage until a
+- Kublai has an object-storage compatibility test plan.
+- `kublai.com` production cutover uses managed object storage until a
   supported replacement is validated.
 
 ## References
 
 - Upstream repository state: `https://github.com/minio/minio/issues/21714`
-- Artifortress hosting plan:
-  `docs/73-artifortress-com-production-hosting-plan.md`
-- Artifortress production cutover:
+- Kublai hosting plan:
+  `docs/73-kublai-com-production-hosting-plan.md`
+- Kublai production cutover:
   `docs/72-installation-and-production-cutover-guide.md`

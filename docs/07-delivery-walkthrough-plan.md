@@ -1,4 +1,4 @@
-# Artifortress Delivery Walkthrough Plan
+# Kublai Delivery Walkthrough Plan
 
 This plan defines the execution sequence we will walk through, with every phase mapped to features, dependencies, and demo milestones.
 

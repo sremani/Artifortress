@@ -78,8 +78,8 @@ UPLOAD_ITERATIONS=24 DOWNLOAD_ITERATIONS=72 PAYLOAD_BYTES=524288 make phase2-loa
 - If API startup fails in script execution:
   - verify runtime and SDK (`dotnet --version`).
   - inspect logs:
-    - `/tmp/artifortress-phase2-demo.log`
-    - `/tmp/artifortress-phase2-load.log`
+    - `/tmp/kublai-phase2-demo.log`
+    - `/tmp/kublai-phase2-load.log`
 - If uploads fail at pre-signed URL step:
   - verify MinIO service is running and bucket exists.
   - rerun `make storage-bootstrap`.

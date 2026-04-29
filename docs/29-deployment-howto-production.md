@@ -25,8 +25,8 @@ make format
 
 Publish application artifacts:
 ```bash
-dotnet publish src/Artifortress.Api/Artifortress.Api.fsproj -c Release -o /tmp/artifortress-api-release
-dotnet publish src/Artifortress.Worker/Artifortress.Worker.fsproj -c Release -o /tmp/artifortress-worker-release
+dotnet publish src/Kublai.Api/Kublai.Api.fsproj -c Release -o /tmp/kublai-api-release
+dotnet publish src/Kublai.Worker/Kublai.Worker.fsproj -c Release -o /tmp/kublai-worker-release
 ```
 
 ## 3. Production Config Baseline
@@ -108,7 +108,7 @@ No-go and rollback if:
 2. Restore previous known-good artifacts.
 3. If data rollback is needed:
 ```bash
-RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore
+RESTORE_PATH=/tmp/kublai-backup.sql make db-restore
 ```
 4. Re-run post-rollback validation:
 ```bash

@@ -5,14 +5,14 @@ Last updated: 2026-04-28
 ## Purpose
 
 This document is the procurement and security-review evidence index for an
-Artifortress enterprise GA candidate.
+Kublai enterprise GA candidate.
 
 It gathers the materials a buyer, security reviewer, platform team, or legal
 reviewer usually needs before approving production use.
 
 ## Executive Summary
 
-Artifortress is a self-hosted artifact repository control plane designed for:
+Kublai is a self-hosted artifact repository control plane designed for:
 
 - correctness-first artifact lifecycle operations
 - tenant-aware repository administration
@@ -38,7 +38,7 @@ performance soak drills.
 | Architecture | `docs/01-system-architecture.md`, `Architecture.md` |
 | Deployment | `docs/27-deployment-architecture.md`, `docs/28-deployment-howto-staging.md`, `docs/29-deployment-howto-production.md` |
 | Operations | `docs/31-operations-howto.md`, `docs/42-operations-dashboard-and-drill-bundle.md` |
-| Admin CLI | `docs/76-admin-cli-operator-workflows.md`, `tools/Artifortress.AdminCli` |
+| Admin CLI | `docs/76-admin-cli-operator-workflows.md`, `tools/Kublai.AdminCli` |
 | Tenant lifecycle | `docs/77-tenant-onboarding-and-offboarding-workflow.md` |
 | HA and failure domains | `docs/40-ha-topology-and-failure-domains.md` |
 | Upgrade/rollback | `docs/25-upgrade-rollback-runbook.md`, `docs/41-migration-compatibility-policy.md`, `docs/48-upgrade-compatibility-matrix.md` |
@@ -55,10 +55,10 @@ performance soak drills.
 
 ### Deployment Model
 
-Artifortress is self-hosted. The current production-oriented deployment shape is
+Kublai is self-hosted. The current production-oriented deployment shape is
 Kubernetes/Helm with external PostgreSQL and S3-compatible object storage.
 
-Artifortress is not currently offered as a hosted SaaS in this repository.
+Kublai is not currently offered as a hosted SaaS in this repository.
 
 ### Data Storage
 
@@ -68,7 +68,7 @@ control-plane truth from blob bytes.
 
 ### Customer Data Types
 
-Artifortress stores:
+Kublai stores:
 
 - repository metadata
 - package/version metadata
@@ -111,7 +111,7 @@ Application-level token storage persists hashes rather than plaintext PATs.
 
 ### Audit And Evidence
 
-Artifortress exposes tenant-scoped audit query, immutable audit export,
+Kublai exposes tenant-scoped audit query, immutable audit export,
 compliance evidence pack generation, legal hold listing, and governance approval
 evidence.
 
@@ -186,11 +186,17 @@ Before procurement approval for enterprise GA, the release record should include
 
 Open procurement-relevant gaps:
 
-- `EGA-21`: cloud-specific production examples
-- `EGA-22`: air-gapped/offline install plan
 - `EGA-23`: backup/restore and upgrade drills against release artifacts
 - `EGA-24`: capacity certification on non-local infrastructure
-- `EGA-25`: package-format compatibility strategy
+
+Recently closed procurement-relevant gaps:
+
+- `EGA-21`: cloud-specific production examples in
+  `docs/78-cloud-production-examples.md`
+- `EGA-22`: air-gapped/offline install plan in
+  `docs/81-airgapped-offline-install-plan.md`
+- `EGA-25`: package-format compatibility strategy in
+  `docs/80-package-format-compatibility-strategy.md`
 
 These gaps do not invalidate the current security and release evidence, but
 they narrow which enterprise claims should be made during procurement review.

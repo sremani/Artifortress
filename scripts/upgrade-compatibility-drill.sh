@@ -2,8 +2,14 @@
 set -euo pipefail
 
 report_path="${REPORT_PATH:-docs/reports/upgrade-compatibility-drill-latest.md}"
-db_user="${POSTGRES_USER:-artifortress}"
-base_db_prefix="${DRILL_DB_PREFIX:-artifortress_upgrade_drill}"
+db_user="${POSTGRES_USER:-kublai}"
+base_db_prefix="${DRILL_DB_PREFIX:-kublai_upgrade_drill}"
+release_tag="${KUBLAI_RELEASE_TAG:-<unset>}"
+api_image_digest="${KUBLAI_API_IMAGE_DIGEST:-<unset>}"
+worker_image_digest="${KUBLAI_WORKER_IMAGE_DIGEST:-<unset>}"
+helm_chart_digest="${KUBLAI_HELM_CHART_DIGEST:-<unset>}"
+release_sbom_path="${KUBLAI_RELEASE_SBOM_PATH:-<unset>}"
+release_provenance_report="${KUBLAI_RELEASE_PROVENANCE_REPORT:-docs/reports/release-provenance-latest.md}"
 
 baselines=(
   "0009_post_ga_search_read_model.sql|Phase 6 GA baseline"
@@ -118,6 +124,15 @@ total_duration="$(( $(date +%s) - start_epoch ))"
   echo
   echo "- overall status: ${overall_status}"
   echo "- total duration (seconds): ${total_duration}"
+  echo
+  echo "## Release Artifact Inputs"
+  echo
+  echo "- release tag: \`${release_tag}\`"
+  echo "- API image digest: \`${api_image_digest}\`"
+  echo "- worker image digest: \`${worker_image_digest}\`"
+  echo "- Helm chart digest: \`${helm_chart_digest}\`"
+  echo "- SBOM path: \`${release_sbom_path}\`"
+  echo "- release provenance report: \`${release_provenance_report}\`"
   echo
   echo "## Rehearsed Paths"
   echo

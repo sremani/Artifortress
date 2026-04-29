@@ -52,6 +52,6 @@ The tranche is covered by integration tests for:
 - stale-processing and freshness-lag status reporting
 
 Local validation:
-- `dotnet build Artifortress.sln -c Debug`
+- `dotnet build Kublai.sln -c Debug`
 - `make test`
 - `make test-integration`

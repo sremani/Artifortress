@@ -45,7 +45,7 @@ make db-backup
 Restore from backup snapshot:
 
 ```bash
-RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore
+RESTORE_PATH=/tmp/kublai-backup.sql make db-restore
 ```
 
 ## What `phase6-demo` validates
@@ -81,9 +81,9 @@ Primary indicators from `/v1/admin/ops/summary`:
 - `REPORT_PATH` (default `docs/reports/phase6-ga-readiness-latest.md`)
 
 `phase6-drill` supports:
-- `POSTGRES_USER` (default `artifortress`)
-- `POSTGRES_DB` (default `artifortress`)
-- `DRILL_DB` (default `artifortress_drill`)
+- `POSTGRES_USER` (default `kublai`)
+- `POSTGRES_DB` (default `kublai`)
+- `DRILL_DB` (default `kublai_drill`)
 - `BACKUP_PATH` (default generated under `/tmp`)
 - `REPORT_PATH` (default `docs/reports/phase6-rto-rpo-drill-latest.md`)
 - `RTO_TARGET_SECONDS` (default `900`)
@@ -92,7 +92,7 @@ Primary indicators from `/v1/admin/ops/summary`:
 ## Troubleshooting
 
 - If API does not become healthy:
-  - inspect `/tmp/artifortress-phase6-demo-api.log`
+  - inspect `/tmp/kublai-phase6-demo-api.log`
 - If backup/restore drill fails:
   - verify Postgres container is running (`make dev-up`)
   - ensure migrations are current (`make db-migrate`)

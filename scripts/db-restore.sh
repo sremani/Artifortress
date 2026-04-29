@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-db_user="${POSTGRES_USER:-artifortress}"
-target_db="${TARGET_DB:-${POSTGRES_DB:-artifortress}}"
+db_user="${POSTGRES_USER:-kublai}"
+target_db="${TARGET_DB:-${POSTGRES_DB:-kublai}}"
 restore_path="${RESTORE_PATH:-}"
 
 if [[ ! "$target_db" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -12,7 +12,7 @@ fi
 
 if [ -z "$restore_path" ]; then
   echo "RESTORE_PATH is required."
-  echo "Example: RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore"
+  echo "Example: RESTORE_PATH=/tmp/kublai-backup.sql make db-restore"
   exit 1
 fi
 

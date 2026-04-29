@@ -7,9 +7,9 @@ Generated at: 2026-04-28T04:03:25Z
 - overall status: PASS
 - started at: 2026-04-28T03:59:20Z
 - ended at: 2026-04-28T04:03:25Z
-- cluster: artifortress-ha
-- namespace: artifortress-ha-validation
-- release: artifortress
+- cluster: kublai-ha
+- namespace: kublai-ha-validation
+- release: kublai
 - API ready replicas: 3
 - worker ready replicas: 2
 
@@ -43,20 +43,20 @@ Server Version: v1.35.0
 
 ```text
 NAME                                  READY   STATUS      RESTARTS   AGE     IP            NODE                      NOMINATED NODE   READINESS GATES
-artifortress-api-58f4cc9b7d-5vz6z     1/1     Running     0          12s     10.244.2.13   artifortress-ha-worker    <none>           <none>
-artifortress-api-58f4cc9b7d-mc6fr     1/1     Running     0          2m37s   10.244.1.6    artifortress-ha-worker2   <none>           <none>
-artifortress-api-58f4cc9b7d-qhqfr     1/1     Running     0          12s     10.244.2.12   artifortress-ha-worker    <none>           <none>
-artifortress-worker-9b9fb4d94-f7kh9   1/1     Running     0          13s     10.244.2.11   artifortress-ha-worker    <none>           <none>
-artifortress-worker-9b9fb4d94-fhgc6   1/1     Running     0          13s     10.244.1.7    artifortress-ha-worker2   <none>           <none>
-minio-b957f555c-pb8l9                 1/1     Running     0          9m20s   10.244.1.2    artifortress-ha-worker2   <none>           <none>
-minio-bootstrap-1777348452-sld4z      0/1     Completed   0          9m13s   10.244.2.3    artifortress-ha-worker    <none>           <none>
-minio-bootstrap-1777348760-842nn      0/1     Completed   0          4m5s    10.244.2.7    artifortress-ha-worker    <none>           <none>
-postgres-5b9d58bb58-62jdg             1/1     Running     0          9m20s   10.244.2.2    artifortress-ha-worker    <none>           <none>
+kublai-api-58f4cc9b7d-5vz6z     1/1     Running     0          12s     10.244.2.13   kublai-ha-worker    <none>           <none>
+kublai-api-58f4cc9b7d-mc6fr     1/1     Running     0          2m37s   10.244.1.6    kublai-ha-worker2   <none>           <none>
+kublai-api-58f4cc9b7d-qhqfr     1/1     Running     0          12s     10.244.2.12   kublai-ha-worker    <none>           <none>
+kublai-worker-9b9fb4d94-f7kh9   1/1     Running     0          13s     10.244.2.11   kublai-ha-worker    <none>           <none>
+kublai-worker-9b9fb4d94-fhgc6   1/1     Running     0          13s     10.244.1.7    kublai-ha-worker2   <none>           <none>
+minio-b957f555c-pb8l9                 1/1     Running     0          9m20s   10.244.1.2    kublai-ha-worker2   <none>           <none>
+minio-bootstrap-1777348452-sld4z      0/1     Completed   0          9m13s   10.244.2.3    kublai-ha-worker    <none>           <none>
+minio-bootstrap-1777348760-842nn      0/1     Completed   0          4m5s    10.244.2.7    kublai-ha-worker    <none>           <none>
+postgres-5b9d58bb58-62jdg             1/1     Running     0          9m20s   10.244.2.2    kublai-ha-worker    <none>           <none>
 ```
 
 ## Production Preflight
 
-- report: `/tmp/artifortress-kind-production-preflight.md`
+- report: `/tmp/kublai-kind-production-preflight.md`
 
 ## Residual Risks
 

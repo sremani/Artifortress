@@ -2,10 +2,10 @@
 set -euo pipefail
 
 api_url="${API_URL:-http://127.0.0.1:8086}"
-connection_string="${CONNECTION_STRING:-Host=localhost;Port=5432;Username=artifortress;Password=artifortress;Database=artifortress}"
+connection_string="${CONNECTION_STRING:-Host=localhost;Port=5432;Username=kublai;Password=kublai;Database=kublai}"
 bootstrap_token="${BOOTSTRAP_TOKEN:-phase1-demo-bootstrap}"
-api_dll="src/Artifortress.Api/bin/Debug/net10.0/Artifortress.Api.dll"
-log_file="/tmp/artifortress-phase1-demo.log"
+api_dll="src/Kublai.Api/bin/Debug/net10.0/Kublai.Api.dll"
+log_file="/tmp/kublai-phase1-demo.log"
 
 if [ ! -f "$api_dll" ]; then
   echo "Missing API binary at $api_dll. Run 'make build' first."

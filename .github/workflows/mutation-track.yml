@@ -36,7 +36,7 @@ jobs:
         if: always()
         run: |
           mkdir -p artifacts/ci
-          cp /tmp/artifortress-mutation-trackb-mut06.log artifacts/ci/mutation-trackb.log || true
+          cp /tmp/kublai-mutation-trackb-mut06.log artifacts/ci/mutation-trackb.log || true
 
       - name: Upload mutation artifacts
         if: always()

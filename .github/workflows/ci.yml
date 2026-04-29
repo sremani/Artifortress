@@ -35,6 +35,9 @@ jobs:
       - name: Format Check
         run: make format
 
+      - name: Offline Install Plan Validation
+        run: make offline-install-plan-validate
+
   integration-tests:
     runs-on: ubuntu-latest
     needs: build-and-test
@@ -42,13 +45,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: artifortress
-          POSTGRES_PASSWORD: artifortress
-          POSTGRES_DB: artifortress
+          POSTGRES_USER: kublai
+          POSTGRES_PASSWORD: kublai
+          POSTGRES_DB: kublai
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U artifortress -d artifortress"
+          --health-cmd "pg_isready -U kublai -d kublai"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -69,16 +72,16 @@ jobs:
           docker run -d --name minio \
             -p 9000:9000 \
             -p 9001:9001 \
-            -e MINIO_ROOT_USER=artifortress \
-            -e MINIO_ROOT_PASSWORD=artifortress \
+            -e MINIO_ROOT_USER=kublai \
+            -e MINIO_ROOT_PASSWORD=kublai-secret \
             minio/minio:latest server /data --console-address ":9001"
 
       - name: Wait for Postgres readiness
         env:
-          PGPASSWORD: artifortress
+          PGPASSWORD: kublai
         run: |
           for attempt in $(seq 1 60); do
-            if pg_isready -h 127.0.0.1 -p 5432 -U artifortress -d artifortress >/dev/null 2>&1; then
+            if pg_isready -h 127.0.0.1 -p 5432 -U kublai -d kublai >/dev/null 2>&1; then
               echo "Postgres is ready."
               exit 0
             fi
@@ -104,15 +107,15 @@ jobs:
       - name: Bootstrap MinIO bucket
         run: |
           docker run --rm --network container:minio --entrypoint /bin/sh minio/mc:latest -c "
-            mc alias set local http://127.0.0.1:9000 artifortress artifortress >/dev/null &&
-            mc mb --ignore-existing local/artifortress-dev >/dev/null
+            mc alias set local http://127.0.0.1:9000 kublai kublai >/dev/null &&
+            mc mb --ignore-existing local/kublai-dev >/dev/null
           "
 
       - name: Run integration tests
         env:
-          ConnectionStrings__Postgres: Host=127.0.0.1;Port=5432;Username=artifortress;Password=artifortress;Database=artifortress
+          ConnectionStrings__Postgres: Host=127.0.0.1;Port=5432;Username=kublai;Password=kublai;Database=kublai
           ObjectStorage__Endpoint: http://127.0.0.1:9000
-          ObjectStorage__AccessKey: artifortress
-          ObjectStorage__SecretKey: artifortress
-          ObjectStorage__Bucket: artifortress-dev
+          ObjectStorage__AccessKey: kublai
+          ObjectStorage__SecretKey: kublai-secret
+          ObjectStorage__Bucket: kublai-dev
         run: make test-integration-full

@@ -59,8 +59,8 @@ jobs:
             prerelease=true
           fi
 
-          api_image="${REGISTRY}/${owner_lc}/artifortress-api"
-          worker_image="${REGISTRY}/${owner_lc}/artifortress-worker"
+          api_image="${REGISTRY}/${owner_lc}/kublai-api"
+          worker_image="${REGISTRY}/${owner_lc}/kublai-worker"
 
           {
             echo "version=${version}"
@@ -77,25 +77,25 @@ jobs:
           global-json-file: global.json
 
       - name: Restore
-        run: dotnet restore Artifortress.sln
+        run: dotnet restore Kublai.sln
 
       - name: Build
-        run: dotnet build Artifortress.sln -c Release --no-restore
+        run: dotnet build Kublai.sln -c Release --no-restore
 
       - name: Publish API
-        run: dotnet publish src/Artifortress.Api/Artifortress.Api.fsproj -c Release -o out/api --no-build
+        run: dotnet publish src/Kublai.Api/Kublai.Api.fsproj -c Release -o out/api --no-build
 
       - name: Publish Worker
-        run: dotnet publish src/Artifortress.Worker/Artifortress.Worker.fsproj -c Release -o out/worker --no-build
+        run: dotnet publish src/Kublai.Worker/Kublai.Worker.fsproj -c Release -o out/worker --no-build
 
       - name: Create release bundles
         run: |
           mkdir -p dist
-          tar -C out/api -czf dist/artifortress-api-linux-x64.tar.gz .
-          tar -C out/worker -czf dist/artifortress-worker-linux-x64.tar.gz .
+          tar -C out/api -czf dist/kublai-api-linux-x64.tar.gz .
+          tar -C out/worker -czf dist/kublai-worker-linux-x64.tar.gz .
           (
             cd dist
-            sha256sum artifortress-api-linux-x64.tar.gz artifortress-worker-linux-x64.tar.gz > SHA256SUMS
+            sha256sum kublai-api-linux-x64.tar.gz kublai-worker-linux-x64.tar.gz > SHA256SUMS
           )
 
       - name: Install Syft
@@ -103,8 +103,8 @@ jobs:
 
       - name: Generate bundle SBOMs
         run: |
-          syft packages dir:out/api -o cyclonedx-json > dist/artifortress-api.sbom.cdx.json
-          syft packages dir:out/worker -o cyclonedx-json > dist/artifortress-worker.sbom.cdx.json
+          syft packages dir:out/api -o cyclonedx-json > dist/kublai-api.sbom.cdx.json
+          syft packages dir:out/worker -o cyclonedx-json > dist/kublai-worker.sbom.cdx.json
 
       - name: Login to GHCR
         run: echo "${{ github.token }}" | docker login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
@@ -114,14 +114,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          docker buildx create --use --name artifortress-release-builder || docker buildx use artifortress-release-builder
+          docker buildx create --use --name kublai-release-builder || docker buildx use kublai-release-builder
 
           docker buildx build \
             --platform linux/amd64 \
             --file deploy/kind/Dockerfile.api \
             --tag "${{ steps.meta.outputs.api_image }}:${{ steps.meta.outputs.version }}" \
             --tag "${{ steps.meta.outputs.api_image }}:sha-${{ steps.meta.outputs.short_sha }}" \
-            --metadata-file dist/artifortress-api-image.metadata.json \
+            --metadata-file dist/kublai-api-image.metadata.json \
             --push \
             .
 
@@ -130,12 +130,12 @@ jobs:
             --file deploy/kind/Dockerfile.worker \
             --tag "${{ steps.meta.outputs.worker_image }}:${{ steps.meta.outputs.version }}" \
             --tag "${{ steps.meta.outputs.worker_image }}:sha-${{ steps.meta.outputs.short_sha }}" \
-            --metadata-file dist/artifortress-worker-image.metadata.json \
+            --metadata-file dist/kublai-worker-image.metadata.json \
             --push \
             .
 
-          api_digest="$(jq -r '."containerimage.digest"' dist/artifortress-api-image.metadata.json)"
-          worker_digest="$(jq -r '."containerimage.digest"' dist/artifortress-worker-image.metadata.json)"
+          api_digest="$(jq -r '."containerimage.digest"' dist/kublai-api-image.metadata.json)"
+          worker_digest="$(jq -r '."containerimage.digest"' dist/kublai-worker-image.metadata.json)"
 
           if [[ -z "${api_digest}" || "${api_digest}" == "null" ]]; then
             echo "API image digest was not produced by docker buildx."
@@ -163,25 +163,25 @@ jobs:
 
       - name: Generate OCI image SBOMs
         run: |
-          syft packages "${{ steps.meta.outputs.api_image }}@${api_digest}" -o cyclonedx-json > dist/artifortress-api-image.sbom.cdx.json
-          syft packages "${{ steps.meta.outputs.worker_image }}@${worker_digest}" -o cyclonedx-json > dist/artifortress-worker-image.sbom.cdx.json
+          syft packages "${{ steps.meta.outputs.api_image }}@${api_digest}" -o cyclonedx-json > dist/kublai-api-image.sbom.cdx.json
+          syft packages "${{ steps.meta.outputs.worker_image }}@${worker_digest}" -o cyclonedx-json > dist/kublai-worker-image.sbom.cdx.json
 
       - name: Package Helm chart
         run: |
-          helm package deploy/helm/artifortress \
+          helm package deploy/helm/kublai \
             --version "${{ steps.meta.outputs.version }}" \
             --app-version "${{ steps.meta.outputs.version }}" \
             --destination dist
 
-          chart_package="dist/artifortress-${{ steps.meta.outputs.version }}.tgz"
-          syft packages "${chart_package}" -o cyclonedx-json > dist/artifortress-helm-chart.sbom.cdx.json
+          chart_package="dist/kublai-${{ steps.meta.outputs.version }}.tgz"
+          syft packages "${chart_package}" -o cyclonedx-json > dist/kublai-helm-chart.sbom.cdx.json
           (
             cd dist
             sha256sum \
-              "artifortress-${{ steps.meta.outputs.version }}.tgz" \
-              artifortress-api-image.sbom.cdx.json \
-              artifortress-worker-image.sbom.cdx.json \
-              artifortress-helm-chart.sbom.cdx.json >> SHA256SUMS
+              "kublai-${{ steps.meta.outputs.version }}.tgz" \
+              kublai-api-image.sbom.cdx.json \
+              kublai-worker-image.sbom.cdx.json \
+              kublai-helm-chart.sbom.cdx.json >> SHA256SUMS
           )
 
       - name: Install Cosign
@@ -191,35 +191,35 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          cosign sign-blob --yes dist/artifortress-api-linux-x64.tar.gz --output-signature dist/artifortress-api-linux-x64.tar.gz.sig --output-certificate dist/artifortress-api-linux-x64.tar.gz.crt
-          cosign sign-blob --yes dist/artifortress-worker-linux-x64.tar.gz --output-signature dist/artifortress-worker-linux-x64.tar.gz.sig --output-certificate dist/artifortress-worker-linux-x64.tar.gz.crt
-          cosign sign-blob --yes dist/artifortress-api.sbom.cdx.json --output-signature dist/artifortress-api.sbom.cdx.json.sig --output-certificate dist/artifortress-api.sbom.cdx.json.crt
-          cosign sign-blob --yes dist/artifortress-worker.sbom.cdx.json --output-signature dist/artifortress-worker.sbom.cdx.json.sig --output-certificate dist/artifortress-worker.sbom.cdx.json.crt
+          cosign sign-blob --yes dist/kublai-api-linux-x64.tar.gz --output-signature dist/kublai-api-linux-x64.tar.gz.sig --output-certificate dist/kublai-api-linux-x64.tar.gz.crt
+          cosign sign-blob --yes dist/kublai-worker-linux-x64.tar.gz --output-signature dist/kublai-worker-linux-x64.tar.gz.sig --output-certificate dist/kublai-worker-linux-x64.tar.gz.crt
+          cosign sign-blob --yes dist/kublai-api.sbom.cdx.json --output-signature dist/kublai-api.sbom.cdx.json.sig --output-certificate dist/kublai-api.sbom.cdx.json.crt
+          cosign sign-blob --yes dist/kublai-worker.sbom.cdx.json --output-signature dist/kublai-worker.sbom.cdx.json.sig --output-certificate dist/kublai-worker.sbom.cdx.json.crt
           cosign sign --yes "${{ steps.meta.outputs.api_image }}@${api_digest}"
           cosign sign --yes "${{ steps.meta.outputs.worker_image }}@${worker_digest}"
-          cosign sign-blob --yes dist/artifortress-api-image.sbom.cdx.json --output-signature dist/artifortress-api-image.sbom.cdx.json.sig --output-certificate dist/artifortress-api-image.sbom.cdx.json.crt
-          cosign sign-blob --yes dist/artifortress-worker-image.sbom.cdx.json --output-signature dist/artifortress-worker-image.sbom.cdx.json.sig --output-certificate dist/artifortress-worker-image.sbom.cdx.json.crt
-          cosign sign-blob --yes "dist/artifortress-${{ steps.meta.outputs.version }}.tgz" --output-signature "dist/artifortress-${{ steps.meta.outputs.version }}.tgz.sig" --output-certificate "dist/artifortress-${{ steps.meta.outputs.version }}.tgz.crt"
-          cosign sign-blob --yes dist/artifortress-helm-chart.sbom.cdx.json --output-signature dist/artifortress-helm-chart.sbom.cdx.json.sig --output-certificate dist/artifortress-helm-chart.sbom.cdx.json.crt
+          cosign sign-blob --yes dist/kublai-api-image.sbom.cdx.json --output-signature dist/kublai-api-image.sbom.cdx.json.sig --output-certificate dist/kublai-api-image.sbom.cdx.json.crt
+          cosign sign-blob --yes dist/kublai-worker-image.sbom.cdx.json --output-signature dist/kublai-worker-image.sbom.cdx.json.sig --output-certificate dist/kublai-worker-image.sbom.cdx.json.crt
+          cosign sign-blob --yes "dist/kublai-${{ steps.meta.outputs.version }}.tgz" --output-signature "dist/kublai-${{ steps.meta.outputs.version }}.tgz.sig" --output-certificate "dist/kublai-${{ steps.meta.outputs.version }}.tgz.crt"
+          cosign sign-blob --yes dist/kublai-helm-chart.sbom.cdx.json --output-signature dist/kublai-helm-chart.sbom.cdx.json.sig --output-certificate dist/kublai-helm-chart.sbom.cdx.json.crt
           (
             cd dist
             sha256sum \
-              artifortress-api-linux-x64.tar.gz.sig \
-              artifortress-api-linux-x64.tar.gz.crt \
-              artifortress-worker-linux-x64.tar.gz.sig \
-              artifortress-worker-linux-x64.tar.gz.crt \
-              artifortress-api.sbom.cdx.json.sig \
-              artifortress-api.sbom.cdx.json.crt \
-              artifortress-worker.sbom.cdx.json.sig \
-              artifortress-worker.sbom.cdx.json.crt \
-              artifortress-api-image.sbom.cdx.json.sig \
-              artifortress-api-image.sbom.cdx.json.crt \
-              artifortress-worker-image.sbom.cdx.json.sig \
-              artifortress-worker-image.sbom.cdx.json.crt \
-              "artifortress-${{ steps.meta.outputs.version }}.tgz.sig" \
-              "artifortress-${{ steps.meta.outputs.version }}.tgz.crt" \
-              artifortress-helm-chart.sbom.cdx.json.sig \
-              artifortress-helm-chart.sbom.cdx.json.crt \
+              kublai-api-linux-x64.tar.gz.sig \
+              kublai-api-linux-x64.tar.gz.crt \
+              kublai-worker-linux-x64.tar.gz.sig \
+              kublai-worker-linux-x64.tar.gz.crt \
+              kublai-api.sbom.cdx.json.sig \
+              kublai-api.sbom.cdx.json.crt \
+              kublai-worker.sbom.cdx.json.sig \
+              kublai-worker.sbom.cdx.json.crt \
+              kublai-api-image.sbom.cdx.json.sig \
+              kublai-api-image.sbom.cdx.json.crt \
+              kublai-worker-image.sbom.cdx.json.sig \
+              kublai-worker-image.sbom.cdx.json.crt \
+              "kublai-${{ steps.meta.outputs.version }}.tgz.sig" \
+              "kublai-${{ steps.meta.outputs.version }}.tgz.crt" \
+              kublai-helm-chart.sbom.cdx.json.sig \
+              kublai-helm-chart.sbom.cdx.json.crt \
               OCI-IMAGES.txt >> SHA256SUMS
           )
 
@@ -230,29 +230,29 @@ jobs:
           prerelease: ${{ steps.meta.outputs.prerelease }}
           generate_release_notes: true
           files: |
-            dist/artifortress-api-linux-x64.tar.gz
-            dist/artifortress-api-linux-x64.tar.gz.sig
-            dist/artifortress-api-linux-x64.tar.gz.crt
-            dist/artifortress-worker-linux-x64.tar.gz
-            dist/artifortress-worker-linux-x64.tar.gz.sig
-            dist/artifortress-worker-linux-x64.tar.gz.crt
-            dist/artifortress-api.sbom.cdx.json
-            dist/artifortress-api.sbom.cdx.json.sig
-            dist/artifortress-api.sbom.cdx.json.crt
-            dist/artifortress-worker.sbom.cdx.json
-            dist/artifortress-worker.sbom.cdx.json.sig
-            dist/artifortress-worker.sbom.cdx.json.crt
-            dist/artifortress-api-image.sbom.cdx.json
-            dist/artifortress-api-image.sbom.cdx.json.sig
-            dist/artifortress-api-image.sbom.cdx.json.crt
-            dist/artifortress-worker-image.sbom.cdx.json
-            dist/artifortress-worker-image.sbom.cdx.json.sig
-            dist/artifortress-worker-image.sbom.cdx.json.crt
-            dist/artifortress-helm-chart.sbom.cdx.json
-            dist/artifortress-helm-chart.sbom.cdx.json.sig
-            dist/artifortress-helm-chart.sbom.cdx.json.crt
-            dist/artifortress-${{ steps.meta.outputs.version }}.tgz
-            dist/artifortress-${{ steps.meta.outputs.version }}.tgz.sig
-            dist/artifortress-${{ steps.meta.outputs.version }}.tgz.crt
+            dist/kublai-api-linux-x64.tar.gz
+            dist/kublai-api-linux-x64.tar.gz.sig
+            dist/kublai-api-linux-x64.tar.gz.crt
+            dist/kublai-worker-linux-x64.tar.gz
+            dist/kublai-worker-linux-x64.tar.gz.sig
+            dist/kublai-worker-linux-x64.tar.gz.crt
+            dist/kublai-api.sbom.cdx.json
+            dist/kublai-api.sbom.cdx.json.sig
+            dist/kublai-api.sbom.cdx.json.crt
+            dist/kublai-worker.sbom.cdx.json
+            dist/kublai-worker.sbom.cdx.json.sig
+            dist/kublai-worker.sbom.cdx.json.crt
+            dist/kublai-api-image.sbom.cdx.json
+            dist/kublai-api-image.sbom.cdx.json.sig
+            dist/kublai-api-image.sbom.cdx.json.crt
+            dist/kublai-worker-image.sbom.cdx.json
+            dist/kublai-worker-image.sbom.cdx.json.sig
+            dist/kublai-worker-image.sbom.cdx.json.crt
+            dist/kublai-helm-chart.sbom.cdx.json
+            dist/kublai-helm-chart.sbom.cdx.json.sig
+            dist/kublai-helm-chart.sbom.cdx.json.crt
+            dist/kublai-${{ steps.meta.outputs.version }}.tgz
+            dist/kublai-${{ steps.meta.outputs.version }}.tgz.sig
+            dist/kublai-${{ steps.meta.outputs.version }}.tgz.crt
             dist/OCI-IMAGES.txt
             dist/SHA256SUMS

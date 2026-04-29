@@ -31,13 +31,13 @@ Status key:
   - Introduced `upload_sessions` state model aligned to `docs/04-state-machines.md`.
   - Added indexes for repository/state and session expiration scans.
 - P2-02 completed:
-  - Added `src/Artifortress.Api/ObjectStorage.fs` with typed storage errors and MinIO/S3 multipart + streaming operations.
+  - Added `src/Kublai.Api/ObjectStorage.fs` with typed storage errors and MinIO/S3 multipart + streaming operations.
   - Added config support for part URL TTL (`ObjectStorage:PresignPartTtlSeconds`).
-  - Added MinIO-backed integration coverage in `tests/Artifortress.Domain.Tests/ObjectStorageTests.fs`.
+  - Added MinIO-backed integration coverage in `tests/Kublai.Domain.Tests/ObjectStorageTests.fs`.
 - P2-03 completed:
   - Added `POST /v1/repos/{repoKey}/uploads`.
   - Added digest/length validation, repo write authz checks, dedupe fast-path, and session persistence.
-  - Added integration coverage in `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`.
+  - Added integration coverage in `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`.
 - P2-04 completed:
   - Added `POST /v1/repos/{repoKey}/uploads/{uploadId}/parts`.
   - Added `POST /v1/repos/{repoKey}/uploads/{uploadId}/complete`.

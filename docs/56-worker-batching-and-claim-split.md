@@ -11,7 +11,7 @@ This tranche closes the next worker optimization phase:
 - `WO-3-03` compare post-split claim-path plan shape
 
 Relevant code:
-- `src/Artifortress.Worker/Program.fs`
+- `src/Kublai.Worker/Program.fs`
 
 ## What Changed
 
@@ -60,7 +60,7 @@ This makes the behavior easier to reason about and easier for the planner to opt
 ## Validation
 
 Validation performed for this tranche:
-- `dotnet build Artifortress.sln -c Debug`
+- `dotnet build Kublai.sln -c Debug`
 - `make test-integration`
 - `bash scripts/reliability-drill.sh`
 - `bash scripts/search-soak-drill.sh`

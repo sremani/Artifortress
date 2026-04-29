@@ -9,7 +9,7 @@ Status key:
 
 ## Objective
 
-This board tracks the focused optimization program for the Artifortress worker
+This board tracks the focused optimization program for the Kublai worker
 indexing and persistence path identified during CLR profiling.
 
 The target path is:
@@ -21,12 +21,12 @@ The target path is:
 - job completion update
 
 Primary profiling evidence for this board:
-- `/tmp/artifortress-worker-trace-concurrent.nettrace`
-- `/tmp/artifortress-worker-trace-concurrent.speedscope.json`
-- `/tmp/artifortress-worker-counters-concurrent.json`
+- `/tmp/kublai-worker-trace-concurrent.nettrace`
+- `/tmp/kublai-worker-trace-concurrent.speedscope.json`
+- `/tmp/kublai-worker-counters-concurrent.json`
 
 Relevant implementation files:
-- `src/Artifortress.Worker/Program.fs`
+- `src/Kublai.Worker/Program.fs`
 - `db/migrations/0001_init.sql`
 - `db/migrations/0004_phase3_publish_guardrails.sql`
 - `db/migrations/0006_phase4_policy_search_quarantine_scaffold.sql`

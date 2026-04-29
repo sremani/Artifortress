@@ -1,11 +1,11 @@
-# Artifortress Domain Model (F#)
+# Kublai Domain Model (F#)
 
 This model focuses on compile-time safety for identity, immutability, and legal state transitions.
 
 ## 1. Primitive and Value Types
 
 ```fsharp
-module Artifortress.Domain
+module Kublai.Domain
 
 open System
 

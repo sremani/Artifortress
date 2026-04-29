@@ -4,7 +4,7 @@ Last updated: 2026-04-28
 
 ## Purpose
 
-This whitepaper summarizes the Artifortress enterprise security model for
+This whitepaper summarizes the Kublai enterprise security model for
 security review, procurement review, and production deployment planning.
 
 It is not a certification claim. It maps the product's security posture to
@@ -13,7 +13,7 @@ responsibilities.
 
 ## Product Summary
 
-Artifortress is a self-hosted artifact repository control plane. It separates:
+Kublai is a self-hosted artifact repository control plane. It separates:
 
 - metadata, identity, audit, and state transitions in PostgreSQL
 - artifact bytes in S3-compatible object storage
@@ -22,8 +22,8 @@ Artifortress is a self-hosted artifact repository control plane. It separates:
 
 Primary production components:
 
-- `artifortress-api`
-- `artifortress-worker`
+- `kublai-api`
+- `kublai-worker`
 - PostgreSQL
 - S3-compatible object storage
 - Kubernetes/Helm deployment assets
@@ -33,7 +33,7 @@ The supported product envelope is defined in
 
 ## Security Design Principles
 
-Artifortress security is built around these principles:
+Kublai security is built around these principles:
 
 - fail closed when identity, trust material, authorization, or dependency state
   is ambiguous
@@ -103,7 +103,7 @@ Evidence:
 
 - `docs/45-tenant-isolation-and-admission-controls.md`
 - `docs/49-compliance-evidence-and-legal-holds.md`
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
 
 ## Tenant Isolation
 
@@ -217,7 +217,7 @@ Known residual release risks:
 
 ## Vulnerability Handling
 
-Artifortress provides a private external vulnerability intake path, severity
+Kublai provides a private external vulnerability intake path, severity
 taxonomy, response targets, patch timelines, and coordinated advisory workflow.
 
 Policy evidence:

@@ -52,7 +52,7 @@ Generated at: 2026-04-28T21:53:28Z
 ## Release Validation
 
 - signed validation tag: `v0.1.0-rc.2`
-- release: `https://github.com/sremani/Artifortress/releases/tag/v0.1.0-rc.2`
+- release: `https://github.com/sremani/Kublai/releases/tag/v0.1.0-rc.2`
 - release provenance evidence: `docs/reports/release-provenance-latest.md`
 - release asset certification: PASS
 

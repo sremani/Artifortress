@@ -38,7 +38,7 @@ reference baseline plus the soak coverage above.
 ### Small
 
 Use when:
-- a team is validating Artifortress or running a low-concurrency internal deployment
+- a team is validating Kublai or running a low-concurrency internal deployment
 - workload shape is close to the local reference baseline
 
 Recommended starting shape:

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kublai
+description: Enterprise deployment chart for Kublai API and worker
+type: application
+version: 0.1.0
+appVersion: "latest"

@@ -5,7 +5,7 @@ Last updated: 2026-04-28
 ## Purpose
 
 This document defines the release candidate checklist and GA sign-off board for
-Artifortress enterprise releases.
+Kublai enterprise releases.
 
 No release may be labeled enterprise GA unless every required gate is complete
 or an exception is recorded with owner, rationale, mitigation, and expiration.

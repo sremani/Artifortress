@@ -70,7 +70,7 @@ Status key:
   - Added GC pre-delete cleanup of `upload_sessions.committed_blob_digest` references.
   - Updated migration 0008 FK behavior to `ON DELETE SET NULL` for `upload_sessions_committed_blob_digest_fkey`.
 - P5-07 completed:
-  - Added integration tests in `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`:
+  - Added integration tests in `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`:
     - `P5-01` tombstone authz + transition + idempotency.
     - `P5-02` GC dry-run safety and candidate reporting.
     - `P5-03` GC execute hard-delete for expired tombstones + orphan blobs.
@@ -106,8 +106,8 @@ Status key:
 Latest local verification:
 - `make build`
 - `make test`
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`83` passing integration tests)
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` (`185` total tests)
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` (`83` passing integration tests)
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` (`185` total tests)
 - `make format`
 
 ## Ticket Details

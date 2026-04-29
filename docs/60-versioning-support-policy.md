@@ -5,11 +5,11 @@ Last updated: 2026-04-28
 ## Purpose
 
 This policy defines versioning, compatibility, deprecation, and support-window
-expectations for Artifortress enterprise releases.
+expectations for Kublai enterprise releases.
 
 ## Version Format
 
-Artifortress uses semantic versioning for release tags:
+Kublai uses semantic versioning for release tags:
 
 ```text
 vMAJOR.MINOR.PATCH

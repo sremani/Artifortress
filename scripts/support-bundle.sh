@@ -2,7 +2,7 @@
 set -euo pipefail
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-bundle_root="${SUPPORT_BUNDLE_DIR:-/tmp/artifortress-support-bundle-${timestamp}}"
+bundle_root="${SUPPORT_BUNDLE_DIR:-/tmp/kublai-support-bundle-${timestamp}}"
 archive_path="${SUPPORT_BUNDLE_ARCHIVE:-${bundle_root}.tar.gz}"
 
 mkdir -p "$bundle_root"
@@ -36,7 +36,7 @@ write_http_snapshot() {
 }
 
 cat > "$bundle_root/README.md" <<EOF
-# Artifortress Support Bundle
+# Kublai Support Bundle
 
 Generated at: ${timestamp}
 

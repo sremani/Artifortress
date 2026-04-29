@@ -13,10 +13,10 @@ Status key:
 | Ticket | Title | Depends On | Status | Notes |
 |---|---|---|---|---|
 | MUT-01 | Feasibility spike for Stryker on F# projects | none | done | Confirmed upstream blocker (`Language not supported: Fsharp`). |
-| MUT-02 | Mutation-only test project isolation (no integration tests) | MUT-01 | done | Added `tests/Artifortress.Mutation.Tests` and validated clean baseline test run. |
+| MUT-02 | Mutation-only test project isolation (no integration tests) | MUT-01 | done | Added `tests/Kublai.Mutation.Tests` and validated clean baseline test run. |
 | MUT-03 | Reproducible spike script + report artifact | MUT-02 | done | Added `scripts/mutation-fsharp-spike.sh` and report artifact flow. |
 | MUT-04 | Upstream/fork architecture and backlog definition | MUT-01 | done | Added Track B strategy and milestone plan docs. |
-| MUT-05 | Local wrapper CLI scaffold for Track B workflows | MUT-04 | done | Added `tools/Artifortress.MutationTrack` with `spike`, `run`, `validate-fsharp-mutants`, `report`, `classify-failure`. |
+| MUT-05 | Local wrapper CLI scaffold for Track B workflows | MUT-04 | done | Added `tools/Kublai.MutationTrack` with `spike`, `run`, `validate-fsharp-mutants`, `report`, `classify-failure`. |
 | MUT-06 | Analyzer pipeline patching for F# source project support | MUT-04 | done | Added reproducible patch + bootstrap/build/spike scripts; patched run reaches analysis/build/test and mutant-generation phases. |
 | MUT-07 | F# mutator set v1 (boolean/comparison/arithmetic) | MUT-06 | done | MUT-07a, MUT-07b, and MUT-07c are implemented and validated: patched run emits `71` planned mutants and compile-validation gate passes on sampled `Library.fs` mutants. |
 | MUT-08 | F# AST span mapping and source rewrite safety checks | MUT-06 | done | MUT-08a/08b/08c are implemented: span mapping + lexical safety guards + deterministic compile-error quarantine classification (`quarantined_compile_errors`). |
@@ -26,7 +26,7 @@ Status key:
 ## MUT-05 Completed Scope
 
 Implemented:
-- `tools/Artifortress.MutationTrack/Program.fs`
+- `tools/Kublai.MutationTrack/Program.fs`
   - Commands: `spike`, `run`, `validate-fsharp-mutants`, `report`, `classify-failure`.
   - Deterministic failure classification.
   - Optional `--stryker-cli` override for patched fork runs.
@@ -36,7 +36,7 @@ Implemented:
   - `mutation-track`
 
 Validation evidence:
-- `dotnet build tools/Artifortress.MutationTrack/Artifortress.MutationTrack.fsproj`
+- `dotnet build tools/Kublai.MutationTrack/Kublai.MutationTrack.fsproj`
 - `make mutation-spike`
 - `make mutation-track`
 

@@ -5,7 +5,7 @@ Last updated: 2026-04-28
 ## Purpose
 
 This is a small companion note to
-`docs/73-artifortress-com-production-hosting-plan.md`. It collapses several
+`docs/73-kublai-com-production-hosting-plan.md`. It collapses several
 items in that document's §"Open Decisions" with concrete answers, based on
 operator preference and a refined object-storage analysis.
 
@@ -25,14 +25,14 @@ lock-ins; nothing here replaces or supersedes Doc 73's recommendations.
 
 Five of the eleven items in §Open Decisions are now closed. The remaining
 six (Dev shared cloud environment, database size and backup retention, log
-retention, monitoring provider, public surface at `artifortress.com` vs
-`api.artifortress.com`, web-vs-API split) are tunable post-launch and do not
+retention, monitoring provider, public surface at `kublai.com` vs
+`api.kublai.com`, web-vs-API split) are tunable post-launch and do not
 block initial provisioning.
 
 ## Why Cloudflare R2 (Not Linode Object Storage)
 
 Both options pass the Doc 74 "no MinIO in production" rule and both expose
-the S3-compatible surface Artifortress already targets. R2 wins for an
+the S3-compatible surface Kublai already targets. R2 wins for an
 **artifact repository workload** specifically, because egress dominates the
 bill: artifacts are downloaded thousands of times per build but uploaded
 once per release.
@@ -51,7 +51,7 @@ egress savings outweigh the per-request operations cost at any non-trivial
 download volume.
 
 Linode Object Storage remains the declared fallback if R2's S3-compatibility
-surface ever gaps a feature Artifortress needs (multipart corner cases,
+surface ever gaps a feature Kublai needs (multipart corner cases,
 range-read edge behavior). The contract test plan called out in Doc 74
 should run against both providers before final commit.
 
@@ -87,8 +87,8 @@ budgetary estimate.
 | Env | Topology | Monthly |
 | --- | --- | --- |
 | Dev | Local Docker Compose plus kind, with MinIO retained as a temporary local fixture (per Doc 74) | $0 |
-| PreProd | 1× LKE node (8 GB shared), Linode managed PG smallest HA pair, R2 `artifortress-preprod-blobs`, Cloudflare Tunnel ingress, `preprod.artifortress.com` | ~$130-180 |
-| Prod (lean launch) | 3× LKE workers (8 GB dedicated), HA control plane, Linode managed PG HA (4 GB pair), R2 `artifortress-prod-blobs`, Cloudflare Tunnel ingress, `artifortress.com` + `api.artifortress.com` | ~$550-750 |
+| PreProd | 1× LKE node (8 GB shared), Linode managed PG smallest HA pair, R2 `kublai-preprod-blobs`, Cloudflare Tunnel ingress, `preprod.kublai.com` | ~$130-180 |
+| Prod (lean launch) | 3× LKE workers (8 GB dedicated), HA control plane, Linode managed PG HA (4 GB pair), R2 `kublai-prod-blobs`, Cloudflare Tunnel ingress, `kublai.com` + `api.kublai.com` | ~$550-750 |
 | Prod (comfortable) | scale PG to 8 GB pair, larger workers, Cloudflare Pro | ~$750-1,100 |
 
 Savings versus Doc 73's baseline come from:
@@ -104,14 +104,14 @@ by roughly $20-60/month at launch and more as egress grows.
 
 | Hostname | Routes to | Environment |
 | --- | --- | --- |
-| `artifortress.com` | Prod LKE via Cloudflare Tunnel | Prod |
-| `api.artifortress.com` | Prod LKE via Cloudflare Tunnel | Prod (recommended split for rate-limit policy clarity) |
-| `preprod.artifortress.com` | PreProd LKE via Cloudflare Tunnel | PreProd |
-| `api-preprod.artifortress.com` | PreProd LKE via Cloudflare Tunnel | PreProd |
-| `dev.artifortress.com` | Reserved; provisioned only if a shared cloud Dev environment becomes warranted | optional |
-| `status.artifortress.com` | Cloudflare Pages static page (manual incident updates) | meta |
+| `kublai.com` | Prod LKE via Cloudflare Tunnel | Prod |
+| `api.kublai.com` | Prod LKE via Cloudflare Tunnel | Prod (recommended split for rate-limit policy clarity) |
+| `preprod.kublai.com` | PreProd LKE via Cloudflare Tunnel | PreProd |
+| `api-preprod.kublai.com` | PreProd LKE via Cloudflare Tunnel | PreProd |
+| `dev.kublai.com` | Reserved; provisioned only if a shared cloud Dev environment becomes warranted | optional |
+| `status.kublai.com` | Cloudflare Pages static page (manual incident updates) | meta |
 
-The split between `artifortress.com` and `api.artifortress.com` is
+The split between `kublai.com` and `api.kublai.com` is
 recommended but not strictly required at launch. It exists primarily so
 API rate-limit and WAF policies can be expressed independently of website
 policies.
@@ -140,7 +140,7 @@ production traffic is routed.
 
 ## References
 
-- `docs/73-artifortress-com-production-hosting-plan.md` (authoritative
+- `docs/73-kublai-com-production-hosting-plan.md` (authoritative
   hosting plan)
 - `docs/74-object-storage-independence-and-minio-exit-plan.md` (MinIO exit
   context and `FortressStore` proposal)

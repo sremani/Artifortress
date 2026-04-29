@@ -4,11 +4,11 @@ Last updated: 2026-02-11
 
 ## 1. Runtime Components
 
-- `artifortress-api`:
+- `kublai-api`:
   - serves HTTP API
   - enforces authz and state transitions
   - requires Postgres + object storage
-- `artifortress-worker`:
+- `kublai-worker`:
   - sweeps outbox and search-index jobs
   - requires Postgres
 - `postgres`:

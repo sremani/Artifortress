@@ -16,15 +16,15 @@ This change set combines:
 
 ### 1. Domain/API hardening
 
-- `src/Artifortress.Domain/Library.fs`
+- `src/Kublai.Domain/Library.fs`
   - `RepoScope.tryCreate` now rejects repository keys containing `:`.
 
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - `validateRepoRequest` now rejects `repoKey` values containing `:`.
 
 ### 2. Worker internals extraction (three waves)
 
-- `src/Artifortress.Worker/WorkerInternals.fs` (new)
+- `src/Kublai.Worker/WorkerInternals.fs` (new)
   - Wave 1:
     - `WorkerOutboxParsing`
     - `WorkerRetryPolicy`
@@ -37,12 +37,12 @@ This change set combines:
     - `WorkerDataShapes`
     - `WorkerSweepMetrics`
 
-- `src/Artifortress.Worker/Program.fs`
+- `src/Kublai.Worker/Program.fs`
   - Rewired outbox/job sweep logic to consume extracted helpers.
   - Replaced inline sweep counters and row constructors with pure reducer/shape modules.
   - Normalized DB query parameter handling through `WorkerDbParameters`.
 
-- `src/Artifortress.Worker/Artifortress.Worker.fsproj`
+- `src/Kublai.Worker/Kublai.Worker.fsproj`
   - Added compile include for `WorkerInternals.fs`.
 
 ### 3. Phase 3 publish workflow completion
@@ -50,7 +50,7 @@ This change set combines:
 - `db/migrations/0007_phase3_manifest_persistence.sql` (new)
   - Added `manifests` persistence table and supporting indexes.
 
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - Added request models:
     - `UpsertArtifactEntriesRequest`
     - `UpsertManifestRequest`
@@ -71,14 +71,14 @@ This change set combines:
 
 ## Test Changes
 
-- `tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj`
+- `tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj`
   - Added `PropertyTests.fs` compile include.
   - Added `FsCheck.Xunit` package reference.
 
-- `tests/Artifortress.Domain.Tests/Tests.fs`
+- `tests/Kublai.Domain.Tests/Tests.fs`
   - Added unit test for colon-rejecting repo keys.
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added integration test for create-repo colon rejection behavior.
   - Added Phase 3 integration coverage:
     - artifact entry authz and blob-existence checks,
@@ -89,7 +89,7 @@ This change set combines:
     - deterministic post-publish mutation conflicts,
     - publish failure rollback safety (no partial state/outbox).
 
-- `tests/Artifortress.Domain.Tests/PropertyTests.fs` (new)
+- `tests/Kublai.Domain.Tests/PropertyTests.fs` (new)
   - Expanded to `75` FsCheck properties covering:
     - domain role/scope/auth invariants,
     - API validation/parsing/range/digest invariants,
@@ -126,8 +126,8 @@ This change set combines:
 
 - `make format` passed.
 - `make test` (non-integration filter) passed: `84` tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
 
 ## Phase 5 Completion Addendum (2026-02-11)
 
@@ -136,9 +136,9 @@ This change set combines:
 - `db/migrations/0008_phase5_tombstones_gc_reconcile.sql` (new)
   - Added `tombstones`, `gc_runs`, and `gc_marks` lifecycle tables and indexes.
   - Updated `upload_sessions_committed_blob_digest_fkey` behavior to `ON DELETE SET NULL`.
-- `src/Artifortress.Api/ObjectStorage.fs`
+- `src/Kublai.Api/ObjectStorage.fs`
   - Added `DeleteObject` to `IObjectStorageClient` and S3 implementation.
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - Added tombstone endpoint:
     - `POST /v1/repos/{repoKey}/packages/versions/{versionId}/tombstone`
   - Added admin GC/reconcile endpoints:
@@ -154,7 +154,7 @@ This change set combines:
 
 ### Test changes
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added Phase 5 integration tests:
     - tombstone authz/transition/idempotency (`P5-01`)
     - GC dry-run safety and candidate reporting (`P5-02`)
@@ -178,8 +178,8 @@ This change set combines:
 
 - `make build` passed.
 - `make test` passed: `84` tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
 - `make format` passed.
 
 ## Track B F# Mutation Spike Addendum (2026-02-11)
@@ -188,7 +188,7 @@ This change set combines:
 
 - `dotnet-tools.json` (new)
   - Added local tool manifest with `dotnet-stryker` 4.12.0.
-- `tests/Artifortress.Mutation.Tests/Artifortress.Mutation.Tests.fsproj` (new)
+- `tests/Kublai.Mutation.Tests/Kublai.Mutation.Tests.fsproj` (new)
   - Added mutation-only test project including unit and property tests (integration tests excluded by project composition).
 - `scripts/mutation-fsharp-spike.sh` (new)
   - Added reproducible F# mutation feasibility spike command and report writer.
@@ -218,7 +218,7 @@ This change set combines:
 
 ### Code and tooling changes
 
-- `tools/Artifortress.MutationTrack/Program.fs`
+- `tools/Kublai.MutationTrack/Program.fs`
   - Expanded wrapper behavior:
     - added optional `--stryker-cli` path override to execute patched fork binaries.
     - added `no_mutants_generated` failure class.
@@ -301,8 +301,8 @@ This change set combines:
   - Added compile-error quarantine status for emitted F# mutants pending runtime activation support.
 - `patches/stryker-net/0007-mut07b-fsharp-path-selection.patch` (new)
   - Added mutate-glob matching against run-root relative paths for F# source selection.
-- `tools/Artifortress.MutationTrack/Program.fs`
-  - Updated default mutate scope to `src/Artifortress.Domain/Library.fs`.
+- `tools/Kublai.MutationTrack/Program.fs`
+  - Updated default mutate scope to `src/Kublai.Domain/Library.fs`.
   - Added `quarantined_compile_errors` failure class and next-action guidance.
 
 ### Latest Track B execution outcome
@@ -322,10 +322,10 @@ This change set combines:
 
 ### Code changes
 
-- `src/Artifortress.Api/ObjectStorage.fs`
+- `src/Kublai.Api/ObjectStorage.fs`
   - Added object storage readiness probe contract:
     - `CheckAvailability`.
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - Hardened readiness endpoint:
     - `/health/ready` now checks Postgres + object storage and returns `503` when not ready.
   - Added operations summary endpoint:
@@ -352,7 +352,7 @@ This change set combines:
 
 ### Test changes
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added:
     - `P6-01 readiness endpoint reports healthy postgres and object storage dependencies`
     - `P6-02 ops summary endpoint enforces authz and emits audit`
@@ -380,15 +380,15 @@ This change set combines:
 
 - `make build` passed.
 - `make test` passed: `84` tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` passed: `56` integration tests.
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -nologo --configuration Debug --no-build -v minimal` passed: `140` total tests.
 - `make format` passed.
 
 ## Track B MUT-07c / MUT-09 / MUT-10 Completion Addendum (2026-02-11, latest)
 
 ### Code and tooling changes
 
-- `tools/Artifortress.MutationTrack/Program.fs`
+- `tools/Kublai.MutationTrack/Program.fs`
   - Added `validate-fsharp-mutants` command for MUT-07c compile-validation.
   - Added safety guards to prevent destructive scratch-root deletion outside `artifacts/` and to enforce source-file containment under the target project directory.
   - Added lexical compile-validation candidate filtering to avoid non-expression F# tokens (for example type-definition `=` and generic-angle-bracket markers).
@@ -446,7 +446,7 @@ This change set combines:
 
 ### Code and tooling changes
 
-- `tools/Artifortress.MutationTrack/Program.fs`
+- `tools/Kublai.MutationTrack/Program.fs`
   - Added `run-fsharp-native` command.
   - Added native runtime status model:
     - `killed`
@@ -485,7 +485,7 @@ This change set combines:
     - `MUTATION_NATIVE_ENFORCE`
     - `MUTATION_NATIVE_MAX_MUTANTS`
     - `MUTATION_NATIVE_MIN_SCORE`
-- `tools/Artifortress.MutationTrack/Program.fs`
+- `tools/Kublai.MutationTrack/Program.fs`
   - Expanded safe candidate support to include `=` mutations in guarded boolean-expression contexts.
 - `scripts/mutation-fsharp-native-score.sh` (new)
   - Added native mutation score computation and threshold gate (`MIN_MUTATION_SCORE`).
@@ -517,7 +517,7 @@ This change set combines:
 
 ### Code and workflow changes
 
-- `tools/Artifortress.MutationTrack/Program.fs`
+- `tools/Kublai.MutationTrack/Program.fs`
   - Switched native and compile-validation scratch handling to per-run subdirectories to avoid cross-run delete races (`Directory not empty`) in repeated local/CI execution.
 - `scripts/mutation-fsharp-native-trend.sh` (new)
   - Added score-history append and trend report generation using score summary artifacts.
@@ -569,12 +569,12 @@ This change set combines:
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+- `tests/Kublai.Domain.Tests/PropertyTests.fs`
   - Added lifecycle request validation properties for:
     - `validateTombstoneRequest` defaulting, range handling, and normalization behavior.
     - `validateGcRequest` defaulting, batch fallback, and range guard behavior.
   - Added `7` new FsCheck properties.
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added policy/search mixed-routing stress test:
     - `P4-09 search outbox sweep handles mixed routing and idempotent job upserts`.
     - Validates aggregate-id + payload fallback routing, duplicate event idempotent upsert behavior, and malformed-event requeue behavior in one flow.
@@ -591,20 +591,20 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`91` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`58` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`149` tests total).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`91` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`58` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`149` tests total).
 - `make format` passed.
 
 ## Lifecycle + Policy/Search Stress Wave 2 Addendum (2026-02-11, latest)
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+- `tests/Kublai.Domain.Tests/PropertyTests.fs`
   - Added GC boundary acceptance property:
     - `validateGcRequest` accepts boundary values for `retentionGraceHours` (`0`/`8760`) and `batchSize` (`1`/`5000`).
   - Property count increased to `83`.
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added policy/search stress tests:
     - `P4-stress quarantine list filters remain consistent under mixed status transitions`.
     - `P4-stress search sweeps honor batch limits across backlog`.
@@ -615,20 +615,20 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`92` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`61` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`153` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`92` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`61` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`153` total tests).
 - `make format` passed.
 
 ## Lifecycle + Policy/Search Stress Wave 3 Addendum (2026-02-11, latest)
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+- `tests/Kublai.Domain.Tests/PropertyTests.fs`
   - Added tombstone validation property:
     - `validateTombstoneRequest` rejects blank reasons.
   - Property count increased to `84`.
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added policy/search repo-isolation stress test:
     - `P4-stress quarantine state remains repo-scoped under concurrent repos`.
   - Added lifecycle orphan-volume stress test:
@@ -637,16 +637,16 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`63` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`156` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`63` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`156` total tests).
 - `make format` passed.
 
 ## Lifecycle + Policy/Search Stress Wave 4 Addendum (2026-02-11, latest)
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added search retry-window stress test:
     - `P4-stress failed search job is deferred by backoff and not immediately reclaimed`.
   - Added lifecycle retention-grace stress test:
@@ -654,22 +654,22 @@ This change set combines:
   - Added fixture helpers for deterministic stress orchestration:
     - `SetBlobCreatedAt(digest, createdAtUtc)`
     - `TryReadSearchIndexJobSchedule(versionId)`
-- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+- `tests/Kublai.Domain.Tests/PropertyTests.fs`
   - Added tombstone request invariant:
     - blank `reason` is rejected deterministically.
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`65` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`158` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`65` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`158` total tests).
 - `make format` passed.
 
 ## Lifecycle + Policy/Search Stress Wave 5 Addendum (2026-02-11, latest)
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added outbox event-type filtering stress test:
     - `P4-stress outbox sweep ignores non-version-published events under mixed backlog`.
   - Added shared-digest repo-isolation stress test:
@@ -680,16 +680,16 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`68` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`161` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category!=Integration" -v minimal` passed (`93` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`68` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`161` total tests).
 - `make format` passed.
 
 ## Lifecycle + Policy/Search Stress Wave 6 Addendum (2026-02-12, latest)
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added operations-summary outbox stress test:
     - `P6-stress ops summary outbox counters separate pending and available via deterministic deltas`.
     - Verifies pending-vs-available separation and delivered-event exclusion via baseline/delta assertions.
@@ -709,17 +709,17 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P6-stress ops summary"` passed (`2` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~P6-stress ops summary"` passed (`2` tests).
 - `make test-integration` passed (`70` integration tests).
 - `make test` passed (`93` non-integration tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`163` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`163` total tests).
 - `make format` passed.
 
 ## Phase 7 Identity Track Kickoff Addendum (2026-02-12, latest)
 
 ### Code changes
 
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - Added OIDC validation configuration model:
     - `Auth:Oidc:Enabled`
     - `Auth:Oidc:Issuer`
@@ -728,7 +728,7 @@ This change set combines:
   - Added JWT validation path for OIDC bearer tokens (HS256 foundation mode):
     - signature validation,
     - issuer/audience/expiry/not-before claim checks,
-    - scope extraction from `scope`, `scp`, and `artifortress_scopes` claims.
+    - scope extraction from `scope`, `scp`, and `kublai_scopes` claims.
   - Added PAT-first auth fallback model:
     - token is first resolved as PAT,
     - then evaluated as OIDC when OIDC is enabled.
@@ -738,12 +738,12 @@ This change set combines:
 
 ### Test changes
 
-- `tests/Artifortress.Domain.Tests/Tests.fs`
+- `tests/Kublai.Domain.Tests/Tests.fs`
   - Added unit tests for OIDC token validation:
     - accepts valid HS256 token with matching issuer/audience/scope claims.
     - rejects mismatched issuer.
     - rejects expired token.
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added Phase 7 OIDC integration tests:
     - `P7-02 oidc bearer flow supports whoami and admin-scoped repo create`.
     - `P7-02 oidc token with mismatched audience is unauthorized`.
@@ -770,18 +770,18 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "OIDC token validation"` passed (`3` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "OIDC token validation"` passed (`3` tests).
 - `make test` passed (`96` non-integration tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-02"` passed (`2` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-02"` passed (`2` tests).
 - `make test-integration` passed (`73` integration tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`169` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`169` total tests).
 - `make format` passed.
 
 ## Phase 7 Identity Completion Addendum (2026-02-13, latest)
 
 ### Code changes
 
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - Completed OIDC RS256/JWKS path:
     - added JWKS parser and RS256 signature verification.
     - added `kid` key selection with multi-key rotation support.
@@ -805,12 +805,12 @@ This change set combines:
 
 ### Test changes
 
-- `tests/Artifortress.Domain.Tests/Tests.fs`
+- `tests/Kublai.Domain.Tests/Tests.fs`
   - Added OIDC RS256/JWKS unit coverage:
     - valid RS256 token acceptance.
     - key-rotation behavior across multiple keys.
   - Added OIDC claim-role mapping unit coverage when direct scope claim is absent.
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added Phase 7 integration coverage:
     - `P7-03 oidc rs256 bearer flow supports whoami and repo create`
     - `P7-03 oidc rs256 token with unknown kid is unauthorized`
@@ -840,9 +840,9 @@ This change set combines:
 
 - `make format` passed.
 - `make test` passed (`99` non-integration tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`81` integration tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` passed (`11` Phase 7 tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`180` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "Category=Integration" -v minimal` passed (`81` integration tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~P7-0" -v minimal` passed (`11` Phase 7 tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`180` total tests).
 
 ## Search Read-Model Serving Baseline Addendum (2026-02-13, latest)
 
@@ -853,13 +853,13 @@ This change set combines:
     - unique `(tenant_id, version_id)` projection identity,
     - generated `search_vector` column,
     - GIN index for text-search query path.
-- `src/Artifortress.Worker/Program.fs`
+- `src/Kublai.Worker/Program.fs`
   - Extended search job processor to project published package versions into `search_documents`.
   - Added deterministic failure semantics for projection write/source read errors:
     - `search_index_source_read_failed`
     - `search_index_write_failed`
   - Kept bounded retry/backoff behavior and completion semantics intact.
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - Added repo-scoped read-model query endpoint:
     - `GET /v1/repos/{repoKey}/search/packages`
     - supports `q`, `limit`, `offset`.
@@ -872,12 +872,12 @@ This change set combines:
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added read-model integration tests:
     - `P8-01 search query endpoint enforces authz and returns indexed published versions`
     - `P8-02 search query excludes quarantined and tombstoned versions while allowing released versions`
     - `P8-03 admin rebuild endpoint enqueues published versions and backfills searchable documents`
-- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+- `tests/Kublai.Domain.Tests/PropertyTests.fs`
   - Added API helper properties for search controls:
     - `normalizeSearchLimit` bounds/default behavior.
     - `normalizeSearchOffset` bounds/default behavior.
@@ -894,25 +894,25 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P8-0" -v minimal` passed (`3` tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~PropertyTests" -v minimal` passed (`91` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~P8-0" -v minimal` passed (`3` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~PropertyTests" -v minimal` passed (`91` tests).
 - `make format` passed.
 - `make test` passed (`106` non-integration tests).
 - `make test-integration` passed (`86` integration tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`192` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`192` total tests).
 
 ## Lifecycle + Policy/Search Stress Wave 7 Addendum (2026-02-13, latest)
 
 ### Code changes
 
-- `src/Artifortress.Worker/Program.fs`
+- `src/Kublai.Worker/Program.fs`
   - Fixed replay starvation bug in outbox->search job upsert path:
     - on `(tenant_id, version_id)` conflict, worker now resets `attempts = 0` when re-enqueuing pending jobs from new `version.published` events.
     - prevents jobs that previously hit `maxAttempts` from becoming permanently unclaimable after republish/replay.
 
 ### Test coverage changes
 
-- `tests/Artifortress.Domain.Tests/ApiIntegrationTests.fs`
+- `tests/Kublai.Domain.Tests/ApiIntegrationTests.fs`
   - Added P4 regression coverage for replay starvation fix:
     - `P4-05 republished version resets exhausted search job attempts and completes`.
   - Added mixed lifecycle/policy/search stress coverage:
@@ -920,7 +920,7 @@ This change set combines:
     - verifies deterministic split where:
       - published + quarantined version completes search job,
       - tombstoned and draft versions fail with retry metadata.
-- `tests/Artifortress.Domain.Tests/PropertyTests.fs`
+- `tests/Kublai.Domain.Tests/PropertyTests.fs`
   - Added FsCheck invariants:
     - `API validateQuarantineStatusFilter returns none for blank values`
     - `API validateEvaluatePolicyRequest maps blank policy engine version to none`
@@ -937,19 +937,19 @@ This change set combines:
 
 ### Validation evidence
 
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P4-05 republished version resets exhausted search job attempts and completes" -v minimal` passed (`1` test).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~P5-stress search sweep deterministically splits published quarantined tombstoned and draft versions" -v minimal` passed (`1` test).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --filter "FullyQualifiedName~PropertyTests" -v minimal` passed (`87` tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~P4-05 republished version resets exhausted search job attempts and completes" -v minimal` passed (`1` test).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~P5-stress search sweep deterministically splits published quarantined tombstoned and draft versions" -v minimal` passed (`1` test).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --filter "FullyQualifiedName~PropertyTests" -v minimal` passed (`87` tests).
 - `make test` passed (`102` non-integration tests).
 - `make test-integration` passed (`83` integration tests).
-- `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj -v minimal` passed (`185` total tests).
+- `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj -v minimal` passed (`185` total tests).
 - `make format` passed.
 
 ## OIDC Remote JWKS Refresh Automation Addendum (2026-02-13, latest)
 
 ### Code changes
 
-- `src/Artifortress.Api/Program.fs`
+- `src/Kublai.Api/Program.fs`
   - Added optional remote JWKS automation config:
     - `Auth:Oidc:JwksUrl`
     - `Auth:Oidc:JwksRefreshIntervalSeconds` (default `300`, range `30..86400`)
@@ -964,7 +964,7 @@ This change set combines:
   - Updated OIDC auth path to:
     - validate against live cached RS256 keys,
     - force one refresh and retry on unknown `kid` / missing-key validation failures.
-- `tests/Artifortress.Domain.Tests/Tests.fs`
+- `tests/Kublai.Domain.Tests/Tests.fs`
   - Added JWKS automation unit coverage:
     - merge ordering + dedupe behavior.
     - remote refresh success path (remote + static fallback merge).

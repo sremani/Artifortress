@@ -50,7 +50,7 @@ make phase7-demo
 - `CONNECTION_STRING` (default local Postgres)
 - `BOOTSTRAP_TOKEN` (default `phase7-demo-bootstrap`)
 - `OIDC_ISSUER` (default `https://phase7-idp.local`)
-- `OIDC_AUDIENCE` (default `artifortress-api`)
+- `OIDC_AUDIENCE` (default `kublai-api`)
 - `OIDC_SHARED_SECRET` (default `phase7-demo-oidc-secret`)
 - `OIDC_JWKS_URL` (optional; if set, enables remote JWKS refresh mode)
 - `OIDC_JWKS_REFRESH_INTERVAL_SECONDS` (default `300`; used with `OIDC_JWKS_URL`)
@@ -58,7 +58,7 @@ make phase7-demo
 - `OIDC_ROLE_MAPPINGS` (default `groups|af-admins|*|admin`)
 - `SAML_IDP_METADATA_URL` (default `https://phase7-idp.local/metadata`)
 - `SAML_EXPECTED_ISSUER` (default `https://phase7-idp.local/issuer`)
-- `SAML_SP_ENTITY_ID` (default `urn:artifortress:phase7:sp`)
+- `SAML_SP_ENTITY_ID` (default `urn:kublai:phase7:sp`)
 - `SAML_ROLE_MAPPINGS` (default `groups|af-admins|*|admin`)
 - `REPORT_PATH` (default `docs/reports/phase7-oidc-latest.md`)
 - `SKIP_STATIC_CHECKS` (default `false`; set `true` to skip `make test`/`make format` prechecks)
@@ -94,7 +94,7 @@ If identity federation needs immediate rollback:
 ## Troubleshooting
 
 - If API does not become healthy:
-  - inspect `/tmp/artifortress-phase7-demo-api.log`.
+  - inspect `/tmp/kublai-phase7-demo-api.log`.
 - If OIDC calls return `401` unexpectedly:
   - verify issuer, audience, signing mode config, and role mappings.
 - If SAML ACS returns `401`:

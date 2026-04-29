@@ -70,7 +70,7 @@ Status key:
   - Latest local verification:
     - `make build`
     - `make test`
-    - `dotnet test tests/Artifortress.Domain.Tests/Artifortress.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` (`47` passing integration tests)
+    - `dotnet test tests/Kublai.Domain.Tests/Kublai.Domain.Tests.fsproj --configuration Debug --no-build -v minimal --filter "Category=Integration"` (`47` passing integration tests)
 
 ## Ticket Details
 

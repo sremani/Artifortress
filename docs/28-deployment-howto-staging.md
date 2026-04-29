@@ -26,11 +26,11 @@ Reference shape:
 ```env
 ASPNETCORE_ENVIRONMENT=Staging
 ASPNETCORE_URLS=http://0.0.0.0:8086
-ConnectionStrings__Postgres=Host=<pg-host>;Port=5432;Username=<user>;Password=<password>;Database=artifortress_staging
+ConnectionStrings__Postgres=Host=<pg-host>;Port=5432;Username=<user>;Password=<password>;Database=kublai_staging
 Auth__BootstrapToken=<secure-bootstrap-token>
 Auth__Oidc__Enabled=false
 Auth__Oidc__Issuer=https://idp.staging.example.com
-Auth__Oidc__Audience=artifortress-api
+Auth__Oidc__Audience=kublai-api
 Auth__Oidc__Hs256SharedSecret=<oidc-shared-secret>
 Auth__Oidc__JwksJson=
 Auth__Oidc__JwksUrl=
@@ -40,13 +40,13 @@ Auth__Oidc__RoleMappings=groups|af-admins|*|admin
 Auth__Saml__Enabled=false
 Auth__Saml__IdpMetadataUrl=https://idp.staging.example.com/metadata
 Auth__Saml__ExpectedIssuer=https://idp.staging.example.com/issuer
-Auth__Saml__ServiceProviderEntityId=urn:artifortress:staging:sp
+Auth__Saml__ServiceProviderEntityId=urn:kublai:staging:sp
 Auth__Saml__RoleMappings=groups|af-admins|*|admin
 Auth__Saml__IssuedPatTtlMinutes=60
 ObjectStorage__Endpoint=http://<object-store-endpoint>:9000
 ObjectStorage__AccessKey=<access-key>
 ObjectStorage__SecretKey=<secret-key>
-ObjectStorage__Bucket=artifortress-staging
+ObjectStorage__Bucket=kublai-staging
 ObjectStorage__PresignPartTtlSeconds=900
 Policy__EvaluationTimeoutMs=250
 Lifecycle__DefaultTombstoneRetentionDays=30
@@ -56,7 +56,7 @@ Lifecycle__DefaultGcBatchSize=200
 
 `deploy/staging-worker.env`
 ```env
-ConnectionStrings__Postgres=Host=<pg-host>;Port=5432;Username=<user>;Password=<password>;Database=artifortress_staging
+ConnectionStrings__Postgres=Host=<pg-host>;Port=5432;Username=<user>;Password=<password>;Database=kublai_staging
 Worker__PollSeconds=30
 Worker__BatchSize=100
 Worker__SearchJobMaxAttempts=5
@@ -96,7 +96,7 @@ API:
 set -a
 source deploy/staging-api.env
 set +a
-dotnet src/Artifortress.Api/bin/Debug/net10.0/Artifortress.Api.dll --urls "$ASPNETCORE_URLS"
+dotnet src/Kublai.Api/bin/Debug/net10.0/Kublai.Api.dll --urls "$ASPNETCORE_URLS"
 ```
 
 Worker:
@@ -104,7 +104,7 @@ Worker:
 set -a
 source deploy/staging-worker.env
 set +a
-dotnet src/Artifortress.Worker/bin/Debug/net10.0/Artifortress.Worker.dll
+dotnet src/Kublai.Worker/bin/Debug/net10.0/Kublai.Worker.dll
 ```
 
 ## 7. Post-Deploy Validation
@@ -144,6 +144,6 @@ make phase7-demo
 2. Re-run previous known-good binaries/config.
 3. If data rollback is required:
 ```bash
-RESTORE_PATH=/tmp/artifortress-backup.sql make db-restore
+RESTORE_PATH=/tmp/kublai-backup.sql make db-restore
 ```
 4. Re-check `/health/ready` and `/v1/admin/ops/summary`.

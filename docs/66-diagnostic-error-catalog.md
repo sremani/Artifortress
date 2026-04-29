@@ -4,7 +4,7 @@ Last updated: 2026-04-27
 
 ## Purpose
 
-This catalog maps common Artifortress symptoms and deterministic error states to
+This catalog maps common Kublai symptoms and deterministic error states to
 operator actions.
 
 Use it with:

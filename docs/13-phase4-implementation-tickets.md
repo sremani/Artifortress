@@ -60,7 +60,7 @@ Status key:
   - Added integration tests for authz, list/get, release/reject transitions, and audit assertions.
 - P4-04 completed:
   - Added search-index outbox producer in worker module:
-    - `Artifortress.Worker.SearchIndexOutboxProducer.runSweep`
+    - `Kublai.Worker.SearchIndexOutboxProducer.runSweep`
   - Added outbox claim logic for pending `version.published` events using `FOR UPDATE SKIP LOCKED`.
   - Added idempotent search-job enqueue semantics:
     - `search_index_jobs` upsert by `(tenant_id, version_id)` to keep one pending job per version.
@@ -72,7 +72,7 @@ Status key:
     - malformed event requeue without job creation.
 - P4-05 completed:
   - Added search-index job processor in worker module:
-    - `Artifortress.Worker.SearchIndexJobProcessor.runSweep`
+    - `Kublai.Worker.SearchIndexJobProcessor.runSweep`
   - Added job claim/processing loop:
     - claim pending/failed jobs due for processing via `FOR UPDATE SKIP LOCKED`.
     - mark claimed jobs as `processing`.

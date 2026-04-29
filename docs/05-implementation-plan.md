@@ -1,4 +1,4 @@
-# Artifortress Implementation Plan
+# Kublai Implementation Plan
 
 This roadmap converts the design into execution phases with exit criteria.
 

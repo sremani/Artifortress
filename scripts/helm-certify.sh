@@ -3,10 +3,10 @@ set -euo pipefail
 
 export PATH="/home/srikanth/bin:${PATH}"
 
-cluster_name="${HELM_CERT_CLUSTER_NAME:-artifortress-ha}"
-namespace="${HELM_CERT_NAMESPACE:-artifortress-helm-cert}"
-release_name="${HELM_RELEASE:-artifortress}"
-chart_path="${HELM_CERT_CHART:-deploy/helm/artifortress}"
+cluster_name="${HELM_CERT_CLUSTER_NAME:-kublai-ha}"
+namespace="${HELM_CERT_NAMESPACE:-kublai-helm-cert}"
+release_name="${HELM_RELEASE:-kublai}"
+chart_path="${HELM_CERT_CHART:-deploy/helm/kublai}"
 base_chart_path="${HELM_CERT_BASE_CHART:-$chart_path}"
 report_path="${HELM_CERT_REPORT_PATH:-docs/reports/helm-certification-latest.md}"
 api_port="${HELM_CERT_API_PORT:-18087}"
@@ -51,10 +51,10 @@ fi
 
 run_step "select kind context" kubectl config use-context "kind-${cluster_name}" >/dev/null
 
-run_step "build API image" docker build -f deploy/kind/Dockerfile.api -t "artifortress-api:${image_tag}" .
-run_step "build worker image" docker build -f deploy/kind/Dockerfile.worker -t "artifortress-worker:${image_tag}" .
-run_step "load API image" kind load docker-image --name "$cluster_name" "artifortress-api:${image_tag}"
-run_step "load worker image" kind load docker-image --name "$cluster_name" "artifortress-worker:${image_tag}"
+run_step "build API image" docker build -f deploy/kind/Dockerfile.api -t "kublai-api:${image_tag}" .
+run_step "build worker image" docker build -f deploy/kind/Dockerfile.worker -t "kublai-worker:${image_tag}" .
+run_step "load API image" kind load docker-image --name "$cluster_name" "kublai-api:${image_tag}"
+run_step "load worker image" kind load docker-image --name "$cluster_name" "kublai-worker:${image_tag}"
 
 echo "==> create namespace"
 kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -
@@ -65,22 +65,22 @@ run_step "wait for MinIO" kubectl -n "$namespace" rollout status deployment/mini
 bucket_job="minio-bootstrap-$(date -u +%s)"
 kubectl -n "$namespace" create job "$bucket_job" \
   --image=minio/mc:latest \
-  -- sh -c "mc alias set local http://minio:9000 artifortress artifortress && mc mb --ignore-existing local/artifortress-dev"
+  -- sh -c "mc alias set local http://minio:9000 kublai kublai && mc mb --ignore-existing local/kublai-dev"
 run_step "bootstrap MinIO bucket" kubectl -n "$namespace" wait --for=condition=complete "job/${bucket_job}" --timeout=120s
 
-kubectl -n "$namespace" exec deploy/postgres -- psql -v ON_ERROR_STOP=1 -U artifortress -d artifortress -c \
+kubectl -n "$namespace" exec deploy/postgres -- psql -v ON_ERROR_STOP=1 -U kublai -d kublai -c \
   "create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now());"
 
 shopt -s nullglob
 for file in db/migrations/*.sql; do
   version="$(basename "$file")"
-  applied="$(kubectl -n "$namespace" exec deploy/postgres -- psql -tAc "select 1 from schema_migrations where version = '${version}' limit 1;" -U artifortress -d artifortress | tr -d '[:space:]')"
+  applied="$(kubectl -n "$namespace" exec deploy/postgres -- psql -tAc "select 1 from schema_migrations where version = '${version}' limit 1;" -U kublai -d kublai | tr -d '[:space:]')"
   if [ "$applied" = "1" ]; then
     continue
   fi
 
-  kubectl -n "$namespace" exec -i deploy/postgres -- psql -v ON_ERROR_STOP=1 -U artifortress -d artifortress < "$file"
-  kubectl -n "$namespace" exec deploy/postgres -- psql -v ON_ERROR_STOP=1 -U artifortress -d artifortress -c \
+  kubectl -n "$namespace" exec -i deploy/postgres -- psql -v ON_ERROR_STOP=1 -U kublai -d kublai < "$file"
+  kubectl -n "$namespace" exec deploy/postgres -- psql -v ON_ERROR_STOP=1 -U kublai -d kublai -c \
     "insert into schema_migrations (version) values ('${version}');"
 done
 
@@ -91,7 +91,7 @@ cat > "$base_values" <<EOF
 api:
   replicaCount: 2
   image:
-    repository: artifortress-api
+    repository: kublai-api
     tag: ${image_tag}
     pullPolicy: IfNotPresent
   podDisruptionBudget:
@@ -100,7 +100,7 @@ api:
 worker:
   replicaCount: 1
   image:
-    repository: artifortress-worker
+    repository: kublai-worker
     tag: ${image_tag}
     pullPolicy: IfNotPresent
 EOF
@@ -109,7 +109,7 @@ cat > "$target_values" <<EOF
 api:
   replicaCount: 3
   image:
-    repository: artifortress-api
+    repository: kublai-api
     tag: ${image_tag}
     pullPolicy: IfNotPresent
   podDisruptionBudget:
@@ -118,7 +118,7 @@ api:
 worker:
   replicaCount: 2
   image:
-    repository: artifortress-worker
+    repository: kublai-worker
     tag: ${image_tag}
     pullPolicy: IfNotPresent
 EOF
@@ -129,20 +129,20 @@ helm_version="$(helm version --short)"
 kind_version="$(kind version)"
 kubernetes_version="$(kubectl version --short 2>/dev/null || kubectl version)"
 
-run_step "lint target chart" helm lint "$chart_path" --values deploy/helm/artifortress/values-kind-ha.yaml --values "$target_values"
+run_step "lint target chart" helm lint "$chart_path" --values deploy/helm/kublai/values-kind-ha.yaml --values "$target_values"
 
 run_step "install baseline chart" helm upgrade --install "$release_name" "$base_chart_path" \
   --namespace "$namespace" \
-  --values deploy/helm/artifortress/values-kind-ha.yaml \
+  --values deploy/helm/kublai/values-kind-ha.yaml \
   --values "$base_values" \
   --wait \
   --timeout 5m
 
-run_step "wait baseline API" kubectl -n "$namespace" rollout status deployment/artifortress-api --timeout=240s
-run_step "wait baseline worker" kubectl -n "$namespace" rollout status deployment/artifortress-worker --timeout=240s
+run_step "wait baseline API" kubectl -n "$namespace" rollout status deployment/kublai-api --timeout=240s
+run_step "wait baseline worker" kubectl -n "$namespace" rollout status deployment/kublai-worker --timeout=240s
 
 port_forward_log="$(mktemp)"
-kubectl -n "$namespace" port-forward svc/artifortress-api "${api_port}:80" > "$port_forward_log" 2>&1 &
+kubectl -n "$namespace" port-forward svc/kublai-api "${api_port}:80" > "$port_forward_log" 2>&1 &
 port_forward_pid="$!"
 sleep 3
 
@@ -193,23 +193,23 @@ API_URL="$api_url" \
 ADMIN_TOKEN="$admin_token" \
 ConnectionStrings__Postgres=redacted \
 ObjectStorage__Endpoint=http://minio:9000 \
-ObjectStorage__Bucket=artifortress-dev \
+ObjectStorage__Bucket=kublai-dev \
 Auth__BootstrapToken=redacted \
 KUBE_NAMESPACE="$namespace" \
 HELM_RELEASE="$release_name" \
 PREFLIGHT_REQUIRE_HELM_CERT=false \
-PREFLIGHT_REPORT_PATH=/tmp/artifortress-helm-cert-preflight-baseline.md \
+PREFLIGHT_REPORT_PATH=/tmp/kublai-helm-cert-preflight-baseline.md \
 scripts/production-preflight.sh
 
 run_step "upgrade to target chart" helm upgrade "$release_name" "$chart_path" \
   --namespace "$namespace" \
-  --values deploy/helm/artifortress/values-kind-ha.yaml \
+  --values deploy/helm/kublai/values-kind-ha.yaml \
   --values "$target_values" \
   --wait \
   --timeout 5m
 
-run_step "wait upgraded API" kubectl -n "$namespace" rollout status deployment/artifortress-api --timeout=240s
-run_step "wait upgraded worker" kubectl -n "$namespace" rollout status deployment/artifortress-worker --timeout=240s
+run_step "wait upgraded API" kubectl -n "$namespace" rollout status deployment/kublai-api --timeout=240s
+run_step "wait upgraded worker" kubectl -n "$namespace" rollout status deployment/kublai-worker --timeout=240s
 
 upgraded_admin_token="$(issue_admin_token "helm-cert-upgrade-admin")"
 if [ -z "$upgraded_admin_token" ]; then
@@ -223,27 +223,27 @@ API_URL="$api_url" \
 ADMIN_TOKEN="$upgraded_admin_token" \
 ConnectionStrings__Postgres=redacted \
 ObjectStorage__Endpoint=http://minio:9000 \
-ObjectStorage__Bucket=artifortress-dev \
+ObjectStorage__Bucket=kublai-dev \
 Auth__BootstrapToken=redacted \
 KUBE_NAMESPACE="$namespace" \
 HELM_RELEASE="$release_name" \
 PREFLIGHT_REQUIRE_HELM_CERT=false \
-PREFLIGHT_REPORT_PATH=/tmp/artifortress-helm-cert-preflight-upgrade.md \
+PREFLIGHT_REPORT_PATH=/tmp/kublai-helm-cert-preflight-upgrade.md \
 scripts/production-preflight.sh
 
 release_history="$(helm history "$release_name" --namespace "$namespace")"
 pod_placement="$(kubectl -n "$namespace" get pods -o wide)"
-api_replicas="$(kubectl -n "$namespace" get deployment artifortress-api -o jsonpath='{.status.readyReplicas}')"
-worker_replicas="$(kubectl -n "$namespace" get deployment artifortress-worker -o jsonpath='{.status.readyReplicas}')"
+api_replicas="$(kubectl -n "$namespace" get deployment kublai-api -o jsonpath='{.status.readyReplicas}')"
+worker_replicas="$(kubectl -n "$namespace" get deployment kublai-worker -o jsonpath='{.status.readyReplicas}')"
 
 run_step "uninstall release" helm uninstall "$release_name" --namespace "$namespace" --wait --timeout 5m
 
-kubectl -n "$namespace" wait --for=delete deployment/artifortress-api --timeout=120s >/dev/null 2>&1 || true
-kubectl -n "$namespace" wait --for=delete deployment/artifortress-worker --timeout=120s >/dev/null 2>&1 || true
+kubectl -n "$namespace" wait --for=delete deployment/kublai-api --timeout=120s >/dev/null 2>&1 || true
+kubectl -n "$namespace" wait --for=delete deployment/kublai-worker --timeout=120s >/dev/null 2>&1 || true
 
 leftover_resources="$(kubectl -n "$namespace" get deploy,svc,configmap,secret,pdb,networkpolicy -l "app.kubernetes.io/instance=${release_name}" --ignore-not-found -o name)"
 if [ -n "$leftover_resources" ]; then
-  echo "Helm uninstall left Artifortress-owned resources:" >&2
+  echo "Helm uninstall left Kublai-owned resources:" >&2
   echo "$leftover_resources" >&2
   exit 1
 fi
@@ -295,7 +295,7 @@ ${kubernetes_version}
 - repository create/read smoke after upgrade
 - production preflight with Kubernetes and Helm checks after upgrade
 - Helm uninstall
-- uninstall cleanup check for Helm-owned Artifortress resources
+- uninstall cleanup check for Helm-owned Kublai resources
 - data dependency preservation for Postgres and MinIO resources
 
 ## Helm History
@@ -318,8 +318,8 @@ ${dependency_resources}
 
 ## Preflight Reports
 
-- baseline: \`/tmp/artifortress-helm-cert-preflight-baseline.md\`
-- upgrade: \`/tmp/artifortress-helm-cert-preflight-upgrade.md\`
+- baseline: \`/tmp/kublai-helm-cert-preflight-baseline.md\`
+- upgrade: \`/tmp/kublai-helm-cert-preflight-upgrade.md\`
 
 ## Residual Risks
 

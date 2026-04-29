@@ -1,4 +1,4 @@
-# Artifortress Architecture Snapshot
+# Kublai Architecture Snapshot
 
 Last updated: 2026-02-11
 
@@ -12,7 +12,7 @@ Truth and bytes are separate:
 
 ## Current Runtime (Implemented)
 
-Control-plane API (`src/Artifortress.Api`) is implemented with PostgreSQL persistence:
+Control-plane API (`src/Kublai.Api`) is implemented with PostgreSQL persistence:
 - PAT issuance and revocation.
 - Bearer-token validation from hashed PAT records.
 - Repository CRUD.

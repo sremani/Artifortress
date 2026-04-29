@@ -5,15 +5,15 @@ Last updated: 2026-04-27
 ## Purpose
 
 This document defines the supported enterprise product envelope for an
-Artifortress enterprise GA candidate.
+Kublai enterprise GA candidate.
 
-The envelope is intentionally conservative. It states what Artifortress can
+The envelope is intentionally conservative. It states what Kublai can
 support based on repository evidence today, and it identifies claims that remain
 outside the current support boundary.
 
 ## Supported Product Shape
 
-Artifortress is supported as a self-hosted artifact repository control plane
+Kublai is supported as a self-hosted artifact repository control plane
 with:
 
 - HTTP API for identity, repository administration, upload/download, package
@@ -24,6 +24,8 @@ with:
 - S3-compatible object storage for blob bytes
 - transactional outbox and worker processing for async search/index workflows
 - Kubernetes/Helm-oriented production deployment assets
+- Akamai/Linode LKE example values as a supported reference shape, with
+  certification still tied to release-specific validation evidence
 - Docker Compose local development and verification stack
 
 ## Supported Runtime Baseline
@@ -67,8 +69,8 @@ Supported as a pre-production environment:
 ### Production
 
 Supported production shape:
-- `artifortress-api` with at least `3` replicas
-- `artifortress-worker` with at least `2` replicas
+- `kublai-api` with at least `3` replicas
+- `kublai-worker` with at least `2` replicas
 - replicas spread across at least `2` availability zones when the underlying
   platform supports it
 - regional load balancer or ingress in front of API replicas
@@ -77,6 +79,9 @@ Supported production shape:
 - dedicated bucket per environment
 - readiness-gated traffic
 - backup/restore, reliability, and upgrade drills current before cutover
+- cloud-specific example values may be used as starting points, but provider
+  account setup, networking, IAM, and capacity claims are not certified until
+  release evidence is captured for the target environment
 
 ## Supported Scale Profiles
 
@@ -120,7 +125,7 @@ Supported controls:
 - policy/quarantine controls for protected artifact workflows
 
 Support boundary:
-- Artifortress provides product evidence and control surfaces
+- Kublai provides product evidence and control surfaces
 - customers remain responsible for organization-specific control mapping,
   auditor sign-off, retention policy configuration, and production access review
 
@@ -163,14 +168,23 @@ The current enterprise envelope does not claim support for:
 - cross-region worker coordination for a single tenant control plane
 - zero-data-loss rollback of destructive schema changes without restore
 - object-store portability guarantees across vendors without validation
-- air-gapped/offline installation
+- air-gapped/offline installation without mirrored release artifacts, checksums,
+  signatures, certificates, SBOMs, and validated trust-root behavior
 - certified production capacity beyond currently published evidence
-- Helm install/upgrade/uninstall certification job
 - package-manager protocol compatibility beyond the documented HTTP API surface
-- paid-customer support intake, severity, and escalation model
 - reference Terraform/OpenTofu deployment module
 
 Items above are either deferred or tracked separately in the enterprise GA board.
+
+Package-format support is defined in
+`docs/80-package-format-compatibility-strategy.md`: enterprise GA supports the
+Kublai HTTP API and admin CLI, while native package-manager protocols
+remain future compatibility tracks until conformance tests are implemented.
+
+Offline installation planning is defined in
+`docs/81-airgapped-offline-install-plan.md`. Restricted-environment support
+requires a complete mirrored release bundle and customer-validated offline
+trust-root behavior.
 
 ## Source Of Truth
 

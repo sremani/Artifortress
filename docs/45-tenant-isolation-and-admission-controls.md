@@ -9,7 +9,7 @@ This document closes the first enterprise multi-tenant tranche:
 
 ## Isolation Invariants
 
-Artifortress enforces tenant boundaries with these invariants:
+Kublai enforces tenant boundaries with these invariants:
 
 1. Every mutable domain aggregate is tenant-scoped.
    Tables for repositories, package versions, upload sessions, search jobs, search documents, quarantine state, audit records, and PAT policy records all carry `tenant_id`.

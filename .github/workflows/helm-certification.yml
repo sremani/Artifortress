@@ -14,9 +14,10 @@ on:
       - "deploy/kind/**"
       - "db/migrations/**"
       - "scripts/helm-certify.sh"
+      - "scripts/helm-cloud-examples-validate.sh"
       - "scripts/production-preflight.sh"
       - "src/**"
-      - "Artifortress.sln"
+      - "Kublai.sln"
       - "Directory.Build.props"
       - "global.json"
   push:
@@ -30,9 +31,10 @@ on:
       - "deploy/kind/**"
       - "db/migrations/**"
       - "scripts/helm-certify.sh"
+      - "scripts/helm-cloud-examples-validate.sh"
       - "scripts/production-preflight.sh"
       - "src/**"
-      - "Artifortress.sln"
+      - "Kublai.sln"
       - "Directory.Build.props"
       - "global.json"
 
@@ -78,6 +80,10 @@ jobs:
           fi
 
           make helm-certify
+
+      - name: Validate cloud example values
+        if: always()
+        run: make helm-cloud-examples-validate
 
       - name: Publish Helm certification report
         if: always()

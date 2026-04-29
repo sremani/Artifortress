@@ -1,0 +1,15 @@
+{{- if .Values.api.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kublai.fullname" . }}-api
+  namespace: {{ include "kublai.namespace" . }}
+  labels:
+{{ include "kublai.labels" . | indent 4 }}
+spec:
+  minAvailable: {{ .Values.api.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kublai-api
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

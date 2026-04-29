@@ -25,7 +25,7 @@ Current state after MUT-10:
 
 ## 2. Track B Delivery Objective
 
-Enable mutation runs for `Artifortress.Domain` F# code with:
+Enable mutation runs for `Kublai.Domain` F# code with:
 - generated mutants,
 - deterministic build/test execution,
 - JSON/markdown report artifacts,
@@ -92,7 +92,7 @@ Deliverables:
 - arithmetic operator mutations where safe.
 
 Success criteria:
-- non-zero mutants generated for `src/Artifortress.Domain/Library.fs`.
+- non-zero mutants generated for `src/Kublai.Domain/Library.fs`.
 - mutated project compiles for majority of generated mutants.
 
 Status:
@@ -115,7 +115,7 @@ Status:
 ## 5. Implemented Artifacts
 
 Wrapper and automation:
-- `tools/Artifortress.MutationTrack/Program.fs`
+- `tools/Kublai.MutationTrack/Program.fs`
 - `Makefile` targets:
   - `mutation-spike`
   - `mutation-track`
