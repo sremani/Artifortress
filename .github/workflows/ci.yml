@@ -107,7 +107,7 @@ jobs:
       - name: Bootstrap MinIO bucket
         run: |
           docker run --rm --network container:minio --entrypoint /bin/sh minio/mc:latest -c "
-            mc alias set local http://127.0.0.1:9000 kublai kublai >/dev/null &&
+            mc alias set local http://127.0.0.1:9000 kublai kublai-secret >/dev/null &&
             mc mb --ignore-existing local/kublai-dev >/dev/null
           "
 

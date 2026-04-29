@@ -45,8 +45,13 @@ kubectl -n "$namespace" rollout status deployment/minio --timeout=180s
 bucket_job="minio-bootstrap-$(date -u +%s)"
 kubectl -n "$namespace" create job "$bucket_job" \
   --image=minio/mc:latest \
-  -- sh -c "mc alias set local http://minio:9000 kublai kublai && mc mb -p local/kublai-dev"
-kubectl -n "$namespace" wait --for=condition=complete "job/${bucket_job}" --timeout=120s
+  -- sh -c "mc alias set local http://minio:9000 kublai kublai-secret && mc mb -p local/kublai-dev"
+
+if ! kubectl -n "$namespace" wait --for=condition=complete "job/${bucket_job}" --timeout=120s; then
+  kubectl -n "$namespace" describe "job/${bucket_job}" >&2 || true
+  kubectl -n "$namespace" logs "job/${bucket_job}" --all-containers=true >&2 || true
+  exit 1
+fi
 
 kubectl -n "$namespace" exec deploy/postgres -- psql -v ON_ERROR_STOP=1 -U kublai -d kublai -c \
   "create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now());"
