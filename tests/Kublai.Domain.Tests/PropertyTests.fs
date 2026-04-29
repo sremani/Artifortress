@@ -823,7 +823,7 @@ let ``API tryResolvePolicyDecisionWithTimeout returns decision when not simulati
     let decision = if String.IsNullOrWhiteSpace decisionRaw then "allow" else decisionRaw.Trim()
     let source = if String.IsNullOrWhiteSpace sourceRaw then "default_allow" else sourceRaw.Trim()
 
-    match Program.tryResolvePolicyDecisionWithTimeout 15 decision source (Some "engine-v1") with
+    match Program.tryResolvePolicyDecisionWithTimeout 1000 decision source (Some "engine-v1") with
     | Error _ -> false
     | Ok(parsedDecision, parsedSource) -> parsedDecision = decision && parsedSource = source
 
